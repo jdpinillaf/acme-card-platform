@@ -40,6 +40,8 @@ var authStatuses = map[accountsv1.AuthorizationStatus]string{
 	accountsv1.AuthorizationStatus_AUTHORIZATION_STATUS_CAPTURED: "captured",
 	accountsv1.AuthorizationStatus_AUTHORIZATION_STATUS_REVERSED: "reversed",
 	accountsv1.AuthorizationStatus_AUTHORIZATION_STATUS_EXPIRED:  "expired",
+	accountsv1.AuthorizationStatus_AUTHORIZATION_STATUS_PENDING:  "pending",
+	accountsv1.AuthorizationStatus_AUTHORIZATION_STATUS_FAILED:   "failed",
 }
 
 var declineReasons = map[commonv1.DeclineReason]string{

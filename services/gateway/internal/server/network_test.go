@@ -235,3 +235,16 @@ func TestNetworkRefReuseIs422(t *testing.T) {
 		t.Fatalf("%d %s", w.Code, w.Body.String())
 	}
 }
+
+func TestNetworkJSONMapsPendingAndFailed(t *testing.T) {
+	for st, want := range map[accountsv1.AuthorizationStatus]string{
+		accountsv1.AuthorizationStatus_AUTHORIZATION_STATUS_PENDING: "pending",
+		accountsv1.AuthorizationStatus_AUTHORIZATION_STATUS_FAILED:  "failed",
+	} {
+		f := &fakeTx{authStatus: st}
+		w := do(newTxServer(f, &nopRejections{}), "POST", "/v1/network/authorizations", authBody, netSigned("/v1/network/authorizations", authBody, networkSecret))
+		if !strings.Contains(w.Body.String(), `"status":"`+want+`"`) {
+			t.Errorf("%s: %s", want, w.Body.String())
+		}
+	}
+}
