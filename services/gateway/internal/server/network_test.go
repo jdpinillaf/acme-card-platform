@@ -10,10 +10,12 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	accountsv1 "github.com/acme/acme-card/gen/go/acme/accounts/v1"
 	commonv1 "github.com/acme/acme-card/gen/go/acme/common/v1"
+	"github.com/acme/acme-card/pkg/grpcx"
 	"github.com/acme/acme-card/pkg/webhook"
 )
 
@@ -222,5 +224,14 @@ func TestNetworkSignatureIsBoundToPath(t *testing.T) {
 	other := "0192f000-0000-7000-8000-0000000000cc"
 	if w := do(h, "POST", "/v1/network/authorizations/"+other+"/capture", body, sig); w.Code != 401 {
 		t.Fatalf("signature replayed on another authorization must be 401, got %d", w.Code)
+	}
+}
+
+func TestNetworkRefReuseIs422(t *testing.T) {
+	f := &fakeTx{}
+	f.err = grpcx.Error(codes.AlreadyExists, "network_ref_reuse", "x")
+	w := do(newTxServer(f, &nopRejections{}), "POST", "/v1/network/authorizations", authBody, netSigned("/v1/network/authorizations", authBody, networkSecret))
+	if w.Code != 422 || errCode(t, w) != "network_ref_reuse" {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
 	}
 }
