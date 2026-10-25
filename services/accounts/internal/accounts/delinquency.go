@@ -113,8 +113,12 @@ func (s *Service) ChargeOff(ctx context.Context, req *accountsv1.ChargeOffReques
 			return grpcx.Error(codes.FailedPrecondition, "not_active", "only active accounts can be charged off")
 		}
 		pending = true
+		effective := s.accountNow(before)
+		if at := req.GetMeta().GetEffectiveAt(); at != nil { // billing passes the DPD-60 business date
+			effective = at.AsTime()
+		}
 		acc, err = scanAccount(tx.QueryRow(ctx, `UPDATE accounts SET delinquency='charged_off', charge_off_pending_at=$2,
-			charge_off_effective_at=$3, version=version+1, updated_at=now() WHERE id=$1 RETURNING `+accountCols, before.ID, s.clock.Now(), s.accountNow(before)))
+			charge_off_effective_at=$3, version=version+1, updated_at=now() WHERE id=$1 RETURNING `+accountCols, before.ID, s.clock.Now(), effective))
 		return err
 	})
 	if err != nil {

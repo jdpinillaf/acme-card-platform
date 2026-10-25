@@ -9,6 +9,7 @@ import (
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	accountsv1 "github.com/acme/acme-card/gen/go/acme/accounts/v1"
 	commonv1 "github.com/acme/acme-card/gen/go/acme/common/v1"
@@ -217,5 +218,19 @@ func TestListAccountIDsPagesActive(t *testing.T) {
 	}
 	if len(got) != 2 || !(got[0] == a.Id || got[0] == b.Id) || got[0] == got[1] {
 		t.Fatalf("ids=%v", got)
+	}
+}
+
+func TestChargeOffHonoursRequestedBusinessDate(t *testing.T) {
+	f, _ := txFixture(t)
+	acc := f.withDebt(t, "cust-co4", 1000, 400)
+	f.advance(t, acc.Id, 90)
+	at := t0.Add(60 * day)
+	if _, err := f.svc.ChargeOff(context.Background(), &accountsv1.ChargeOffRequest{AccountId: acc.Id,
+		Meta: &commonv1.RequestMeta{EffectiveAt: timestamppb.New(at)}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.entryEffectiveAt(t, "chargeoff:"+acc.Id); !got.Equal(at) {
+		t.Fatalf("collateral_applied effective_at=%v want %v", got, at)
 	}
 }
