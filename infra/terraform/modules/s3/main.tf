@@ -5,6 +5,10 @@ variable "object_lock" {
   type    = bool
   default = false
 }
+variable "retention_years" {
+  type    = number
+  default = 7 # audit checkpoints and archives (ADR-021)
+}
 
 resource "aws_s3_bucket" "this" {
   bucket              = var.bucket_name
@@ -71,6 +75,19 @@ data "aws_iam_policy_document" "tls" {
 resource "aws_s3_bucket_policy" "this" {
   bucket = aws_s3_bucket.this.id
   policy = data.aws_iam_policy_document.tls.json
+}
+
+# Default COMPLIANCE retention on WORM buckets: nobody (root included) can delete or overwrite an
+# object before it expires.
+resource "aws_s3_bucket_object_lock_configuration" "this" {
+  count  = var.object_lock ? 1 : 0
+  bucket = aws_s3_bucket.this.id
+  rule {
+    default_retention {
+      mode  = "COMPLIANCE"
+      years = var.retention_years
+    }
+  }
 }
 
 output "bucket_arn" { value = aws_s3_bucket.this.arn }

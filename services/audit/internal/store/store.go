@@ -215,3 +215,16 @@ func nullJSON(b []byte) any {
 	}
 	return b
 }
+
+// EventAt returns the stored event at chain_seq (as hashed: redacted, normalized by jsonb).
+func (s *Store) EventAt(ctx context.Context, chainSeq int64) (events.Event, error) {
+	return scanRowEvent(s.pool.QueryRow(ctx, `SELECT `+rowCols+` FROM audit_events WHERE chain_seq=$1`, chainSeq))
+}
+
+// Head returns the chain head.
+func (s *Store) Head(ctx context.Context) (int64, string, error) {
+	var seq int64
+	var hash string
+	err := s.pool.QueryRow(ctx, `SELECT chain_seq, hash FROM chain_head WHERE id=1`).Scan(&seq, &hash)
+	return seq, hash, err
+}

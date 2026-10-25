@@ -17,6 +17,9 @@ x-service-env: &service-env
   BILLING_APR_BPS: ${BILLING_APR_BPS:-2280}
   DESTINATION_KEY: ${DESTINATION_KEY}
   RETURN_WINDOW: ${RETURN_WINDOW:-120h}
+  AUDIT_SIGNING_KEY: ${AUDIT_SIGNING_KEY}
+  AUDIT_BUCKET: acme-card-audit-dev
+  AUDIT_GRPC_ADDR: audit:9005
   JWT_HS256_SECRET: ${JWT_HS256_SECRET}
   BANK_WEBHOOK_SECRET: ${BANK_WEBHOOK_SECRET}
   NETWORK_WEBHOOK_SECRET: ${NETWORK_WEBHOOK_SECRET}
@@ -75,7 +78,7 @@ services:
 
   audit:
     build: { context: .., dockerfile: deploy/Dockerfile, args: { SERVICE: audit } }
-    environment: *service-env
+    environment: { <<: *service-env, GRPC_ADDR: ":9005" }
     depends_on: { postgres: { condition: service_healthy }, localstack: { condition: service_healthy } }
 
   gateway:

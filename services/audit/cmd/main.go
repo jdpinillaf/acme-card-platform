@@ -3,14 +3,23 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
+
+	"google.golang.org/grpc"
+
+	auditv1 "github.com/acme/acme-card/gen/go/acme/audit/v1"
 
 	"github.com/acme/acme-card/pkg/awsx"
 	"github.com/acme/acme-card/pkg/config"
 	"github.com/acme/acme-card/pkg/db"
+	"github.com/acme/acme-card/pkg/grpcx"
 	"github.com/acme/acme-card/pkg/logging"
+	"github.com/acme/acme-card/services/audit/internal/audit"
 	"github.com/acme/acme-card/services/audit/internal/store"
 	"github.com/acme/acme-card/services/audit/migrations"
 )
@@ -49,5 +58,18 @@ func main() {
 	} else if n > 0 {
 		log.Info("chained pre-existing audit events", "count", n)
 	}
-	store.NewConsumer(clients.SQS, cfg.AuditSQSQueueURL, st, log).Run(ctx)
+	rawKey, err := base64.StdEncoding.DecodeString(cfg.AuditSigningKey)
+	if err != nil || len(rawKey) != ed25519.PrivateKeySize {
+		log.Error("AUDIT_SIGNING_KEY must be a base64 Ed25519 private key (64 bytes)")
+		os.Exit(1)
+	}
+	svc := audit.NewService(pool, audit.NewS3Store(clients.S3, cfg.AuditBucket), ed25519.PrivateKey(rawKey),
+		audit.Config{ProducerSchemas: []string{"accounts", "ledger", "billing", "gateway"}})
+	go svc.RunDaily(ctx, time.Hour, log)
+	go store.NewConsumer(clients.SQS, cfg.AuditSQSQueueURL, st, log).Run(ctx)
+	log.Info("audit api listening", "addr", cfg.GRPCAddr)
+	if err := grpcx.Serve(ctx, cfg.GRPCAddr, func(s *grpc.Server) { auditv1.RegisterAuditServiceServer(s, svc) }); err != nil {
+		log.Error("serve", "err", err)
+		os.Exit(1)
+	}
 }

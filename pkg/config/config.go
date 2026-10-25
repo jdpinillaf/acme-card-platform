@@ -51,6 +51,11 @@ type Config struct {
 	DestinationKey string
 	ReturnWindow   time.Duration
 
+	// Audit (Sprint 6): Ed25519 key signing checkpoints/manifests (base64, 64 bytes), WORM bucket, gRPC address.
+	AuditSigningKey string
+	AuditBucket     string
+	AuditGRPCAddr   string
+
 	AWSRegion        string
 	AWSEndpointURL   string
 	SNSTopicARN      string
@@ -77,6 +82,9 @@ func Load() (Config, error) {
 		BillingFixedAmounts:  getenv("BILLING_FIXED_AMOUNTS", "USD:2500,EUR:2500,MXN:45000,COP:10000000"),
 		DevClockEnabled:      os.Getenv("DEV_CLOCK_ENABLED") == "1",
 		DestinationKey:       os.Getenv("DESTINATION_KEY"),
+		AuditSigningKey:      os.Getenv("AUDIT_SIGNING_KEY"),
+		AuditBucket:          getenv("AUDIT_BUCKET", "acme-card-audit-dev"),
+		AuditGRPCAddr:        getenv("AUDIT_GRPC_ADDR", "localhost:9005"),
 		AWSRegion:            getenv("AWS_REGION", "us-east-1"),
 		AWSEndpointURL:       os.Getenv("AWS_ENDPOINT_URL"),
 		SNSTopicARN:          os.Getenv("SNS_TOPIC_ARN"),
