@@ -14,6 +14,7 @@ import (
 
 	accountsv1 "github.com/acme/acme-card/gen/go/acme/accounts/v1"
 	commonv1 "github.com/acme/acme-card/gen/go/acme/common/v1"
+	"github.com/acme/acme-card/pkg/webhook"
 )
 
 var networkSecret = []byte("network-secret")
@@ -80,17 +81,15 @@ func newTxServer(f *fakeTx, rej *nopRejections) http.Handler {
 
 const authBody = `{"network_ref":"n-1","card_id":"` + accID + `","amount_minor":300,"currency":"USD","merchant":{"id":"m","name":"Shop","mcc":"5814"}}`
 
-func signed(body string, secret []byte) map[string]string {
-	h := map[string]string{}
-	for k, v := range signedWebhookHeaders(body, secret) {
-		h[k] = v
-	}
-	return h
+// netSigned signs a network request (method + path bound into the MAC).
+func netSigned(path, body string, secret []byte) map[string]string {
+	ts, sig := webhook.SignRequest(secret, "POST", path, []byte(body), time.Now())
+	return map[string]string{webhook.HeaderTimestamp: ts, webhook.HeaderSignature: sig}
 }
 
 func TestNetworkAuthorizeDeclineIs201(t *testing.T) {
 	f := &fakeTx{authStatus: accountsv1.AuthorizationStatus_AUTHORIZATION_STATUS_DECLINED, reason: commonv1.DeclineReason_DECLINE_REASON_CARD_FROZEN}
-	w := do(newTxServer(f, &nopRejections{}), "POST", "/v1/network/authorizations", authBody, signed(authBody, networkSecret))
+	w := do(newTxServer(f, &nopRejections{}), "POST", "/v1/network/authorizations", authBody, netSigned("/v1/network/authorizations", authBody, networkSecret))
 	var body map[string]any
 	_ = json.Unmarshal(w.Body.Bytes(), &body)
 	if w.Code != 201 || body["status"] != "declined" || body["decline_reason"] != "card_frozen" {
@@ -107,7 +106,7 @@ func TestNetworkAuthorizeDeclineIs201(t *testing.T) {
 
 func TestNetworkApprovedOmitsDeclineReason(t *testing.T) {
 	f := &fakeTx{authStatus: accountsv1.AuthorizationStatus_AUTHORIZATION_STATUS_APPROVED}
-	w := do(newTxServer(f, &nopRejections{}), "POST", "/v1/network/authorizations", authBody, signed(authBody, networkSecret))
+	w := do(newTxServer(f, &nopRejections{}), "POST", "/v1/network/authorizations", authBody, netSigned("/v1/network/authorizations", authBody, networkSecret))
 	if w.Code != 201 || strings.Contains(w.Body.String(), "decline_reason") || !strings.Contains(w.Body.String(), `"status":"approved"`) {
 		t.Fatalf("%d %s", w.Code, w.Body.String())
 	}
@@ -116,7 +115,7 @@ func TestNetworkApprovedOmitsDeclineReason(t *testing.T) {
 func TestNetworkRoutesRequireNetworkSignature(t *testing.T) {
 	rej := &nopRejections{}
 	h := newTxServer(&fakeTx{}, rej)
-	w := do(h, "POST", "/v1/network/authorizations", authBody, signed(authBody, []byte("bank")))
+	w := do(h, "POST", "/v1/network/authorizations", authBody, netSigned("/v1/network/authorizations", authBody, []byte("bank")))
 	if w.Code != 401 || errCode(t, w) != "bad_signature" || rej.n != 1 {
 		t.Fatalf("%d %s rej=%d", w.Code, w.Body.String(), rej.n)
 	}
@@ -133,7 +132,7 @@ func TestNetworkRoutesRequireNetworkSignature(t *testing.T) {
 
 func TestNetworkStrictJSON(t *testing.T) {
 	body := strings.Replace(authBody, `"currency":"USD"`, `"currency":"USD","extra":1`, 1)
-	w := do(newTxServer(&fakeTx{}, &nopRejections{}), "POST", "/v1/network/authorizations", body, signed(body, networkSecret))
+	w := do(newTxServer(&fakeTx{}, &nopRejections{}), "POST", "/v1/network/authorizations", body, netSigned("/v1/network/authorizations", body, networkSecret))
 	if w.Code != 400 {
 		t.Fatalf("%d", w.Code)
 	}
@@ -151,7 +150,7 @@ func TestNetworkFollowUpStatusCodesAndReplayHeader(t *testing.T) {
 		{"/refunds", `{"network_ref":"rf-1","amount_minor":50}`, 201},
 	}
 	for _, c := range cases {
-		w := do(h, "POST", "/v1/network/authorizations/"+authID+c.path, c.body, signed(c.body, networkSecret))
+		w := do(h, "POST", "/v1/network/authorizations/"+authID+c.path, c.body, netSigned("/v1/network/authorizations/"+authID+c.path, c.body, networkSecret))
 		if w.Code != c.code {
 			t.Errorf("%s: %d %s", c.path, w.Code, w.Body.String())
 		}
@@ -159,7 +158,7 @@ func TestNetworkFollowUpStatusCodesAndReplayHeader(t *testing.T) {
 			t.Errorf("%s: missing replay header", c.path)
 		}
 	}
-	w := do(h, "POST", "/v1/network/authorizations/"+authID+"/refunds", `{"network_ref":"rf-1","amount_minor":50}`, signed(`{"network_ref":"rf-1","amount_minor":50}`, networkSecret))
+	w := do(h, "POST", "/v1/network/authorizations/"+authID+"/refunds", `{"network_ref":"rf-1","amount_minor":50}`, netSigned("/v1/network/authorizations/"+authID+"/refunds", `{"network_ref":"rf-1","amount_minor":50}`, networkSecret))
 	if !strings.Contains(w.Body.String(), `"refund"`) || !strings.Contains(w.Body.String(), `"authorization"`) {
 		t.Fatalf("refund shape: %s", w.Body.String())
 	}
@@ -208,3 +207,20 @@ func TestTransactionsListShape(t *testing.T) {
 }
 
 var _ = httptest.NewRecorder
+
+func TestNetworkSignatureIsBoundToPath(t *testing.T) {
+	rej := &nopRejections{}
+	h := newTxServer(&fakeTx{}, rej)
+	body := `{"network_ref":"x","amount_minor":1}`
+	sig := netSigned("/v1/network/authorizations/"+authID+"/capture", body, networkSecret)
+	if w := do(h, "POST", "/v1/network/authorizations/"+authID+"/capture", body, sig); w.Code != 201 {
+		t.Fatalf("signature must verify on its own path, got %d %s", w.Code, w.Body.String())
+	}
+	if w := do(h, "POST", "/v1/network/authorizations/"+authID+"/refunds", body, sig); w.Code != 401 {
+		t.Fatalf("capture signature replayed on refunds must be 401, got %d", w.Code)
+	}
+	other := "0192f000-0000-7000-8000-0000000000cc"
+	if w := do(h, "POST", "/v1/network/authorizations/"+other+"/capture", body, sig); w.Code != 401 {
+		t.Fatalf("signature replayed on another authorization must be 401, got %d", w.Code)
+	}
+}

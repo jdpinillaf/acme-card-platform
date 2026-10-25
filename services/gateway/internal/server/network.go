@@ -75,7 +75,7 @@ func writeReplayable(w http.ResponseWriter, status int, replayed bool, body any)
 }
 
 func (s *server) networkAuthorize(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.verifySigned(w, r, s.NetworkSecret); !ok {
+	if _, ok := s.verifySignedRequest(w, r, s.NetworkSecret); !ok {
 		return
 	}
 	var body struct {
@@ -101,7 +101,7 @@ func (s *server) networkAuthorize(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) networkCapture(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.verifySigned(w, r, s.NetworkSecret); !ok {
+	if _, ok := s.verifySignedRequest(w, r, s.NetworkSecret); !ok {
 		return
 	}
 	var body struct {
@@ -122,7 +122,7 @@ func (s *server) networkCapture(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) networkReverse(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.verifySigned(w, r, s.NetworkSecret); !ok {
+	if _, ok := s.verifySignedRequest(w, r, s.NetworkSecret); !ok {
 		return
 	}
 	var body struct {
@@ -150,7 +150,7 @@ type refundJSON struct {
 }
 
 func (s *server) networkRefund(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.verifySigned(w, r, s.NetworkSecret); !ok {
+	if _, ok := s.verifySignedRequest(w, r, s.NetworkSecret); !ok {
 		return
 	}
 	var body struct {

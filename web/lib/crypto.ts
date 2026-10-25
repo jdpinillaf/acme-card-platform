@@ -18,3 +18,8 @@ export function signJwt(secret: string, sub: string, accounts: string[], ttlSec:
   const sig = createHmac("sha256", secret).update(`${header}.${payload}`).digest("base64url");
   return `${header}.${payload}.${sig}`;
 }
+
+/** Request-bound signature: HMAC over `${timestamp}.${METHOD} ${path}.${body}`. Mirrors pkg/webhook.SignRequest. */
+export function signRequest(secret: string, method: string, path: string, body: string, nowSec = Math.floor(Date.now() / 1000)) {
+  return signWebhook(secret, `${method} ${path}.${body}`, nowSec);
+}

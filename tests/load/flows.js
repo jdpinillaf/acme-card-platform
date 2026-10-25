@@ -124,7 +124,7 @@ export default function () {
   const net = (path, body, name) => {
     const payload = JSON.stringify(body);
     const ts = String(Math.floor(Date.now() / 1000));
-    const sig = crypto.hmac("sha256", NETWORK_SECRET, `${ts}.${payload}`, "hex");
+    const sig = crypto.hmac("sha256", NETWORK_SECRET, `${ts}.POST ${path}.${payload}`, "hex");
     return { method: "POST", url: `${BASE}${path}`, body: payload,
       params: { headers: { "Content-Type": "application/json", "X-Acme-Timestamp": ts, "X-Acme-Signature": sig }, tags: { name } } };
   };

@@ -253,12 +253,28 @@ func (s *server) bankDepositWebhook(w http.ResponseWriter, r *http.Request) {
 // verifySigned checks the HMAC signature with secret and, on success, leaves the raw body readable
 // again on r.Body. Rejections are recorded (deduped per source/window) and not audited per request.
 func (s *server) verifySigned(w http.ResponseWriter, r *http.Request, secret []byte) ([]byte, bool) {
+	return s.verify(w, r, secret, false)
+}
+
+// verifySignedRequest is verifySigned with method and path bound into the signature.
+func (s *server) verifySignedRequest(w http.ResponseWriter, r *http.Request, secret []byte) ([]byte, bool) {
+	return s.verify(w, r, secret, true)
+}
+
+func (s *server) verify(w http.ResponseWriter, r *http.Request, secret []byte, bindRequest bool) ([]byte, bool) {
 	raw, err := io.ReadAll(io.LimitReader(r.Body, maxBody+1))
 	if err != nil || len(raw) > maxBody {
 		httpx.WriteError(w, 413, "body_too_large", "request body too large")
 		return nil, false
 	}
-	if err := webhook.Verify(secret, raw, r.Header.Get(webhook.HeaderTimestamp), r.Header.Get(webhook.HeaderSignature), time.Now(), s.WebhookTolerance); err != nil {
+	ts, sig := r.Header.Get(webhook.HeaderTimestamp), r.Header.Get(webhook.HeaderSignature)
+	var err2 error
+	if bindRequest {
+		err2 = webhook.VerifyRequest(secret, r.Method, r.URL.Path, raw, ts, sig, time.Now(), s.WebhookTolerance)
+	} else {
+		err2 = webhook.Verify(secret, raw, ts, sig, time.Now(), s.WebhookTolerance)
+	}
+	if err := err2; err != nil {
 		skipAudit(r.Context())
 		if recErr := s.Rejections.Record(r.Context(), s.clientIP(r), err.Error(), time.Now()); recErr != nil {
 			slog.ErrorContext(r.Context(), "record webhook rejection", "err", recErr)

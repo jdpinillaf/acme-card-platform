@@ -56,3 +56,24 @@ func Verify(secret, body []byte, ts, sig string, now time.Time, tolerance time.D
 	}
 	return nil
 }
+
+// requestPayload binds the HTTP method and path into the signed bytes, so a signed message cannot
+// be replayed against another endpoint or another resource id (used by card network routes).
+func requestPayload(method, path string, body []byte) []byte {
+	out := make([]byte, 0, len(method)+len(path)+len(body)+2)
+	out = append(out, method...)
+	out = append(out, ' ')
+	out = append(out, path...)
+	out = append(out, '.')
+	return append(out, body...)
+}
+
+// SignRequest signs timestamp.METHOD path.body.
+func SignRequest(secret []byte, method, path string, body []byte, now time.Time) (ts, sig string) {
+	return Sign(secret, requestPayload(method, path, body), now)
+}
+
+// VerifyRequest verifies a SignRequest signature.
+func VerifyRequest(secret []byte, method, path string, body []byte, ts, sig string, now time.Time, tolerance time.Duration) error {
+	return Verify(secret, requestPayload(method, path, body), ts, sig, now, tolerance)
+}

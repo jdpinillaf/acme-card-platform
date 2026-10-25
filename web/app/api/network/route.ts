@@ -1,7 +1,7 @@
 // Simulated card network: signs messages with NETWORK_WEBHOOK_SECRET server-side and sends them
 // `repeat` times concurrently. Body: { op, authId?, payload, repeat?, tamper? }.
 import { env } from "@/lib/env.ts";
-import { signWebhook } from "@/lib/crypto.ts";
+import { signRequest } from "@/lib/crypto.ts";
 import { forward } from "@/lib/forward.ts";
 import { simulatorGuard } from "@/lib/guard.ts";
 import { networkPath, type NetworkOp } from "@/lib/network.ts";
@@ -22,7 +22,7 @@ export async function POST(request: Request) {
   const n = Math.min(Math.max(Number(repeat ?? 1), 1), 100);
   const results = await Promise.all(
     Array.from({ length: n }, () => {
-      const { timestamp, signature } = signWebhook(tamper ? "wrong-secret" : env.networkSecret, body);
+      const { timestamp, signature } = signRequest(tamper ? "wrong-secret" : env.networkSecret, "POST", path, body);
       return forward(`${env.gatewayUrl}${path}`, {
         method: "POST",
         headers: { "content-type": "application/json", "x-acme-timestamp": timestamp, "x-acme-signature": signature },

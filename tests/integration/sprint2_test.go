@@ -21,7 +21,7 @@ func (s *stack) network(t *testing.T, path string, body map[string]any, secret [
 	b, _ := json.Marshal(body)
 	req, _ := http.NewRequest("POST", s.url+path, bytes.NewReader(b))
 	if secret != nil {
-		ts, sig := webhook.Sign(secret, b, time.Now())
+		ts, sig := webhook.SignRequest(secret, "POST", path, b, time.Now())
 		req.Header.Set(webhook.HeaderTimestamp, ts)
 		req.Header.Set(webhook.HeaderSignature, sig)
 	}
@@ -114,7 +114,10 @@ func TestSprint2EndToEnd(t *testing.T) {
 		out := make([]resp, 50)
 		for i := range out {
 			wg.Add(1)
-			go func(i int) { defer wg.Done(); out[i] = s.network(t, "/v1/network/authorizations", authBody(card, ref, 100), networkSecret) }(i)
+			go func(i int) {
+				defer wg.Done()
+				out[i] = s.network(t, "/v1/network/authorizations", authBody(card, ref, 100), networkSecret)
+			}(i)
 		}
 		wg.Wait()
 		replays := 0
