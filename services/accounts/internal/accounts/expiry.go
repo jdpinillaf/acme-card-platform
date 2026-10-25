@@ -92,8 +92,10 @@ func (s *Service) ResolvePending(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// Fail first, release second (audit H3). A late duplicate that finalizes in between then sees
+	// 'failed' and releases its own hold; the reverse order could approve a row whose hold was
+	// just released. hold_released_at records the second step so a crash in between is retried.
 	for _, a := range stale {
-		s.releaseQuietly(ctx, a.NetworkRef)
 		err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 			cur, err := lockAuth(ctx, tx, a.ID)
 			if err != nil || cur.Status != "pending" {
@@ -106,6 +108,23 @@ func (s *Service) ResolvePending(ctx context.Context) error {
 			return s.emitAuth(ctx, tx, "authorization.failed", cur, after, nil)
 		})
 		if err != nil {
+			return err
+		}
+	}
+	rows, err = s.pool.Query(ctx, `SELECT `+authCols+` FROM authorizations WHERE status='failed' AND hold_released_at IS NULL LIMIT 100`)
+	if err != nil {
+		return err
+	}
+	unreleased, err := collectAuths(rows)
+	if err != nil {
+		return err
+	}
+	for _, a := range unreleased {
+		if err := s.releaseHold(ctx, a.NetworkRef); err != nil {
+			slog.ErrorContext(ctx, "releasing hold of failed authorization failed; retried next pass", "authorization_id", a.ID, "err", err)
+			continue
+		}
+		if _, err := s.pool.Exec(ctx, `UPDATE authorizations SET hold_released_at=$2 WHERE id=$1 AND hold_released_at IS NULL`, a.ID, s.clock.Now()); err != nil {
 			return err
 		}
 	}

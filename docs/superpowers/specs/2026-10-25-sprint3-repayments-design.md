@@ -1,6 +1,6 @@
 # Sprint 3 — Repayments, returned payments, spendable credit balance
 
-Status: draft for review · 2026-10-25 · builds on Sprints 1–2 (`docs/DECISIONS.md` ADR-001…016)
+Status: ready for user approval · 2026-10-25 · builds on Sprints 1–2 (`docs/DECISIONS.md` ADR-001…016)
 
 ## 1. Intent
 
@@ -109,7 +109,7 @@ Same as Sprints 1–2:
   - create a payment;
   - list payments with Settle, Fail and Return buttons;
   - show debt, credit balance and restriction.
-- See open question Q-B about "avisarle de todas las acciones".
+- The simulator exposes every action the APIs offer (Q-B), including payment return and the restriction state.
 
 ## 7. Test gates
 - **Same payment, many times.** The same `Idempotency-Key` ×50 creates one payment. The same bank webhook ×50 settles once (one journal entry).
@@ -121,12 +121,19 @@ Same as Sprints 1–2:
   2. A 500 purchase captured leaves a 200 credit balance and no debt.
   3. Concurrent purchases never push `holds + receivable` above the limit.
 - **Reconciler.** Lost-response tests for `settling` and `returning` payments.
-- **Invariants.** `verify.sql` gains: payments ↔ ledger journals in both directions; returns ↔ return journals; signed exposure ≤ limit; restricted accounts actually over the limit, or lifted.
+- **Invariants.** `verify.sql` gains:
+  - payments ↔ ledger journals, in both directions;
+  - returns ↔ return journals;
+  - signed exposure ≤ limit, except overage covered by returns (Q-A);
+  - over-limit accounts are restricted;
+  - restricted accounts are still over the limit, or the restriction lifted within the 5-minute grace period.
 - **Load.** The k6 flow gains pay → settle.
 
-## 7b. Open questions for the user
-- **Q-A** Returns after credit was restored can push exposure above the collateral (see review question 1).
-- **Q-B** What "avisarle de todas las acciones" means: a simulator activity feed, or customer notifications (Sprint 7)?
+## 7b. Resolved by the user (2026-10-25)
+- **Q-A: accept the risk.** Credit is restored as soon as a payment settles. A later return can push the debt above the collateral; the bank accepts that exposure. The card stays restricted (`payment_returned`) until exposure is back within the limit.
+  - **Consequence for invariants.** "Signed exposure ≤ limit" applies to every account **except** those with a returned payment on file whose overage is covered by the returned amount (`exposure − limit ≤ Σ returned`). Those must instead be restricted.
+  - **Purchases still never push exposure over the limit.** PlaceHold enforces it unconditionally.
+- **Q-B: every action available in the simulator.** The phrase meant that all possible actions must exist. The simulator exposes every operation in the system: create, settle, fail and return payments, plus everything from Sprints 1–2. It is not about outbound notifications.
 
 ## 8. Left to the builder
 - Table and column names.

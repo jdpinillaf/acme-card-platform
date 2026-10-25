@@ -266,10 +266,19 @@ func (s *Service) finishAuthorization(ctx context.Context, a authRow, meta *comm
 	return resp, nil
 }
 
-// releaseQuietly releases "auth:<ref>" if it is still active; absent or terminal holds are fine.
-func (s *Service) releaseQuietly(ctx context.Context, networkRef string) {
+// releaseHold releases "auth:<ref>" if it is still active. Absent or already-closed holds count as
+// released; any other error is returned.
+func (s *Service) releaseHold(ctx context.Context, networkRef string) error {
 	_, err := s.ledger.ReleaseHold(ctx, &ledgerv1.ReleaseHoldRequest{HoldReference: "auth:" + networkRef, Reason: ledgerv1.HoldRelease_HOLD_RELEASE_RELEASED})
 	if err != nil && grpcx.Reason(err) != "hold_not_found" && grpcx.Reason(err) != "hold_not_active" {
+		return err
+	}
+	return nil
+}
+
+// releaseQuietly is releaseHold for callers with nothing better to do on failure than log.
+func (s *Service) releaseQuietly(ctx context.Context, networkRef string) {
+	if err := s.releaseHold(ctx, networkRef); err != nil {
 		slog.WarnContext(ctx, "release of superseded hold failed; ledger sweeper will expire it", "network_ref", networkRef, "err", err)
 	}
 }

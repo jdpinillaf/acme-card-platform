@@ -3,12 +3,14 @@ package accounts
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	accountsv1 "github.com/acme/acme-card/gen/go/acme/accounts/v1"
@@ -133,6 +135,44 @@ func (s *Service) reserveOp(ctx context.Context, authID string, o opReq) (a auth
 	return a, final, resumed, err
 }
 
+// terminal reports whether a ledger error can never succeed on retry (the ledger refused the
+// operation on its merits rather than failing to answer). Such an operation must reach a terminal
+// state instead of being resumed forever.
+func terminal(err error) bool {
+	switch status.Code(err) {
+	case codes.FailedPrecondition, codes.InvalidArgument, codes.OutOfRange, codes.NotFound, codes.AlreadyExists:
+		return true
+	}
+	return false
+}
+
+// failOp ends a reserved capture/reversal the ledger refused permanently: the authorization becomes
+// 'failed' and the pending op is cleared, so follow-ups see a terminal state and the reconciler
+// stops retrying. The ledger hold (if any is still active) is released by the reconciler's
+// failed-hold sweep. The original ledger error is returned to the caller.
+func (s *Service) failOp(ctx context.Context, a authRow, o opReq, meta *commonv1.RequestMeta, cause error) error {
+	slog.ErrorContext(ctx, "reserved operation refused by ledger; failing authorization", "authorization_id", a.ID, "op", o.op, "err", cause)
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		cur, err := lockAuth(ctx, tx, a.ID)
+		if err != nil {
+			return err
+		}
+		if cur.PendingOp == nil || *cur.PendingOp != o.op { // finished concurrently
+			return nil
+		}
+		after, err := scanAuth(tx.QueryRow(ctx, `UPDATE authorizations SET status='failed', pending_op=NULL, pending_op_amount=NULL, pending_op_at=NULL
+			WHERE id=$1 RETURNING `+authCols, a.ID))
+		if err != nil {
+			return err
+		}
+		return s.emitAuth(ctx, tx, "authorization.failed", cur, after, meta)
+	})
+	if err != nil {
+		return internal(err)
+	}
+	return cause
+}
+
 // finishOp drives the reserved op against the ledger (idempotent) and finalizes the row.
 func (s *Service) finishOp(ctx context.Context, a authRow, o opReq, meta *commonv1.RequestMeta) (*accountsv1.AuthorizationResponse, error) {
 	var err error
@@ -144,6 +184,9 @@ func (s *Service) finishOp(ctx context.Context, a authRow, o opReq, meta *common
 			HoldReference: "auth:" + a.NetworkRef, Reason: ledgerv1.HoldRelease_HOLD_RELEASE_RELEASED, Meta: meta})
 	}
 	if err != nil {
+		if terminal(err) {
+			return nil, s.failOp(ctx, a, o, meta, err)
+		}
 		return nil, err // stays pending: retry with the same ref, or ResolvePending, resumes it
 	}
 	var resp *accountsv1.AuthorizationResponse
@@ -236,6 +279,9 @@ func (s *Service) Refund(ctx context.Context, req *accountsv1.RefundRequest) (*a
 			if r.authID != a.ID || r.amount != req.AmountMinor {
 				return grpcx.Error(codes.AlreadyExists, "network_ref_reuse", "refund network_ref reused with a different request")
 			}
+			if r.status == "failed" {
+				return grpcx.Error(codes.FailedPrecondition, "refund_failed", "refund was refused by the ledger")
+			}
 			final = r.status == "posted"
 			return nil
 		}
@@ -267,6 +313,9 @@ func (s *Service) Refund(ctx context.Context, req *accountsv1.RefundRequest) (*a
 	defer cancel()
 	if _, err := s.ledger.PostRefund(ctx, &ledgerv1.PostRefundRequest{
 		AccountId: a.AccountID, Reference: "refund:" + req.NetworkRef, AmountMinor: r.amount, Meta: req.Meta}); err != nil {
+		if terminal(err) {
+			return nil, s.failRefund(ctx, a, r, req.Meta, err)
+		}
 		return nil, err // refund stays pending and keeps counting toward the cap; resumed later
 	}
 	var resp *accountsv1.RefundResponse
@@ -305,4 +354,23 @@ func (s *Service) Refund(ctx context.Context, req *accountsv1.RefundRequest) (*a
 func refundProto(id string, a authRow, ref string, amt int64, at time.Time) *accountsv1.Refund {
 	return &accountsv1.Refund{Id: id, AuthorizationId: a.ID, NetworkRef: ref,
 		Amount: &commonv1.Money{AmountMinor: amt, Currency: a.Currency}, CreatedAt: timestamppb.New(at)}
+}
+
+// failRefund marks a pending refund the ledger refused permanently as failed, so it stops counting
+// toward the refund cap and the reconciler stops resuming it.
+func (s *Service) failRefund(ctx context.Context, a authRow, r refundRow, meta *commonv1.RequestMeta, cause error) error {
+	slog.ErrorContext(ctx, "refund refused by ledger; marking failed", "authorization_id", a.ID, "refund_id", r.id, "err", cause)
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `UPDATE refunds SET status='failed' WHERE id=$1 AND status='pending'`, r.id)
+		if err != nil || tag.RowsAffected() == 0 {
+			return err
+		}
+		ev := event("refund.failed", "refund", r.id, meta)
+		ev.After = snapshot(map[string]any{"authorization_id": a.ID, "amount_minor": r.amount, "error": cause.Error()})
+		return outbox.Enqueue(ctx, tx, ev)
+	})
+	if err != nil {
+		return internal(err)
+	}
+	return cause
 }
