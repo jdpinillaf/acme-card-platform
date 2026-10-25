@@ -1,0 +1,68 @@
+syntax = "proto3";
+
+package acme.ledger.v1;
+
+import "acme/common/v1/common.proto";
+import "google/protobuf/timestamp.proto";
+
+// Ledger owns money. Double-entry, append-only.
+service LedgerService {
+  // OpenLedger creates the four sub-accounts for a customer account in a given currency.
+  rpc OpenLedger(OpenLedgerRequest) returns (OpenLedgerResponse);
+  // PostJournal records a balanced journal entry atomically. Idempotent on reference.
+  rpc PostJournal(PostJournalRequest) returns (PostJournalResponse);
+  // GetBalances returns current balances of all sub-accounts.
+  rpc GetBalances(GetBalancesRequest) returns (GetBalancesResponse);
+}
+
+enum SubAccount {
+  SUB_ACCOUNT_UNSPECIFIED = 0;
+  SUB_ACCOUNT_CASH_CLEARING = 1;
+  SUB_ACCOUNT_COLLATERAL_HELD = 2;
+  SUB_ACCOUNT_CREDIT_AVAILABLE = 3;
+  SUB_ACCOUNT_RECEIVABLE = 4;
+}
+
+enum Side {
+  SIDE_UNSPECIFIED = 0;
+  SIDE_DEBIT = 1;
+  SIDE_CREDIT = 2;
+}
+
+message Posting {
+  SubAccount sub_account = 1;
+  Side side = 2;
+  int64 amount_minor = 3;
+}
+
+message OpenLedgerRequest {
+  string account_id = 1;
+  string currency = 2;
+}
+message OpenLedgerResponse {}
+
+message PostJournalRequest {
+  string account_id = 1;
+  // reference is a caller-supplied unique key (e.g. deposit id). Replays return the original entry.
+  string reference = 2;
+  string entry_type = 3;
+  repeated Posting postings = 4;
+  acme.common.v1.RequestMeta meta = 5;
+}
+message PostJournalResponse {
+  string journal_entry_id = 1;
+  bool replayed = 2;
+  google.protobuf.Timestamp posted_at = 3;
+}
+
+message GetBalancesRequest {
+  string account_id = 1;
+}
+message Balance {
+  SubAccount sub_account = 1;
+  int64 amount_minor = 2;
+}
+message GetBalancesResponse {
+  string currency = 1;
+  repeated Balance balances = 2;
+}

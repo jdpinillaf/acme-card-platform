@@ -1,0 +1,83 @@
+syntax = "proto3";
+
+package acme.accounts.v1;
+
+import "acme/common/v1/common.proto";
+import "google/protobuf/timestamp.proto";
+
+service AccountsService {
+  rpc CreateAccount(CreateAccountRequest) returns (CreateAccountResponse);
+  rpc GetAccount(GetAccountRequest) returns (GetAccountResponse);
+  rpc CreateDeposit(CreateDepositRequest) returns (CreateDepositResponse);
+  // SettleDeposit is driven by the bank webhook. Idempotent on external_ref.
+  rpc SettleDeposit(SettleDepositRequest) returns (SettleDepositResponse);
+}
+
+enum AccountState {
+  ACCOUNT_STATE_UNSPECIFIED = 0;
+  ACCOUNT_STATE_PENDING_COLLATERAL = 1;
+  ACCOUNT_STATE_ACTIVE = 2;
+  ACCOUNT_STATE_CLOSED = 3;
+}
+
+enum DepositStatus {
+  DEPOSIT_STATUS_UNSPECIFIED = 0;
+  DEPOSIT_STATUS_PENDING = 1;
+  DEPOSIT_STATUS_SETTLED = 2;
+  DEPOSIT_STATUS_FAILED = 3;
+}
+
+message Account {
+  string id = 1;
+  string customer_id = 2;
+  string currency = 3;
+  AccountState state = 4;
+  bool frozen = 5;
+  int64 credit_limit_minor = 6;
+  int64 available_credit_minor = 7;
+  int64 collateral_minor = 8;
+  int64 purchase_limit_minor = 9;
+  google.protobuf.Timestamp created_at = 10;
+  google.protobuf.Timestamp updated_at = 11;
+}
+
+message Deposit {
+  string id = 1;
+  string account_id = 2;
+  acme.common.v1.Money amount = 3;
+  DepositStatus status = 4;
+  string external_ref = 5;
+  google.protobuf.Timestamp created_at = 6;
+  google.protobuf.Timestamp settled_at = 7;
+}
+
+message CreateAccountRequest {
+  string customer_id = 1;
+  string currency = 2;
+  acme.common.v1.RequestMeta meta = 3;
+}
+message CreateAccountResponse { Account account = 1; }
+
+message GetAccountRequest { string account_id = 1; }
+message GetAccountResponse { Account account = 1; }
+
+message CreateDepositRequest {
+  string account_id = 1;
+  int64 amount_minor = 2;
+  acme.common.v1.RequestMeta meta = 3;
+}
+message CreateDepositResponse { Deposit deposit = 1; }
+
+message SettleDepositRequest {
+  string deposit_id = 1;
+  string external_ref = 2;
+  int64 amount_minor = 3;
+  string currency = 4;
+  DepositStatus status = 5; // SETTLED or FAILED
+  acme.common.v1.RequestMeta meta = 6;
+}
+message SettleDepositResponse {
+  Deposit deposit = 1;
+  Account account = 2;
+  bool replayed = 3;
+}

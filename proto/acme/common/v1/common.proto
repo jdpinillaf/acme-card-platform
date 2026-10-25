@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+package acme.common.v1;
+
+// Money is an exact amount: integer minor units (cents) plus ISO-4217 currency. Never floats.
+message Money {
+  int64 amount_minor = 1;
+  string currency = 2;
+}
+
+// DeclineReason is published whenever a movement is rejected.
+enum DeclineReason {
+  DECLINE_REASON_UNSPECIFIED = 0;
+  DECLINE_REASON_ACCOUNT_CLOSED = 1;
+  DECLINE_REASON_COLLATERAL_NOT_CONFIRMED = 2;
+  DECLINE_REASON_CARD_FROZEN = 3;
+  DECLINE_REASON_VELOCITY_LIMIT_EXCEEDED = 4;
+  DECLINE_REASON_PURCHASE_LIMIT_EXCEEDED = 5;
+  DECLINE_REASON_INSUFFICIENT_CREDIT = 6;
+}
+
+// RequestMeta carries idempotency and actor context across service calls.
+message RequestMeta {
+  string idempotency_key_hash = 1;
+  string actor = 2;
+}
