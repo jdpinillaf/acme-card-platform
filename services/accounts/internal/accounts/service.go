@@ -133,6 +133,9 @@ func (s *Service) CreateAccount(ctx context.Context, req *accountsv1.CreateAccou
 	if !money.ValidCurrency(req.Currency) {
 		return nil, grpcx.Error(codes.InvalidArgument, "invalid_currency", "currency must be an ISO-4217 code")
 	}
+	if err := s.checkPreviousDebt(ctx, req.CustomerId, req.Currency); err != nil {
+		return nil, err
+	}
 	id := uuid.Must(uuid.NewV7()).String()
 	var acc accountRow
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
@@ -189,7 +192,7 @@ func (s *Service) CreateDeposit(ctx context.Context, req *accountsv1.CreateDepos
 			return err
 		}
 		if err := CanAcceptDeposit(acc.State); err != nil {
-			return grpcx.Error(codes.FailedPrecondition, "account_closed", "account is closed")
+			return grpcx.Error(codes.FailedPrecondition, err.Error(), "account no longer accepts deposits")
 		}
 		id := uuid.Must(uuid.NewV7()).String()
 		var created time.Time
@@ -291,6 +294,8 @@ func (s *Service) SettleDeposit(ctx context.Context, req *accountsv1.SettleDepos
 			return err
 		}
 		switch dep.Status {
+		case "voided":
+			return grpcx.Error(codes.FailedPrecondition, "deposit_voided", "deposit was voided when the account was cancelled or closed")
 		case "settled", "failed":
 			done, replayed = true, true
 			return replayConflict(dep, req)
@@ -476,8 +481,12 @@ func stateProto(s State) accountsv1.AccountState {
 		return accountsv1.AccountState_ACCOUNT_STATE_PENDING_COLLATERAL
 	case StateActive:
 		return accountsv1.AccountState_ACCOUNT_STATE_ACTIVE
+	case StateClosing:
+		return accountsv1.AccountState_ACCOUNT_STATE_CLOSING
 	case StateClosed:
 		return accountsv1.AccountState_ACCOUNT_STATE_CLOSED
+	case StateCancelled:
+		return accountsv1.AccountState_ACCOUNT_STATE_CANCELLED
 	}
 	return accountsv1.AccountState_ACCOUNT_STATE_UNSPECIFIED
 }
@@ -492,6 +501,8 @@ func depositStatusProto(s string) accountsv1.DepositStatus {
 		return accountsv1.DepositStatus_DEPOSIT_STATUS_SETTLED
 	case "failed":
 		return accountsv1.DepositStatus_DEPOSIT_STATUS_FAILED
+	case "voided":
+		return accountsv1.DepositStatus_DEPOSIT_STATUS_VOIDED
 	}
 	return accountsv1.DepositStatus_DEPOSIT_STATUS_UNSPECIFIED
 }

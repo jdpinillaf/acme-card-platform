@@ -109,3 +109,15 @@ func TestEvaluateDeclineSprint4Order(t *testing.T) {
 		t.Fatalf("payment_returned beats past_due: %s", got)
 	}
 }
+
+func TestEvaluateDeclineClosing(t *testing.T) {
+	in := okInput()
+	in.State, in.Delinquency = StateClosing, DelinquencyChargedOff
+	if got := EvaluateDecline(in); got != DeclineAccountClosing {
+		t.Fatalf("closing: %s", got)
+	}
+	in.State = StateCancelled
+	if got := EvaluateDecline(in); got != DeclineAccountClosed {
+		t.Fatalf("cancelled: %s", got)
+	}
+}
