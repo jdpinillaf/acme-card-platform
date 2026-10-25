@@ -88,6 +88,7 @@ func (s *Service) ResolvePending(ctx context.Context) error {
 		if err := s.resolvePayments(ctx, cutoff); err != nil {
 			slog.ErrorContext(ctx, "payment reconciliation failed", "err", err)
 		}
+		s.resolveChargeOffs(ctx, cutoff)
 	}()
 
 	rows, err := s.pool.Query(ctx, `SELECT `+authCols+` FROM authorizations WHERE status='pending' AND created_at < $1 LIMIT 100`, cutoff)

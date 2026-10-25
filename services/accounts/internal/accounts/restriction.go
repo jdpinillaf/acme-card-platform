@@ -14,20 +14,24 @@ import (
 // ADR-018). The customer cannot lift it.
 const RestrictionPaymentReturned = "payment_returned"
 
+// RestrictionOverLimit is set when interest or fees push exposure above the limit (ADR-019). It is
+// lifted exactly like payment_returned, once exposure is back within the limit.
+const RestrictionOverLimit = "over_limit"
+
 // restrictInTx is fail-safe (review I1): every payment return restricts the card inside its own
 // finalize transaction, without reading the ledger, and bumps exposure_epoch. A lift afterwards
 // clears it when exposure is within the limit; if that lift never happens, the card stays safely
 // restricted until the sweep lifts it.
-func (s *Service) restrictInTx(ctx context.Context, tx pgx.Tx, accountID string, meta *commonv1.RequestMeta) error {
+func (s *Service) restrictInTx(ctx context.Context, tx pgx.Tx, accountID, reason string, meta *commonv1.RequestMeta) error {
 	before, err := s.load(ctx, tx, accountID, true)
 	if err != nil {
 		return err
 	}
 	after, err := scanAccount(tx.QueryRow(ctx, `UPDATE accounts SET
-			restricted_reason = $2,
+			restricted_reason = coalesce(restricted_reason, $2),
 			restricted_at = CASE WHEN restricted_reason IS NULL THEN $3 ELSE restricted_at END,
 			exposure_epoch = exposure_epoch + 1, version = version + 1, updated_at = now()
-		WHERE id = $1 RETURNING `+accountCols, accountID, RestrictionPaymentReturned, s.clock.Now()))
+		WHERE id = $1 RETURNING `+accountCols, accountID, reason, s.clock.Now()))
 	if err != nil || before.Restricted != nil {
 		return err
 	}

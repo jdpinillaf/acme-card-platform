@@ -83,7 +83,7 @@ func (s *Service) ReturnPayment(ctx context.Context, req *accountsv1.ReturnPayme
 		if err != nil {
 			return err
 		}
-		if err := s.restrictInTx(ctx, tx, p.AccountID, req.Meta); err != nil {
+		if err := s.restrictInTx(ctx, tx, p.AccountID, RestrictionPaymentReturned, req.Meta); err != nil {
 			return err
 		}
 		return emitPayment(ctx, tx, "payment.returned", cur, p, req.Meta)

@@ -61,15 +61,15 @@ func NewService(pool *pgxpool.Pool, ledger ledgerv1.LedgerServiceClient, opts ..
 }
 
 type accountRow struct {
-	ID            string    `json:"id"`
-	CustomerID    string    `json:"customer_id"`
-	Currency      string    `json:"currency"`
-	State         State     `json:"state"`
-	Frozen        bool      `json:"frozen"`
-	Collateral    int64     `json:"collateral_minor"`
-	CreditLimit   int64     `json:"credit_limit_minor"`
-	PurchaseLimit int64     `json:"purchase_limit_minor"`
-	Restricted    *string   `json:"restricted_reason,omitempty"`
+	ID            string     `json:"id"`
+	CustomerID    string     `json:"customer_id"`
+	Currency      string     `json:"currency"`
+	State         State      `json:"state"`
+	Frozen        bool       `json:"frozen"`
+	Collateral    int64      `json:"collateral_minor"`
+	CreditLimit   int64      `json:"credit_limit_minor"`
+	PurchaseLimit int64      `json:"purchase_limit_minor"`
+	Restricted    *string    `json:"restricted_reason,omitempty"`
 	Epoch         int64      `json:"-"`
 	ClockOffset   int64      `json:"clock_offset_seconds"`
 	ActivatedAt   *time.Time `json:"activated_at,omitempty"`
