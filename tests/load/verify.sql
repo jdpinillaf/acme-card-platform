@@ -11,7 +11,9 @@ SELECT 'limit != ledger collateral',          count(*) FROM accounts.accounts a 
 UNION ALL
 SELECT 'balance snapshot drift',              count(*) FROM ledger.balances b LEFT JOIN (SELECT account_id, sub_account, sum(CASE WHEN side='debit' THEN amount_minor ELSE -amount_minor END) s FROM ledger.postings GROUP BY 1,2) p USING (account_id, sub_account) WHERE b.raw_balance_minor <> coalesce(p.s, 0)
 UNION ALL
-SELECT 'idempotency keys stuck in_progress',  count(*) FROM gateway.idempotency_keys WHERE status = 'in_progress' AND created_at < now() - interval '1 minute'
+-- Lease-based claims (ADR-017): an abandoned in_progress row whose lease expired is recoverable
+-- (the next retry takes it over); only rows without a lease could never be recovered.
+SELECT 'idempotency keys unrecoverable',      count(*) FROM gateway.idempotency_keys WHERE status = 'in_progress' AND lease_until IS NULL AND created_at < now() - interval '1 minute'
 UNION ALL
 SELECT 'deposits stuck in settling',          count(*) FROM accounts.deposits WHERE status = 'settling' AND created_at < now() - interval '1 minute' 
 UNION ALL
