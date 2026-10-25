@@ -1,4 +1,4 @@
-// k6 load test — Sprints 1 and 2. Simulates up to 1000 concurrent customers through the load balancer:
+// k6 load test — Sprints 1, 2 and 3. Simulates up to 1000 concurrent customers through the load balancer:
 // open account → create deposit (sent twice with the same Idempotency-Key) → bank webhook
 // (sent twice, concurrently) → read account. Asserts idempotent replays and final state.
 import http from "k6/http";
@@ -156,5 +156,31 @@ export default function () {
   const after = http.get(`${BASE}/v1/accounts/${acc}`, { headers: { Authorization: `Bearer ${tok}` }, tags: { name: "/v1/accounts/:id" } });
   if (!check(after, { "available = deposit - captured + refunded": (r) => r.json("available_credit_minor") === amount - captured + refunded })) {
     wrongBalance.add(1);
+    return;
+  }
+  think();
+
+  // Sprint 3: pay the outstanding debt, the bank settles it (request-bound signature), and the
+  // full limit is available again.
+  const owed = after.json("outstanding_minor");
+  if (owed >= 100) {
+    const pay = http.post(`${BASE}/v1/accounts/${acc}/payments`, JSON.stringify({ amount_minor: owed }), {
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${tok}`, "Idempotency-Key": uuid() },
+      tags: { name: "/v1/accounts/:id/payments" },
+    });
+    if (!check(pay, { "payment created": (r) => r.status === 201 })) return;
+    const payId = pay.json("payment.id");
+    const path = "/v1/webhooks/bank/payments";
+    const body = JSON.stringify({ payment_id: payId, external_ref: `b-${payId}`, amount_minor: owed, currency: "USD", status: "settled" });
+    const ts = String(Math.floor(Date.now() / 1000));
+    const sig = crypto.hmac("sha256", BANK_SECRET, `${ts}.POST ${path}.${body}`, "hex");
+    const settled = http.post(`${BASE}${path}`, body, {
+      headers: { "Content-Type": "application/json", "X-Acme-Timestamp": ts, "X-Acme-Signature": sig }, tags: { name: path },
+    });
+    check(settled, { "payment settled": (r) => r.status === 200 && r.json("payment.status") === "settled" });
+    const final = http.get(`${BASE}/v1/accounts/${acc}`, { headers: { Authorization: `Bearer ${tok}` }, tags: { name: "/v1/accounts/:id" } });
+    if (!check(final, { "available restored to the limit": (r) => r.json("available_credit_minor") === amount && r.json("outstanding_minor") === 0 })) {
+      wrongBalance.add(1);
+    }
   }
 }

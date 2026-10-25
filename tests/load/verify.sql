@@ -15,11 +15,42 @@ SELECT 'idempotency keys stuck in_progress',  count(*) FROM gateway.idempotency_
 UNION ALL
 SELECT 'deposits stuck in settling',          count(*) FROM accounts.deposits WHERE status = 'settling' AND created_at < now() - interval '1 minute' 
 UNION ALL
-SELECT 'holds + max(receivable,0) > limit',   count(*) FROM (
+-- Signed exposure (ADR-018): holds + receivable ≤ limit, except an overage explained by returned
+-- payments (accepted risk), which must instead be restricted (checked below).
+SELECT 'exposure > limit (not explained by returns)', count(*) FROM (
   SELECT b.account_id FROM ledger.balances b
-  LEFT JOIN (SELECT account_id, sum(amount_minor) h FROM ledger.holds WHERE status='active' GROUP BY 1) h USING (account_id)
   JOIN ledger.balances r ON r.account_id=b.account_id AND r.sub_account='receivable'
-  WHERE b.sub_account='collateral_held' AND coalesce(h.h,0) + greatest(r.raw_balance_minor,0) > -b.raw_balance_minor) x
+  LEFT JOIN (SELECT account_id, sum(amount_minor) h FROM ledger.holds WHERE status='active' GROUP BY 1) h ON h.account_id=b.account_id
+  LEFT JOIN (SELECT account_id, sum(amount_minor) s FROM accounts.payments WHERE status='returned' GROUP BY 1) rt ON rt.account_id=b.account_id
+  WHERE b.sub_account='collateral_held'
+    AND coalesce(h.h,0) + r.raw_balance_minor + b.raw_balance_minor > coalesce(rt.s, 0)) x
+UNION ALL
+SELECT 'over limit but not restricted',       count(*) FROM accounts.accounts a
+  JOIN ledger.balances r ON r.account_id=a.id AND r.sub_account='receivable'
+  LEFT JOIN (SELECT account_id, sum(amount_minor) h FROM ledger.holds WHERE status='active' GROUP BY 1) h ON h.account_id=a.id
+  WHERE coalesce(h.h,0) + r.raw_balance_minor > a.credit_limit_minor AND a.restricted_reason IS NULL
+UNION ALL
+SELECT 'restricted but within limit > 5 min', count(*) FROM accounts.accounts a
+  JOIN ledger.balances r ON r.account_id=a.id AND r.sub_account='receivable'
+  LEFT JOIN (SELECT account_id, sum(amount_minor) h FROM ledger.holds WHERE status='active' GROUP BY 1) h ON h.account_id=a.id
+  WHERE a.restricted_reason IS NOT NULL AND coalesce(h.h,0) + r.raw_balance_minor <= a.credit_limit_minor AND a.updated_at < now() - interval '5 minutes'
+UNION ALL
+SELECT 'payment journal ≠ settled payment',   count(*) FROM (
+  SELECT p.id FROM accounts.payments p
+  FULL JOIN (SELECT j.reference, x.amount_minor FROM ledger.journal_entries j JOIN ledger.postings x ON x.journal_entry_id=j.id AND x.side='debit'
+             WHERE j.entry_type='payment_settled') l ON l.reference = 'payment:'||p.id
+  WHERE (p.status IN ('settled','returning','returned') AND (l.reference IS NULL OR l.amount_minor <> p.amount_minor))
+     OR (l.reference IS NOT NULL AND (p.id IS NULL OR p.status NOT IN ('settling','settled','returning','returned')))) x
+UNION ALL
+SELECT 'return journal ≠ returned payment',   count(*) FROM (
+  SELECT p.id FROM accounts.payments p
+  FULL JOIN (SELECT j.reference, x.amount_minor FROM ledger.journal_entries j JOIN ledger.postings x ON x.journal_entry_id=j.id AND x.side='debit'
+             WHERE j.entry_type='payment_returned') l ON l.reference = 'payment_return:'||p.id
+  WHERE (p.status = 'returned' AND (l.reference IS NULL OR l.amount_minor <> p.amount_minor))
+     OR (l.reference IS NOT NULL AND (p.id IS NULL OR p.status NOT IN ('returning','returned')))) x
+UNION ALL
+SELECT 'payments stuck settling/returning > 5 min', count(*) FROM accounts.payments
+  WHERE (status='settling' AND settling_at < now() - interval '5 minutes') OR (status='returning' AND returning_at < now() - interval '5 minutes')
 UNION ALL
 -- Every hold must belong to an authorization (catches orphans from lost responses).
 SELECT 'hold without authorization',          count(*) FROM ledger.holds h LEFT JOIN accounts.authorizations a ON h.reference = 'auth:'||a.network_ref WHERE a.id IS NULL
