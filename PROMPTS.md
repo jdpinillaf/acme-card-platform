@@ -113,3 +113,7 @@ Skeleton + Sprint 1 implemented with TDD: money, config, db, idempotency, auth, 
 ### Prompt 8 (user) — Sprint 2 clarifications
 
 > Saldo a favor: No, límite estricto. Otra moneda: Sí, razón nueva `currency_not_supported`. Interpretaciones (a)-(d): Sí, todas.
+
+### Prompt 9 (user)
+
+> Si, aprobado
