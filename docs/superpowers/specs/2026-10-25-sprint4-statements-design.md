@@ -82,7 +82,7 @@ Everything has to be testable without waiting a month, so each account gets a si
 - **C-6 Grace.** A cycle keeps grace if the previous statement's new balance was ≤ 0 or was paid in full (payments received by its due date, minus returns). The first cycle has grace. Without grace, interest accrues on each day's positive principal for the whole cycle. While past due, the daily base is the whole positive balance (principal + interest + fees). No trailing interest when grace is regained.
 - **C-7 Interest math.** `apr_bps = 2280`. Per day: `micro += max(base,0) × apr_bps × 1_000_000 / (10_000 × 365)` using integer division per day. At close: `interest_minor = micro / 1_000_000`; the remainder is dropped (in the customer's favour). Config `BILLING_APR_BPS`.
 - **C-8 Minimum.** `min(new_balance, max(2500, principal/100 + cycle_interest + cycle_fees + past_due_minimum))`. 0 when `new_balance ≤ 0`. Refunds don't count toward paying a minimum; only payments do.
-- **C-9 Catch-up.** Billing runs every due event for an account (cycle close, late fee, block, charge-off) in chronological order up to `account_now`. Advancing the clock triggers a synchronous catch-up for that account; a per-minute sweep catches up the rest. Every event is idempotent on a deterministic reference (`interest:<statement_id>`, `late_fee:<statement_id>`, `chargeoff:<account_id>`), so a retried or concurrent catch-up posts once.
+- **C-9 Catch-up.** Billing runs every due event for an account (cycle close, late fee, block, charge-off) in chronological order up to `account_now`. Advancing the clock triggers a synchronous catch-up for that account; a per-minute sweep catches up the rest. Every event is idempotent on a deterministic reference (`interest:<account_id>:<cycle>`, `late_fee:<account_id>:<cycle>`, `chargeoff:<account_id>`), so a retried or concurrent catch-up posts once.
 - **C-10 Decline order** becomes:
   1. account_closed
   2. charged_off
@@ -100,10 +100,15 @@ Everything has to be testable without waiting a month, so each account gets a si
 ## 5b. Builder-check calls (user delegated these: "al terminar inicia con el sprint")
 
 - **B-1 Payment dates.** A payment carries two dates. `received_at` = `account_now` when it is created, stored on the payment row. `effective_at` in the ledger = `account_now` at settlement, like every other entry. On-time, minimum-paid and paid-in-full are judged by `received_at`. Statements show a payment in the cycle where it was posted, and list payments still pending at close as an informational line. Interest keeps accruing until the payment posts. Closed statements are never changed. Cost if wrong: a customer with lost grace pays a few days of interest on a payment that is in flight.
-- **B-2 Later events never rewrite closed cycles.** Delinquency is always derived, not stored as a running counter. The unpaid minimum of statement S = `max(0, minimum_S − Σ payments received by due_S that are settled and not returned, or still pending − Σ waivers on charges billed in S)`. DPD = days since the due date of the oldest statement with an unpaid minimum. At each catch-up:
-  - the fee for S is posted once (`late_fee:<statement_id>`) as soon as S has an unpaid minimum after its due date with nothing pending, even if that is weeks later;
-  - block and charge-off follow the derived DPD, so a payment that fails late can trigger them immediately.
-  Interest of closed cycles is never recomputed. Grace for a cycle is decided at its close with what is known then, where pending payments count as paid. A later failure does not charge back the interest. Cost if wrong: small interest revenue lost on payments that fail after a close.
+- **B-2 Later events never rewrite closed cycles.** Delinquency is always derived, never stored as a running counter. "Credited" means payments that are settled and not returned, or still pending, plus waivers. A pending payment counts as paid until the bank answers.
+  - Minimums cumulate, because each minimum already includes any past-due minimum (C-8). So only L, the latest statement whose due date has passed, matters.
+  - **Past-due amount** = `max(0, minimum_L − credited since close_L)`.
+  - **Missed due date.** Statement S missed its due date if what was credited in `[close_S, end of due_S]` is less than `minimum_S`.
+  - **DPD.** If the past-due amount is 0, DPD is 0. Otherwise DPD counts from the due date of the oldest statement in the unbroken run of missed statements that ends at L. A late payment that covers the past-due amount cures the account.
+  - **Late fee.** The fee for S is posted once (`late_fee:<account_id>:<cycle>`) as soon as S has missed its due date with nothing pending in that window, even if that is weeks later.
+  - **Block and charge-off** follow the derived DPD, so a payment that fails late can trigger them immediately.
+  - **Interest.** Interest for closed cycles is never recomputed. Grace for a cycle is decided at its close with what is known then, counting pending payments as paid. A later failure does not charge back that interest.
+  - Cost if wrong: a little interest revenue is lost on payments that fail after a close.
 - **B-3 Currency.** The $25 floor and late fee come from a per-currency table in billing config (`BILLING_FIXED_AMOUNTS`), in minor units. Defaults: USD 2500, EUR 2500, MXN 45000, COP 10000000. An account in a currency with no entry gets no floor and no fee. Cost if wrong: a config change.
 - **B-4 After charge-off.**
   - Active holds are released at charge-off; a later capture of one fails like a capture of an expired hold.
@@ -111,7 +116,7 @@ Everything has to be testable without waiting a month, so each account gets a si
   - Later statements are balance-only: no minimum, no due date, no DPD, no interest, no fees.
   - A refund after charge-off can create a credit balance. It stays on the account next to the surplus collateral; both are settled by the Sprint 5 close.
   - Invariant: `credit_limit = remaining collateral`, and no active holds.
-- **B-5 Waivers count toward the minimum.** A waiver of a charge billed in S lowers S's unpaid minimum (B-2), so waiving the fee or interest that makes up the unpaid minimum can end delinquency and lift `past_due`.
+- **B-5 Waivers count toward the minimum.** A waiver lowers the past-due amount (B-2), so waiving the fee or interest that makes up the unpaid minimum can end delinquency and lift `past_due`.
 - **B-6 Days and boundaries.** All days are UTC days of account time. Cycle N covers `[close_{N-1} 00:00, close_N 00:00)`, so a purchase on the closing day belongs to the next cycle. Interest accrues on the balance at the end of each day. A payment received any time on the due date is on time; DPD 1 starts at 00:00 the day after.
 
 ## 6. How it works
