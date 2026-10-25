@@ -333,8 +333,6 @@ func (s *Service) AdvanceClosing(ctx context.Context, batch int) error {
 			slog.WarnContext(ctx, "close saga step failed; retried next pass", "account_id", id, "err", err)
 		}
 	}
+	s.additionalPayouts(ctx, batch)
 	return nil
 }
-
-// payoutStep is completed in Task 5 (payouts); until then the saga waits here.
-func (s *Service) payoutStep(context.Context, accountRow) (bool, error) { return false, nil }

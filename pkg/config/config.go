@@ -47,6 +47,10 @@ type Config struct {
 	// DevClockEnabled exposes the simulated-clock route at the gateway (dev only).
 	DevClockEnabled bool
 
+	// Close and payouts (Sprint 5): base64 32-byte key for payout destinations, payment return window.
+	DestinationKey string
+	ReturnWindow   time.Duration
+
 	AWSRegion        string
 	AWSEndpointURL   string
 	SNSTopicARN      string
@@ -72,6 +76,7 @@ func Load() (Config, error) {
 		StatementsBucket:     getenv("STATEMENTS_BUCKET", "acme-card-statements-dev"),
 		BillingFixedAmounts:  getenv("BILLING_FIXED_AMOUNTS", "USD:2500,EUR:2500,MXN:45000,COP:10000000"),
 		DevClockEnabled:      os.Getenv("DEV_CLOCK_ENABLED") == "1",
+		DestinationKey:       os.Getenv("DESTINATION_KEY"),
 		AWSRegion:            getenv("AWS_REGION", "us-east-1"),
 		AWSEndpointURL:       os.Getenv("AWS_ENDPOINT_URL"),
 		SNSTopicARN:          os.Getenv("SNS_TOPIC_ARN"),
@@ -101,6 +106,9 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if c.BillingAPRBps, err = getInt("BILLING_APR_BPS", 2280); err != nil {
+		return Config{}, err
+	}
+	if c.ReturnWindow, err = getDuration("RETURN_WINDOW", 120*time.Hour); err != nil {
 		return Config{}, err
 	}
 	for _, raw := range strings.Split(os.Getenv("TRUSTED_PROXY_CIDRS"), ",") {
