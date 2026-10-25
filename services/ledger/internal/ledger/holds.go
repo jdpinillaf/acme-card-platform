@@ -31,7 +31,7 @@ func exposure(ctx context.Context, tx pgx.Tx, accountID string) (limit, holds, r
 	return
 }
 
-// availableOf applies the signed rule (ADR-017): a credit balance (negative receivable) is spent
+// availableOf applies the signed rule (ADR-018): a credit balance (negative receivable) is spent
 // before the credit line, so it adds spending power; exposure never exceeds the limit.
 func availableOf(limit, holds, receivable int64) int64 {
 	return max(0, limit-receivable-holds)

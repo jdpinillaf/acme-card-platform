@@ -206,7 +206,7 @@ func refundFixture(t *testing.T, s *Service, acc, ref string, amt int64) {
 	}
 }
 
-// Sprint 3 (ADR-017) supersedes the Sprint 2 strict-limit rule: a credit balance is spendable.
+// Sprint 3 (ADR-018) supersedes the Sprint 2 strict-limit rule: a credit balance is spendable.
 func TestCreditBalanceIsSpendable(t *testing.T) {
 	s := newService(t)
 	acc := funded(t, s, 1000)

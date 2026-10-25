@@ -69,23 +69,39 @@ type accountRow struct {
 	Collateral    int64     `json:"collateral_minor"`
 	CreditLimit   int64     `json:"credit_limit_minor"`
 	PurchaseLimit int64     `json:"purchase_limit_minor"`
+	Restricted    *string   `json:"restricted_reason,omitempty"`
 	CreatedAt     time.Time `json:"-"`
 	UpdatedAt     time.Time `json:"-"`
 }
 
-const accountCols = `id::text, customer_id, currency, state, frozen, collateral_minor, credit_limit_minor, purchase_limit_minor, created_at, updated_at`
+const accountCols = `id::text, customer_id, currency, state, frozen, collateral_minor, credit_limit_minor, purchase_limit_minor, created_at, updated_at, restricted_reason`
+
+func (a accountRow) restriction() string {
+	if a.Restricted == nil {
+		return ""
+	}
+	return *a.Restricted
+}
 
 func scanAccount(row pgx.Row) (accountRow, error) {
 	var a accountRow
-	err := row.Scan(&a.ID, &a.CustomerID, &a.Currency, &a.State, &a.Frozen, &a.Collateral, &a.CreditLimit, &a.PurchaseLimit, &a.CreatedAt, &a.UpdatedAt)
+	err := row.Scan(&a.ID, &a.CustomerID, &a.Currency, &a.State, &a.Frozen, &a.Collateral, &a.CreditLimit, &a.PurchaseLimit, &a.CreatedAt, &a.UpdatedAt, &a.Restricted)
 	return a, err
 }
 
-func (a accountRow) proto(available int64) *accountsv1.Account {
+// ledgerView is what accounts shows from the ledger: available credit and the signed receivable.
+type ledgerView struct {
+	Available  int64
+	Receivable int64
+}
+
+func (a accountRow) proto(v ledgerView) *accountsv1.Account {
+	available := v.Available
 	return &accountsv1.Account{
 		Id: a.ID, CustomerId: a.CustomerID, Currency: a.Currency, State: stateProto(a.State), Frozen: a.Frozen,
 		CreditLimitMinor: a.CreditLimit, AvailableCreditMinor: available, CollateralMinor: a.Collateral,
 		PurchaseLimitMinor: a.PurchaseLimit, CreatedAt: timestamppb.New(a.CreatedAt), UpdatedAt: timestamppb.New(a.UpdatedAt),
+		OutstandingMinor: max(v.Receivable, 0), CreditBalanceMinor: max(-v.Receivable, 0), RestrictedReason: a.restriction(),
 	}
 }
 
@@ -134,7 +150,7 @@ func (s *Service) CreateAccount(ctx context.Context, req *accountsv1.CreateAccou
 	if _, err := s.ledger.OpenLedger(ctx, &ledgerv1.OpenLedgerRequest{AccountId: id, Currency: req.Currency}); err != nil {
 		return nil, err
 	}
-	return &accountsv1.CreateAccountResponse{Account: acc.proto(0)}, nil
+	return &accountsv1.CreateAccountResponse{Account: acc.proto(ledgerView{})}, nil
 }
 
 // GetAccount returns the account; available credit is derived from the ledger.
@@ -432,17 +448,17 @@ func (s *Service) load(ctx context.Context, q querier, id string, lock bool) (ac
 	return acc, err
 }
 
-// available comes from the ledger (strict-limit rule, net of active holds), never above the
-// account's credit limit.
-func (s *Service) available(ctx context.Context, acc accountRow) (int64, error) {
+// available returns the ledger view: available credit under the signed rule (ADR-018; may exceed the
+// credit limit when there is a credit balance) and the signed receivable.
+func (s *Service) available(ctx context.Context, acc accountRow) (ledgerView, error) {
 	b, err := s.ledger.GetBalances(ctx, &ledgerv1.GetBalancesRequest{AccountId: acc.ID})
 	if status.Code(err) == codes.NotFound {
-		return 0, nil
+		return ledgerView{}, nil
 	}
 	if err != nil {
-		return 0, err
+		return ledgerView{}, err
 	}
-	return min(b.AvailableMinor, acc.CreditLimit), nil
+	return ledgerView{Available: b.AvailableMinor, Receivable: b.ReceivableMinor}, nil
 }
 
 func stateProto(s State) accountsv1.AccountState {

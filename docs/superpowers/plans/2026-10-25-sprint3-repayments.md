@@ -311,6 +311,6 @@
 
 ### Task 10: Docs
 
-- [ ] **Step 1:** Update `docs/TESTING.md` (results), `docs/SPRINTS.md` (Sprint 3 done), `docs/DECISIONS.md` (ADR-017: the spendable credit balance supersedes the ADR-014 strict limit, accepted return risk, rulings), `README.md` (payment API) and `PROMPTS.md`.
+- [ ] **Step 1:** Update `docs/TESTING.md` (results), `docs/SPRINTS.md` (Sprint 3 done), `docs/DECISIONS.md` (ADR-018: the spendable credit balance supersedes the ADR-014 strict limit, accepted return risk, rulings), `README.md` (payment API) and `PROMPTS.md`.
 - [ ] **Step 2:** Run `make test && make test-integration && make web-test && make tf-validate`. Expected: all PASS.
 - [ ] **Step 3:** Commit `docs: sprint 3 results and decisions`.

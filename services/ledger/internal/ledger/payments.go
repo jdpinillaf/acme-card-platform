@@ -20,7 +20,7 @@ func (s *Service) PostPayment(ctx context.Context, req *ledgerv1.PostPaymentRequ
 }
 
 // PostPaymentReturn reverses a returned payment: debit receivable / credit cash_clearing. The
-// receivable may exceed the limit afterwards (accepted risk, ADR-017); PlaceHold then declines.
+// receivable may exceed the limit afterwards (accepted risk, ADR-018); PlaceHold then declines.
 func (s *Service) PostPaymentReturn(ctx context.Context, req *ledgerv1.PostPaymentReturnRequest) (*ledgerv1.PostJournalResponse, error) {
 	return s.postPaymentLeg(ctx, req.AccountId, req.Reference, req.AmountMinor, req.Meta, "payment_returned", "ledger.payment_returned",
 		ledgerv1.SubAccount_SUB_ACCOUNT_RECEIVABLE, ledgerv1.SubAccount_SUB_ACCOUNT_CASH_CLEARING)
