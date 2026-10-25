@@ -61,3 +61,10 @@ func TestConnectNSizesPool(t *testing.T) {
 		t.Fatalf("MaxConns=%d want 2", got)
 	}
 }
+
+func TestMigrateCreatesMissingSchema(t *testing.T) {
+	dsn := testutil.StartPostgres(t) // init script creates only the four service schemas
+	if err := Migrate(dsn, "billing", testMigrations, "testdata/migrations"); err != nil {
+		t.Fatalf("migrate into a schema that does not exist yet (e.g. fresh RDS): %v", err)
+	}
+}

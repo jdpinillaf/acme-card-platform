@@ -12,6 +12,7 @@ import (
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/pgx/v5"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -46,6 +47,9 @@ func ConnectN(ctx context.Context, dsn, schema string, maxConns int32) (*pgxpool
 // Migrate applies all up migrations from dir inside files into schema. Safe to call repeatedly.
 // The migrations table lives inside the schema so several services can share one database.
 func Migrate(dsn, schema string, files fs.FS, dir string) error {
+	if err := ensureSchema(dsn, schema); err != nil {
+		return err
+	}
 	src, err := iofs.New(files, dir)
 	if err != nil {
 		return fmt.Errorf("db: migration source: %w", err)
@@ -66,6 +70,21 @@ func Migrate(dsn, schema string, files fs.FS, dir string) error {
 	defer m.Close()
 	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
 		return fmt.Errorf("db: migrate up: %w", err)
+	}
+	return nil
+}
+
+// ensureSchema creates the service schema when missing (a fresh RDS has no init script).
+func ensureSchema(dsn, schema string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		return fmt.Errorf("db: connect for schema: %w", err)
+	}
+	defer conn.Close(ctx)
+	if _, err := conn.Exec(ctx, "CREATE SCHEMA IF NOT EXISTS "+pgx.Identifier{schema}.Sanitize()); err != nil {
+		return fmt.Errorf("db: create schema %s: %w", schema, err)
 	}
 	return nil
 }

@@ -68,7 +68,7 @@ func TestLoadBuildsDSNFromRDSSecretWithTLS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "postgres://acme_admin:p%40ss%2Fw%3Ard@acme.abc.us-east-1.rds.amazonaws.com:5432/acmecard?sslmode=verify-full"
+	want := "postgres://acme_admin:p%40ss%2Fw%3Ard@acme.abc.us-east-1.rds.amazonaws.com:5432/acmecard?sslmode=verify-full&sslrootcert=%2Fetc%2Fssl%2Frds%2Fglobal-bundle.pem"
 	if c.DatabaseURL != want {
 		t.Fatalf("got  %s\nwant %s", c.DatabaseURL, want)
 	}

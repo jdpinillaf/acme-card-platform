@@ -16,6 +16,9 @@ import (
 
 const minJWTSecretBytes = 32
 
+// rdsCABundle is baked into the service image (deploy/Dockerfile) so verify-full can validate RDS.
+const rdsCABundle = "/etc/ssl/rds/global-bundle.pem"
+
 // Config is the process configuration shared by all services.
 type Config struct {
 	AppEnv   string
@@ -105,7 +108,7 @@ func dsnFromRDSSecret(host, secretJSON string) (string, error) {
 	if err := json.Unmarshal([]byte(secretJSON), &cred); err != nil || cred.Username == "" {
 		return "", errors.New("config: DB_CREDENTIALS must be the RDS secret JSON with username and password")
 	}
-	u := url.URL{Scheme: "postgres", User: url.UserPassword(cred.Username, cred.Password), Host: host, Path: "/acmecard", RawQuery: "sslmode=verify-full"}
+	u := url.URL{Scheme: "postgres", User: url.UserPassword(cred.Username, cred.Password), Host: host, Path: "/acmecard", RawQuery: url.Values{"sslmode": {"verify-full"}, "sslrootcert": {rdsCABundle}}.Encode()}
 	return u.String(), nil
 }
 
