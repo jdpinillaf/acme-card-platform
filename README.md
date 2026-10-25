@@ -10,7 +10,8 @@ Go microservices, PostgreSQL, gRPC inside, REST at the edge, SNS→SQS events, a
 browser ── web (Next.js simulator :3010) ──┐
                                            ▼
 client ─────────────────────────────▶ lb (nginx :8088) ──▶ gateway ×2 ──gRPC──▶ accounts ──gRPC──▶ ledger
-bank ── HMAC webhook ──────────────────────┘                  │                    │                │
+bank ── HMAC webhook ──────────────────────┘                  │  └──gRPC──▶ billing ──▶ S3 statements ▲
+                                                              │                    │                │
                                                               └──── outbox ────────┴──── outbox ────┘
                                                                           │ SNS (acme-card-events)
                                                                           ▼
@@ -24,7 +25,8 @@ bank ── HMAC webhook ──────────────────�
 | ledger | Double-entry append-only journal, balances | 9002 gRPC |
 | audit | SQS consumer → `audit.audit_events` (UPDATE/DELETE/TRUNCATE blocked) | — |
 | web | Flow simulator; signs JWT/HMAC server-side | 3010 |
-| billing, notifications | Placeholders (Sprints 4 and 2) | — |
+| billing | Statements (S3), interest, late fees, delinquency, charge-off, support waivers | 9004 gRPC |
+| notifications | Placeholder (Sprint 7) | — |
 
 ## Quick start
 
@@ -78,8 +80,21 @@ Customer controls (JWT): `POST /v1/accounts/{id}/freeze|unfreeze`, `PUT /v1/acco
 
 Account JSON shows `outstanding_minor`, `credit_balance_minor` and `restricted_reason`. A credit balance is spent on purchases first.
 
+### Billing (Sprint 4)
+
+| Route | Who | Result |
+|---|---|---|
+| `GET /v1/accounts/{id}/statements` | customer | statements, oldest first |
+| `GET /v1/accounts/{id}/statements/{statementId}` | customer | statement + its S3 JSON document |
+| `GET /v1/accounts/{id}/billing` | customer | account time, cycle, minimum, due date, past due, DPD, grace, stage |
+| `GET /v1/accounts/{id}/charges` | customer | interest and late-fee charges with waived amounts |
+| `POST /v1/support/accounts/{id}/charges/{chargeId}/waivers` `{amount_minor, reason}` | support (`role: support` JWT + Idempotency-Key) | 201; Σ waived ≤ charged |
+| `POST /v1/dev/accounts/{id}/clock/advance` `{days}` | customer, **dev only** (`DEV_CLOCK_ENABLED=1`, `APP_ENV=dev`) | 1–400 days; billing catches up |
+
+Support token: `JWT_HS256_SECRET=... go run ./cmd/devtoken --sub agent-1 --role support`. Account JSON adds `account_time`, `activated_at` and `delinquency` (`none` / `past_due` / `charged_off`); declines add `past_due`, `charged_off` and `over_limit`.
+
 ## Docs
 - `docs/DECISIONS.md` — architecture decisions (ADRs)
 - `docs/SPRINTS.md` — sprint plan
-- `docs/TESTING.md` — test gates (Sprint 3 results in `docs/testing/sprint3.md`) and latest results
+- `docs/TESTING.md` — test gates (Sprint 3 and 4 results in `docs/testing/sprint3.md`, `docs/testing/sprint4.md`) and latest results
 - `PROMPTS.md` — verbatim prompt log

@@ -190,3 +190,11 @@ Sprint 3 implemented on branch `sprint-3` from `docs/superpowers/plans/2026-10-2
 ### Prompt 18 (user) — Sprint 4 clarifications
 
 > Tasa: 1.9% mensual (~22.8% anual). Mínimo: A. 1% + int + cargos. Cobro del depósito: 60 días de atraso. Rama: Fusionar y seguir.
+
+### Prompt 19 (user)
+
+> Ok vale al terminar inciia con el sprint y el flujo de testeo
+
+## Sprint 4 delivery notes (2026-10-25)
+
+Sprint 4 implemented on branch `sprint-4` from `docs/superpowers/plans/2026-10-25-sprint4-statements.md`. Results in `docs/testing/sprint4.md`, decisions in ADR-019.
