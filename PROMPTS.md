@@ -229,3 +229,11 @@ Sprint 4 implemented on branch `sprint-4` from `docs/superpowers/plans/2026-10-2
 ### Prompt 23 (user) — Sprint 5 builder-check answers
 
 > Devoluciones: Esperar 5 días. Cuenta destino: Cifrada + instrucción al banco.
+
+### Prompt 24 (user)
+
+> Iniciemos con el sprint 5 ya
+
+## Sprint 5 delivery notes (2026-10-25)
+
+Sprint 5 implemented on branch `sprint-5` from `docs/superpowers/plans/2026-10-25-sprint5-close.md`. Results in `docs/testing/sprint5.md`, decisions in ADR-020. The audit session works in a separate worktree (branch `journey-e2e`).

@@ -93,8 +93,22 @@ Account JSON shows `outstanding_minor`, `credit_balance_minor` and `restricted_r
 
 Support token: `JWT_HS256_SECRET=... go run ./cmd/devtoken --sub agent-1 --role support`. Account JSON adds `account_time`, `activated_at` and `delinquency` (`none` / `past_due` / `charged_off`); declines add `past_due`, `charged_off` and `over_limit`.
 
+### Close, cancel and payouts (Sprint 5)
+
+| Route | Who | Result |
+|---|---|---|
+| `POST /v1/accounts/{id}/close` `{destination:{bank_code, account_number, holder_name}}` | customer | 202 `closing`; new authorizations decline `account_closing` |
+| `POST /v1/support/accounts/{id}/close` `{destination, reason}` | support | 202 |
+| `POST /v1/accounts/{id}/cancel` | customer | 200 `cancelled` (only before activation); pending deposits voided |
+| `GET /v1/accounts/{id}/payouts` | customer | payouts with attempt ids, destination `****1234` |
+| `POST /v1/support/accounts/{id}/payouts/{payoutId}/retry` | support | 201, new attempt for a failed payout |
+| `GET /v1/bank/payout-instructions/{attemptId}` | bank (HMAC bound to method + path) | the destination in clear, for the bank only |
+| `POST /v1/webhooks/bank/payouts` `{attempt_id, amount_minor, currency, destination_last4, status}` | bank | settled releases the money; failed keeps it held |
+
+The close completes after in-flight work, the final statement's due date (debt is taken from the collateral) and the 5-day payment return window. `DESTINATION_KEY` (base64, 32 bytes) encrypts destinations; `RETURN_WINDOW` may only be shortened with `APP_ENV=dev`.
+
 ## Docs
 - `docs/DECISIONS.md` — architecture decisions (ADRs)
 - `docs/SPRINTS.md` — sprint plan
-- `docs/TESTING.md` — test gates (Sprint 3 and 4 results in `docs/testing/sprint3.md`, `docs/testing/sprint4.md`) and latest results
+- `docs/TESTING.md` — test gates (Sprint 3–5 results in `docs/testing/sprint3.md`, `sprint4.md`, `sprint5.md`) and latest results
 - `PROMPTS.md` — verbatim prompt log

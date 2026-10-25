@@ -34,12 +34,13 @@ Monorepo layout, docker-compose (Postgres, LocalStack), Makefile, proto + buf, s
 - Per-account simulated clock (dev only) drives cycles and business dates; support waivers of interest and fees.
 - Design: `docs/superpowers/specs/2026-10-25-sprint4-statements-design.md`. Results: `docs/testing/sprint4.md`.
 
-## Sprint 5 — Close, cancel  ← next
-- `POST /v1/accounts/{id}/close` (freeze/unfreeze moved to Sprint 2).
-- Close in good standing → release collateral (`collateral_held → cash_clearing`). Close with debt → apply collateral to `receivable`, remainder released.
-- Tests: close is terminal; collateral application math.
+## Sprint 5 — Close, cancel  ✓ done
+- Close by the customer or support (reason required): card blocked at once, final statement, debt taken from the collateral on its due date, payout of the remaining collateral + credit balance to an encrypted destination once the bank confirms (ADR-020).
+- Payouts wait for the 5-day payment return window; failed payouts are retried by support; late refunds get an additional payout.
+- Cancel of an unactivated account voids its pending deposits. A new account is allowed after a close with no debt.
+- Design: `docs/superpowers/specs/2026-10-25-sprint5-close-design.md`. Results: `docs/testing/sprint5.md`.
 
-## Sprint 6 — Audit hardening
+## Sprint 6 — Audit hardening  ← next
 - Snapshots per aggregate, replay tooling from audit log, retention policy, reconciliation job (ledger vs snapshots).
 
 ## Sprint 7 — Notifications
