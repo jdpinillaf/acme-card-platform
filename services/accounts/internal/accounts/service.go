@@ -25,6 +25,9 @@ import (
 
 const uniqueViolation = "23505"
 
+// MaxDepositMinor bounds a single deposit (10 billion major units) so sums can never overflow int64.
+const MaxDepositMinor int64 = 1_000_000_000_000
+
 // Service implements accountsv1.AccountsServiceServer.
 type Service struct {
 	accountsv1.UnimplementedAccountsServiceServer
@@ -129,8 +132,12 @@ func (s *Service) GetAccount(ctx context.Context, req *accountsv1.GetAccountRequ
 
 // CreateDeposit registers a pending collateral deposit intent in the account currency.
 func (s *Service) CreateDeposit(ctx context.Context, req *accountsv1.CreateDepositRequest) (*accountsv1.CreateDepositResponse, error) {
-	if req.AmountMinor <= 0 {
-		return nil, grpcx.Error(codes.InvalidArgument, "invalid_amount", "amount_minor must be positive")
+	if req.AmountMinor <= 0 || req.AmountMinor > MaxDepositMinor {
+		return nil, grpcx.Error(codes.InvalidArgument, "invalid_amount", "amount_minor must be positive and within limits")
+	}
+	var keyHash *string
+	if req.Meta != nil && req.Meta.IdempotencyKeyHash != "" {
+		keyHash = &req.Meta.IdempotencyKeyHash
 	}
 	var dep *accountsv1.Deposit
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
@@ -143,8 +150,21 @@ func (s *Service) CreateDeposit(ctx context.Context, req *accountsv1.CreateDepos
 		}
 		id := uuid.Must(uuid.NewV7()).String()
 		var created time.Time
-		if err := tx.QueryRow(ctx, `INSERT INTO deposits (id, account_id, amount_minor, currency, status) VALUES ($1,$2,$3,$4,'pending') RETURNING created_at`,
-			id, acc.ID, req.AmountMinor, acc.Currency).Scan(&created); err != nil {
+		err = tx.QueryRow(ctx, `
+			INSERT INTO deposits (id, account_id, amount_minor, currency, status, idempotency_key_hash) VALUES ($1,$2,$3,$4,'pending',$5)
+			ON CONFLICT (idempotency_key_hash) WHERE idempotency_key_hash IS NOT NULL DO NOTHING
+			RETURNING created_at`, id, acc.ID, req.AmountMinor, acc.Currency, keyHash).Scan(&created)
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Same request key already produced a deposit: return it, emit nothing new.
+			var d depositRow
+			if err := tx.QueryRow(ctx, `SELECT id::text, account_id::text, currency, status, amount_minor, external_ref, created_at, settled_at FROM deposits WHERE idempotency_key_hash=$1`, *keyHash).
+				Scan(&d.ID, &d.AccountID, &d.Currency, &d.Status, &d.Amount, &d.ExternalRef, &d.CreatedAt, &d.SettledAt); err != nil {
+				return err
+			}
+			dep = d.proto()
+			return nil
+		}
+		if err != nil {
 			return err
 		}
 		dep = &accountsv1.Deposit{Id: id, AccountId: acc.ID, Amount: &commonv1.Money{AmountMinor: req.AmountMinor, Currency: acc.Currency},

@@ -13,6 +13,9 @@ import (
 // ErrKeyReuseMismatch is returned when a key is reused with a different request fingerprint.
 var ErrKeyReuseMismatch = errors.New("idempotency: key reused with a different request")
 
+// finishTimeout bounds Complete/Abort, which run detached from the request context.
+const finishTimeout = 5 * time.Second
+
 // Result is what gets stored for replay once a request completes.
 type Result struct {
 	Status  int
@@ -97,6 +100,10 @@ func (c *Claim) Complete(ctx context.Context, res Result) error {
 		return errors.New("idempotency: claim already finished")
 	}
 	c.done = true
+	// Detach from the request: a client disconnect or request deadline must not discard the result
+	// of work that already happened downstream (that would let a retry run the effect twice).
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), finishTimeout)
+	defer cancel()
 	if res.Outcome == "" {
 		res.Outcome = OutcomeForStatus(res.Status)
 	}
@@ -120,6 +127,8 @@ func (c *Claim) Abort(ctx context.Context) error {
 		return nil
 	}
 	c.done = true
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), finishTimeout)
+	defer cancel()
 	return c.tx.Rollback(ctx)
 }
 

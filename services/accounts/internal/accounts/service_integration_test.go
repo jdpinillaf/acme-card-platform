@@ -4,6 +4,7 @@ package accounts
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	accountsv1 "github.com/acme/acme-card/gen/go/acme/accounts/v1"
+	commonv1 "github.com/acme/acme-card/gen/go/acme/common/v1"
 	"github.com/acme/acme-card/pkg/db"
 	"github.com/acme/acme-card/pkg/grpcx"
 	"github.com/acme/acme-card/pkg/testutil"
@@ -243,5 +245,26 @@ func TestConcurrentSettlementSameWebhookAppliesOnce(t *testing.T) {
 	}
 	if c := f.count(t, f.pool, `SELECT count(*) FROM outbox WHERE payload->>'type'='card.activated'`); c != 1 {
 		t.Fatalf("activations=%d want 1", c)
+	}
+}
+
+func TestCreateDepositDedupesOnIdempotencyKeyHash(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	acc := f.open(t, "cust-dedupe")
+	meta := &commonv1.RequestMeta{IdempotencyKeyHash: strings.Repeat("a", 64), Actor: "cust-dedupe"}
+	r1, err := f.svc.CreateDeposit(ctx, &accountsv1.CreateDepositRequest{AccountId: acc.Id, AmountMinor: 100, Meta: meta})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r2, err := f.svc.CreateDeposit(ctx, &accountsv1.CreateDepositRequest{AccountId: acc.Id, AmountMinor: 100, Meta: meta})
+	if err != nil || r2.Deposit.Id != r1.Deposit.Id {
+		t.Fatalf("same key hash must return the same deposit: %v %v vs %v", err, r2, r1.Deposit.Id)
+	}
+	if c := f.count(t, f.pool, `SELECT count(*) FROM deposits WHERE account_id=$1`, acc.Id); c != 1 {
+		t.Fatalf("deposits=%d want 1", c)
+	}
+	if _, err := f.svc.CreateDeposit(ctx, &accountsv1.CreateDepositRequest{AccountId: acc.Id, AmountMinor: 1 << 62}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("absurd amount must be rejected: %v", err)
 	}
 }

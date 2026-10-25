@@ -110,3 +110,38 @@ func TestMiddlewareStoresErrorOutcomesAndRejectsPayloadMismatch(t *testing.T) {
 		t.Fatalf("mismatch must be 422: %d %s", r3.StatusCode, b3)
 	}
 }
+
+func TestMiddlewareStoresResultWhenClientDisconnects(t *testing.T) {
+	s := newStore(t)
+	var calls atomic.Int32
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		time.Sleep(300 * time.Millisecond) // effect committed downstream while the client gives up
+		w.WriteHeader(201)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+	srv := httptest.NewServer(Middleware(s, func(*http.Request) string { return "sub" })(handler))
+	defer srv.Close()
+
+	impatient := &http.Client{Timeout: 50 * time.Millisecond}
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/x", strings.NewReader(`{"a":1}`))
+	req.Header.Set(HeaderKey, "k-disconnect")
+	if _, err := impatient.Do(req); err == nil {
+		t.Fatal("expected client timeout")
+	}
+	time.Sleep(500 * time.Millisecond) // let the handler finish
+
+	req, _ = http.NewRequest("POST", srv.URL+"/v1/x", strings.NewReader(`{"a":1}`))
+	req.Header.Set(HeaderKey, "k-disconnect")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if calls.Load() != 1 {
+		t.Fatalf("handler ran %d times after client disconnect; retry must replay", calls.Load())
+	}
+	if resp.Header.Get(HeaderReplayed) != "true" || resp.StatusCode != 201 {
+		t.Fatalf("retry must replay stored 201, got %d replayed=%q", resp.StatusCode, resp.Header.Get(HeaderReplayed))
+	}
+}
