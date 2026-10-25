@@ -2,12 +2,14 @@ package billing
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	accountsv1 "github.com/acme/acme-card/gen/go/acme/accounts/v1"
@@ -38,6 +40,38 @@ func (s *Service) CatchUp(ctx context.Context, req *billingv1.CatchUpRequest) (*
 	return &billingv1.CatchUpResponse{StatementsGenerated: int32(n)}, nil
 }
 
+// lockPoll is how long a catch-up waits before retrying a busy account lock.
+const lockPoll = 20 * time.Millisecond
+
+// lockAccount takes the account's billing_accounts row lock. It never waits while holding a pool
+// connection (FOR UPDATE NOWAIT, then retry after releasing it): the holder needs further
+// connections for its writes, so waiters parked on connections would starve it (deadlock).
+func (s *Service) lockAccount(ctx context.Context, accountID string) (pgx.Tx, error) {
+	if _, err := s.pool.Exec(ctx, `INSERT INTO billing_accounts (account_id) VALUES ($1) ON CONFLICT DO NOTHING`, accountID); err != nil {
+		return nil, internal(err)
+	}
+	for {
+		tx, err := s.pool.Begin(ctx)
+		if err != nil {
+			return nil, internal(err)
+		}
+		_, err = tx.Exec(ctx, `SELECT 1 FROM billing_accounts WHERE account_id=$1 FOR UPDATE NOWAIT`, accountID)
+		if err == nil {
+			return tx, nil
+		}
+		_ = tx.Rollback(context.WithoutCancel(ctx))
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Code != "55P03" { // lock_not_available
+			return nil, internal(err)
+		}
+		select {
+		case <-ctx.Done():
+			return nil, internal(ctx.Err())
+		case <-time.After(lockPoll):
+		}
+	}
+}
+
 // run is one catch-up of one account, under its billing_accounts lock.
 type run struct {
 	s          *Service
@@ -58,17 +92,11 @@ type run struct {
 // charge-off due up to account time (spec C-9). Concurrent catch-ups of one account serialize on
 // its billing_accounts row; every effect is idempotent on a deterministic reference.
 func (s *Service) CatchUpAccount(ctx context.Context, accountID string) (int, error) {
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.lockAccount(ctx, accountID)
 	if err != nil {
-		return 0, internal(err)
+		return 0, err
 	}
 	defer tx.Rollback(context.WithoutCancel(ctx))
-	if _, err := tx.Exec(ctx, `INSERT INTO billing_accounts (account_id) VALUES ($1) ON CONFLICT DO NOTHING`, accountID); err != nil {
-		return 0, internal(err)
-	}
-	if _, err := tx.Exec(ctx, `SELECT 1 FROM billing_accounts WHERE account_id=$1 FOR UPDATE`, accountID); err != nil {
-		return 0, internal(err)
-	}
 	acc, err := s.account(ctx, accountID)
 	if err != nil {
 		return 0, err
@@ -77,6 +105,9 @@ func (s *Service) CatchUpAccount(ctx context.Context, accountID string) (int, er
 		return 0, nil
 	}
 	if err := s.resumePending(ctx, accountID); err != nil {
+		return 0, err
+	}
+	if err := s.resumeWaivers(ctx, accountID); err != nil {
 		return 0, err
 	}
 	r := &run{s: s, acc: acc, act: acc.ActivatedAt.AsTime(), now: acc.AccountTime.AsTime(), stage: acc.Delinquency,

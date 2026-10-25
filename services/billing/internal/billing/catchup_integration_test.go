@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	accountsv1 "github.com/acme/acme-card/gen/go/acme/accounts/v1"
@@ -420,5 +421,40 @@ func TestSweepCatchesUpEveryActiveAccount(t *testing.T) {
 	}
 	if len(f.statements(t, a.Id)) != 1 || len(f.statements(t, b.Id)) != 1 {
 		t.Fatal("each account gets its statement")
+	}
+}
+
+// Waiting catch-ups must not hold pool connections the lock holder needs (pool-starvation
+// deadlock): 50 concurrent catch-ups on a 4-connection pool all finish.
+func TestConcurrentCatchUpsOnSmallPool(t *testing.T) {
+	f := setup(t)
+	acc := f.activeAccount(t, 200000)
+	f.purchase(t, acc.Id, 100000)
+	if _, err := f.accounts.AdvanceClock(context.Background(), &accountsv1.AdvanceClockRequest{AccountId: acc.Id, Days: 70}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := f.pool.Config().Copy()
+	cfg.MaxConns = 4
+	small, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(small.Close)
+	svc := NewService(small, f.ledger, f.accounts, f.store, f.svc.cfg)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := svc.CatchUpAccount(ctx, acc.Id); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	if n := len(f.statements(t, acc.Id)); n < 2 {
+		t.Fatalf("statements=%d", n)
 	}
 }

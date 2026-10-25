@@ -53,7 +53,7 @@ func setup(t *testing.T) *fixture {
 		t.Fatal(err)
 	}
 	connect := func(schema string) *pgxpool.Pool {
-		p, err := db.ConnectN(ctx, dsn, schema, 60)
+		p, err := db.ConnectN(ctx, dsn, schema, 30) // three pools stay under Postgres max_connections (100)
 		if err != nil {
 			t.Fatal(err)
 		}
