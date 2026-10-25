@@ -56,11 +56,12 @@ func (j *journal) until(name string, deadline time.Duration, ready func() bool) 
 	}
 }
 
-// audit waits (30 s) for an audit event of eventType on aggregateID and records the delivery time.
+// audit waits (30 s) for an audit event of eventType about id (as aggregate_id or inside the
+// after payload) and records the delivery time.
 func (j *journal) audit(t *testing.T, name, eventType, aggregateID string) time.Duration {
 	t.Helper()
 	d := j.until(name, 30*time.Second, func() bool {
-		return count(t, j.s.audit, `SELECT count(*) FROM audit_events WHERE event_type=$1 AND aggregate_id=$2`, eventType, aggregateID) > 0
+		return count(t, j.s.audit, `SELECT count(*) FROM audit_events WHERE event_type=$1 AND (aggregate_id=$2 OR after::text LIKE '%'||$2||'%')`, eventType, aggregateID) > 0
 	})
 	if d < 0 {
 		t.Fatalf("%s: no %s event for %s in audit after 30s", name, eventType, aggregateID)
