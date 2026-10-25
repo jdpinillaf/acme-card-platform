@@ -75,6 +75,17 @@ These follow from the answers, but the wording left room. Each one is the builde
 - **I-4 Velocity counting (15).** Every authorization attempt counts toward the 10 per minute, including declined ones. There is no daily cap.
 - **I-5 Purchase limit (16).** Set by the customer. `0` means no customer cap. It can never exceed the credit limit.
 
+## 4b. Builder's calls after design review
+
+These were settled by the builder because each has a conventional answer. The user can override any of them.
+
+- **C-1 Velocity is serialized per card.** The velocity counter locks the card's window row, as the Sprint 1 rate limiter does, so exactly 10 attempts per minute get through even under concurrency. The limit-never-exceeded test therefore stays within the velocity budget: 10 concurrent authorizations of 25% of the limit give 4 approvals and 6 `insufficient_credit`. A separate test fires 50 concurrent attempts and expects exactly 10 to pass velocity. The k6 scenario uses one card per virtual user.
+- **C-2 Credit balance before repayments exist.** The money model supports a negative receivable from Sprint 2. No Sprint 2 path can push it below zero, because refunds are capped per purchase and repayments arrive in Sprint 3. So in Sprint 2 the credit-balance rule is tested at ledger level with a fixture, and end to end in Sprint 3. Repayments are not pulled forward.
+- **C-3 Follow-up messages on frozen or closed cards.**
+  - Freezing blocks only **new** authorizations. Captures, reversals and refunds on purchases approved before the freeze still go through, as card networks require.
+  - On a `closed` account, reversals and refunds are accepted because they reduce exposure, and captures are refused with 409 `account_closed`. Sprint 5 will release active holds when closing.
+- **C-4 `network_ref` uniqueness.** Unique per message type: the pair (type, network_ref). A capture may reuse its authorization's reference without colliding. The same ref and type with an identical body replays. A different body returns 422 `network_ref_reuse`, mirroring ADR-004.
+
 ## 5. Constraints
 
 Everything Sprint 1 established carries over:
