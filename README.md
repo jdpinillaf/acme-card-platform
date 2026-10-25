@@ -96,5 +96,5 @@ Support token: `JWT_HS256_SECRET=... go run ./cmd/devtoken --sub agent-1 --role 
 ## Docs
 - `docs/DECISIONS.md` — architecture decisions (ADRs)
 - `docs/SPRINTS.md` — sprint plan
-- `docs/TESTING.md` — test gates (Sprint 3 and 4 results in `docs/testing/sprint3.md`, `docs/testing/sprint4.md`) and latest results
+- `docs/TESTING.md` — test gates (Sprint 3 and 4 results in `docs/testing/sprint3.md`, `docs/testing/sprint4.md`; customer journey in `docs/testing/journey.md`) and latest results
 - `PROMPTS.md` — verbatim prompt log
