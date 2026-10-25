@@ -42,6 +42,94 @@ service AccountsService {
   rpc CheckExposure(CheckExposureRequest) returns (GetAccountResponse);
   // ListAccountIDs pages through active and charged-off accounts for the billing sweep.
   rpc ListAccountIDs(ListAccountIDsRequest) returns (ListAccountIDsResponse);
+
+  // Close and cancel (Sprint 5).
+  // CloseAccount blocks the card at once and starts the close saga. Idempotent per account.
+  rpc CloseAccount(CloseAccountRequest) returns (GetAccountResponse);
+  // CancelAccount ends an account still waiting for collateral; pending deposits are voided.
+  rpc CancelAccount(CancelAccountRequest) returns (GetAccountResponse);
+  // AdvanceClose runs the next close-saga step (sweep and tests).
+  rpc AdvanceClose(AdvanceCloseRequest) returns (GetAccountResponse);
+  rpc ListPayouts(ListPayoutsRequest) returns (ListPayoutsResponse);
+  // RetryPayout creates a new attempt for a failed payout (support).
+  rpc RetryPayout(RetryPayoutRequest) returns (PayoutResponse);
+  // SettlePayout is driven by the bank webhook (settled | failed) for one attempt.
+  rpc SettlePayout(SettlePayoutRequest) returns (PayoutResponse);
+  // GetPayoutInstruction returns the decrypted destination to the bank only.
+  rpc GetPayoutInstruction(GetPayoutInstructionRequest) returns (PayoutInstruction);
+}
+
+message Destination {
+  string bank_code = 1;
+  string account_number = 2;
+  string holder_name = 3;
+}
+message CloseAccountRequest {
+  string account_id = 1;
+  Destination destination = 2;
+  // Required when the actor is support.
+  string reason = 3;
+  acme.common.v1.RequestMeta meta = 4;
+}
+message CancelAccountRequest {
+  string account_id = 1;
+  acme.common.v1.RequestMeta meta = 2;
+}
+message AdvanceCloseRequest {
+  string account_id = 1;
+}
+enum PayoutStatus {
+  PAYOUT_STATUS_UNSPECIFIED = 0;
+  PAYOUT_STATUS_PENDING = 1;
+  PAYOUT_STATUS_SETTLING = 2;
+  PAYOUT_STATUS_SETTLED = 3;
+  PAYOUT_STATUS_FAILED = 4;
+}
+message Payout {
+  string id = 1;
+  string account_id = 2;
+  acme.common.v1.Money amount = 3;
+  PayoutStatus status = 4;
+  int32 attempt = 5;
+  string attempt_id = 6;
+  string destination_last4 = 7;
+  google.protobuf.Timestamp created_at = 8;
+  google.protobuf.Timestamp settled_at = 9;
+}
+message PayoutResponse {
+  Payout payout = 1;
+  Account account = 2;
+  bool replayed = 3;
+}
+message ListPayoutsRequest {
+  string account_id = 1;
+}
+message ListPayoutsResponse {
+  repeated Payout payouts = 1;
+}
+message RetryPayoutRequest {
+  string account_id = 1;
+  string payout_id = 2;
+  acme.common.v1.RequestMeta meta = 3;
+}
+message SettlePayoutRequest {
+  string attempt_id = 1;
+  int64 amount_minor = 2;
+  string currency = 3;
+  string destination_last4 = 4;
+  PayoutStatus status = 5; // SETTLED or FAILED
+  acme.common.v1.RequestMeta meta = 6;
+}
+message GetPayoutInstructionRequest {
+  string attempt_id = 1;
+}
+message PayoutInstruction {
+  string attempt_id = 1;
+  int64 amount_minor = 2;
+  string currency = 3;
+  string bank_code = 4;
+  string account_number = 5;
+  string holder_name = 6;
 }
 
 message AdvanceClockRequest {
@@ -242,6 +330,8 @@ enum AccountState {
   ACCOUNT_STATE_PENDING_COLLATERAL = 1;
   ACCOUNT_STATE_ACTIVE = 2;
   ACCOUNT_STATE_CLOSED = 3;
+  ACCOUNT_STATE_CLOSING = 4;
+  ACCOUNT_STATE_CANCELLED = 5;
 }
 
 enum DepositStatus {
@@ -249,6 +339,7 @@ enum DepositStatus {
   DEPOSIT_STATUS_PENDING = 1;
   DEPOSIT_STATUS_SETTLED = 2;
   DEPOSIT_STATUS_FAILED = 3;
+  DEPOSIT_STATUS_VOIDED = 4;
 }
 
 message Account {
@@ -272,6 +363,10 @@ message Account {
   google.protobuf.Timestamp account_time = 15;
   google.protobuf.Timestamp activated_at = 16;
   string delinquency = 17;
+  // Sprint 5: close saga stage (empty unless closing/closed), request time and masked destination.
+  string close_stage = 18;
+  google.protobuf.Timestamp close_requested_at = 19;
+  string destination_last4 = 20;
 }
 
 message Deposit {

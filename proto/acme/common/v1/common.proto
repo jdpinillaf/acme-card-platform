@@ -24,6 +24,7 @@ enum DeclineReason {
   DECLINE_REASON_PAST_DUE = 9;
   DECLINE_REASON_CHARGED_OFF = 10;
   DECLINE_REASON_OVER_LIMIT = 11;
+  DECLINE_REASON_ACCOUNT_CLOSING = 12;
 }
 
 // RequestMeta carries idempotency and actor context across service calls.

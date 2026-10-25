@@ -19,12 +19,13 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	BillingService_CatchUp_FullMethodName        = "/acme.billing.v1.BillingService/CatchUp"
-	BillingService_ListStatements_FullMethodName = "/acme.billing.v1.BillingService/ListStatements"
-	BillingService_GetStatement_FullMethodName   = "/acme.billing.v1.BillingService/GetStatement"
-	BillingService_GetSummary_FullMethodName     = "/acme.billing.v1.BillingService/GetSummary"
-	BillingService_ListCharges_FullMethodName    = "/acme.billing.v1.BillingService/ListCharges"
-	BillingService_WaiveCharge_FullMethodName    = "/acme.billing.v1.BillingService/WaiveCharge"
+	BillingService_CatchUp_FullMethodName           = "/acme.billing.v1.BillingService/CatchUp"
+	BillingService_ListStatements_FullMethodName    = "/acme.billing.v1.BillingService/ListStatements"
+	BillingService_GetStatement_FullMethodName      = "/acme.billing.v1.BillingService/GetStatement"
+	BillingService_GetSummary_FullMethodName        = "/acme.billing.v1.BillingService/GetSummary"
+	BillingService_ListCharges_FullMethodName       = "/acme.billing.v1.BillingService/ListCharges"
+	BillingService_WaiveCharge_FullMethodName       = "/acme.billing.v1.BillingService/WaiveCharge"
+	BillingService_FinalizeStatement_FullMethodName = "/acme.billing.v1.BillingService/FinalizeStatement"
 )
 
 // BillingServiceClient is the client API for BillingService service.
@@ -41,6 +42,8 @@ type BillingServiceClient interface {
 	ListCharges(ctx context.Context, in *ListChargesRequest, opts ...grpc.CallOption) (*ListChargesResponse, error)
 	// WaiveCharge reverses part or all of an interest or fee charge (support role). Idempotent on meta key.
 	WaiveCharge(ctx context.Context, in *WaiveChargeRequest, opts ...grpc.CallOption) (*WaiveChargeResponse, error)
+	// FinalizeStatement cuts the off-cycle final statement of a closing account. Idempotent.
+	FinalizeStatement(ctx context.Context, in *FinalizeStatementRequest, opts ...grpc.CallOption) (*FinalizeStatementResponse, error)
 }
 
 type billingServiceClient struct {
@@ -111,6 +114,16 @@ func (c *billingServiceClient) WaiveCharge(ctx context.Context, in *WaiveChargeR
 	return out, nil
 }
 
+func (c *billingServiceClient) FinalizeStatement(ctx context.Context, in *FinalizeStatementRequest, opts ...grpc.CallOption) (*FinalizeStatementResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(FinalizeStatementResponse)
+	err := c.cc.Invoke(ctx, BillingService_FinalizeStatement_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // BillingServiceServer is the server API for BillingService service.
 // All implementations must embed UnimplementedBillingServiceServer
 // for forward compatibility.
@@ -125,6 +138,8 @@ type BillingServiceServer interface {
 	ListCharges(context.Context, *ListChargesRequest) (*ListChargesResponse, error)
 	// WaiveCharge reverses part or all of an interest or fee charge (support role). Idempotent on meta key.
 	WaiveCharge(context.Context, *WaiveChargeRequest) (*WaiveChargeResponse, error)
+	// FinalizeStatement cuts the off-cycle final statement of a closing account. Idempotent.
+	FinalizeStatement(context.Context, *FinalizeStatementRequest) (*FinalizeStatementResponse, error)
 	mustEmbedUnimplementedBillingServiceServer()
 }
 
@@ -152,6 +167,9 @@ func (UnimplementedBillingServiceServer) ListCharges(context.Context, *ListCharg
 }
 func (UnimplementedBillingServiceServer) WaiveCharge(context.Context, *WaiveChargeRequest) (*WaiveChargeResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method WaiveCharge not implemented")
+}
+func (UnimplementedBillingServiceServer) FinalizeStatement(context.Context, *FinalizeStatementRequest) (*FinalizeStatementResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method FinalizeStatement not implemented")
 }
 func (UnimplementedBillingServiceServer) mustEmbedUnimplementedBillingServiceServer() {}
 func (UnimplementedBillingServiceServer) testEmbeddedByValue()                        {}
@@ -282,6 +300,24 @@ func _BillingService_WaiveCharge_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _BillingService_FinalizeStatement_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(FinalizeStatementRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BillingServiceServer).FinalizeStatement(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: BillingService_FinalizeStatement_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BillingServiceServer).FinalizeStatement(ctx, req.(*FinalizeStatementRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // BillingService_ServiceDesc is the grpc.ServiceDesc for BillingService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -312,6 +348,10 @@ var BillingService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "WaiveCharge",
 			Handler:    _BillingService_WaiveCharge_Handler,
+		},
+		{
+			MethodName: "FinalizeStatement",
+			Handler:    _BillingService_FinalizeStatement_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

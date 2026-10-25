@@ -34,6 +34,8 @@ service LedgerService {
   rpc SealPeriod(SealPeriodRequest) returns (SealPeriodResponse);
   // ListEntries lists an account's journal entries by effective_at, ordered (effective_at, id).
   rpc ListEntries(ListEntriesRequest) returns (ListEntriesResponse);
+  // PostPayout releases collateral and credit balance to the customer once the bank confirms (Sprint 5).
+  rpc PostPayout(PostPayoutRequest) returns (PostJournalResponse);
 }
 
 message PostPaymentRequest {
@@ -77,6 +79,14 @@ message PostCollateralApplicationRequest {
   string reference = 2;
   int64 amount_minor = 3;
   acme.common.v1.RequestMeta meta = 4;
+}
+
+message PostPayoutRequest {
+  string account_id = 1;
+  string reference = 2;
+  int64 collateral_minor = 3;
+  int64 credit_minor = 4;
+  acme.common.v1.RequestMeta meta = 5;
 }
 
 message SealPeriodRequest {

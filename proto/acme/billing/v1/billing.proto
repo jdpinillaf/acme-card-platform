@@ -15,6 +15,16 @@ service BillingService {
   rpc ListCharges(ListChargesRequest) returns (ListChargesResponse);
   // WaiveCharge reverses part or all of an interest or fee charge (support role). Idempotent on meta key.
   rpc WaiveCharge(WaiveChargeRequest) returns (WaiveChargeResponse);
+  // FinalizeStatement cuts the off-cycle final statement of a closing account. Idempotent.
+  rpc FinalizeStatement(FinalizeStatementRequest) returns (FinalizeStatementResponse);
+}
+
+message FinalizeStatementRequest {
+  string account_id = 1;
+}
+message FinalizeStatementResponse {
+  Statement statement = 1;
+  google.protobuf.Timestamp due_date = 2;
 }
 
 message CatchUpRequest {
@@ -50,6 +60,8 @@ message Statement {
   string sha256 = 22;
   google.protobuf.Timestamp generated_at = 23;
   string currency = 24;
+  // final marks the off-cycle statement cut at close (Sprint 5).
+  bool final = 25;
 }
 
 message ListStatementsRequest {
