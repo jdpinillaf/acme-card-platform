@@ -99,7 +99,8 @@ func (s *Service) SettlePayment(ctx context.Context, req *accountsv1.SettlePayme
 			p, done = after, true
 			return emitPayment(ctx, tx, "payment.failed", before, after, req.Meta)
 		}
-		p, err = scanPayment(tx.QueryRow(ctx, `UPDATE payments SET status='settling', external_ref=$2, settling_at=$3 WHERE id=$1 RETURNING `+paymentCols, p.ID, req.ExternalRef, now))
+		p, err = scanPayment(tx.QueryRow(ctx, `UPDATE payments SET status='settling', external_ref=$2, settling_at=$3,
+			settle_effective_at=`+acctNowSQL("$3", "payments.account_id")+` WHERE id=$1 RETURNING `+paymentCols, p.ID, req.ExternalRef, now))
 		return err
 	})
 	if err != nil {
@@ -111,7 +112,7 @@ func (s *Service) SettlePayment(ctx context.Context, req *accountsv1.SettlePayme
 
 	ctx, cancel := detached(ctx)
 	defer cancel()
-	jr, err := s.ledger.PostPayment(ctx, &ledgerv1.PostPaymentRequest{AccountId: p.AccountID, Reference: "payment:" + p.ID, AmountMinor: p.Amount, Meta: req.Meta})
+	jr, err := s.ledger.PostPayment(ctx, &ledgerv1.PostPaymentRequest{AccountId: p.AccountID, Reference: "payment:" + p.ID, AmountMinor: p.Amount, Meta: withEffective(req.Meta, p.SettleAt)})
 	if err != nil {
 		return nil, err // stays settling: a retry or ResolvePending resumes it
 	}

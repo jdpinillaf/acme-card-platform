@@ -51,7 +51,8 @@ func (s *Service) ReturnPayment(ctx context.Context, req *accountsv1.ReturnPayme
 		if req.AmountMinor != p.Amount {
 			return grpcx.Error(codes.InvalidArgument, "amount_mismatch", "returned amount differs from payment amount")
 		}
-		p, err = scanPayment(tx.QueryRow(ctx, `UPDATE payments SET status='returning', return_ref=$2, returning_at=$3 WHERE id=$1 RETURNING `+paymentCols,
+		p, err = scanPayment(tx.QueryRow(ctx, `UPDATE payments SET status='returning', return_ref=$2, returning_at=$3,
+			return_effective_at=`+acctNowSQL("$3", "payments.account_id")+` WHERE id=$1 RETURNING `+paymentCols,
 			p.ID, req.ReturnRef, s.clock.Now()))
 		return err
 	})
@@ -64,7 +65,7 @@ func (s *Service) ReturnPayment(ctx context.Context, req *accountsv1.ReturnPayme
 
 	ctx, cancel := detached(ctx)
 	defer cancel()
-	jr, err := s.ledger.PostPaymentReturn(ctx, &ledgerv1.PostPaymentReturnRequest{AccountId: p.AccountID, Reference: "payment_return:" + p.ID, AmountMinor: p.Amount, Meta: req.Meta})
+	jr, err := s.ledger.PostPaymentReturn(ctx, &ledgerv1.PostPaymentReturnRequest{AccountId: p.AccountID, Reference: "payment_return:" + p.ID, AmountMinor: p.Amount, Meta: withEffective(req.Meta, p.ReturnAt)})
 	if err != nil {
 		return nil, err // stays returning: a retry or ResolvePending resumes it
 	}

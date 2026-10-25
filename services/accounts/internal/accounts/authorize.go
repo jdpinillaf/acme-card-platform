@@ -77,17 +77,18 @@ type authRow struct {
 	PendingOp     *string    `json:"pending_op,omitempty"`
 	PendingAmount *int64     `json:"pending_op_amount,omitempty"`
 	PendingAt     *time.Time `json:"pending_op_at,omitempty"`
+	OpEffectiveAt *time.Time `json:"op_effective_at,omitempty"`
 }
 
 const authCols = `id::text, account_id::text, network_ref, request_hash, amount_minor, currency, merchant_id, merchant_name, mcc,
 	status, decline_reason, captured_minor, refunded_minor, capture_network_ref, reversal_network_ref,
-	created_at, expires_at, captured_at, reversed_at, pending_op, pending_op_amount, pending_op_at`
+	created_at, expires_at, captured_at, reversed_at, pending_op, pending_op_amount, pending_op_at, op_effective_at`
 
 func scanAuth(row pgx.Row) (authRow, error) {
 	var a authRow
 	err := row.Scan(&a.ID, &a.AccountID, &a.NetworkRef, &a.RequestHash, &a.Amount, &a.Currency, &a.MerchantID, &a.MerchantName, &a.MCC,
 		&a.Status, &a.DeclineReason, &a.Captured, &a.Refunded, &a.CaptureRef, &a.ReversalRef,
-		&a.CreatedAt, &a.ExpiresAt, &a.CapturedAt, &a.ReversedAt, &a.PendingOp, &a.PendingAmount, &a.PendingAt)
+		&a.CreatedAt, &a.ExpiresAt, &a.CapturedAt, &a.ReversedAt, &a.PendingOp, &a.PendingAmount, &a.PendingAt, &a.OpEffectiveAt)
 	return a, err
 }
 

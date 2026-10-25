@@ -70,12 +70,15 @@ type accountRow struct {
 	CreditLimit   int64     `json:"credit_limit_minor"`
 	PurchaseLimit int64     `json:"purchase_limit_minor"`
 	Restricted    *string   `json:"restricted_reason,omitempty"`
-	Epoch         int64     `json:"-"`
-	CreatedAt     time.Time `json:"-"`
-	UpdatedAt     time.Time `json:"-"`
+	Epoch         int64      `json:"-"`
+	ClockOffset   int64      `json:"clock_offset_seconds"`
+	ActivatedAt   *time.Time `json:"activated_at,omitempty"`
+	Delinquency   string     `json:"delinquency"`
+	CreatedAt     time.Time  `json:"-"`
+	UpdatedAt     time.Time  `json:"-"`
 }
 
-const accountCols = `id::text, customer_id, currency, state, frozen, collateral_minor, credit_limit_minor, purchase_limit_minor, created_at, updated_at, restricted_reason, exposure_epoch`
+const accountCols = `id::text, customer_id, currency, state, frozen, collateral_minor, credit_limit_minor, purchase_limit_minor, created_at, updated_at, restricted_reason, exposure_epoch, clock_offset_seconds, activated_at, delinquency`
 
 func (a accountRow) restriction() string {
 	if a.Restricted == nil {
@@ -86,7 +89,7 @@ func (a accountRow) restriction() string {
 
 func scanAccount(row pgx.Row) (accountRow, error) {
 	var a accountRow
-	err := row.Scan(&a.ID, &a.CustomerID, &a.Currency, &a.State, &a.Frozen, &a.Collateral, &a.CreditLimit, &a.PurchaseLimit, &a.CreatedAt, &a.UpdatedAt, &a.Restricted, &a.Epoch)
+	err := row.Scan(&a.ID, &a.CustomerID, &a.Currency, &a.State, &a.Frozen, &a.Collateral, &a.CreditLimit, &a.PurchaseLimit, &a.CreatedAt, &a.UpdatedAt, &a.Restricted, &a.Epoch, &a.ClockOffset, &a.ActivatedAt, &a.Delinquency)
 	return a, err
 }
 
@@ -97,9 +100,11 @@ type ledgerView struct {
 	Holds      int64
 }
 
-func (a accountRow) proto(v ledgerView) *accountsv1.Account {
+// accountProto renders the account with the ledger view and its simulated account time.
+func (s *Service) accountProto(a accountRow, v ledgerView) *accountsv1.Account {
 	available := v.Available
 	return &accountsv1.Account{
+		AccountTime: timestamppb.New(s.accountNow(a)), ActivatedAt: tsp(a.ActivatedAt), Delinquency: a.Delinquency,
 		Id: a.ID, CustomerId: a.CustomerID, Currency: a.Currency, State: stateProto(a.State), Frozen: a.Frozen,
 		CreditLimitMinor: a.CreditLimit, AvailableCreditMinor: available, CollateralMinor: a.Collateral,
 		PurchaseLimitMinor: a.PurchaseLimit, CreatedAt: timestamppb.New(a.CreatedAt), UpdatedAt: timestamppb.New(a.UpdatedAt),
@@ -152,7 +157,7 @@ func (s *Service) CreateAccount(ctx context.Context, req *accountsv1.CreateAccou
 	if _, err := s.ledger.OpenLedger(ctx, &ledgerv1.OpenLedgerRequest{AccountId: id, Currency: req.Currency}); err != nil {
 		return nil, err
 	}
-	return &accountsv1.CreateAccountResponse{Account: acc.proto(ledgerView{})}, nil
+	return &accountsv1.CreateAccountResponse{Account: s.accountProto(acc, ledgerView{})}, nil
 }
 
 // GetAccount returns the account; available credit is derived from the ledger.
@@ -165,7 +170,7 @@ func (s *Service) GetAccount(ctx context.Context, req *accountsv1.GetAccountRequ
 	if err != nil {
 		return nil, err
 	}
-	return &accountsv1.GetAccountResponse{Account: acc.proto(avail)}, nil
+	return &accountsv1.GetAccountResponse{Account: s.accountProto(acc, avail)}, nil
 }
 
 // CreateDeposit registers a pending collateral deposit intent in the account currency.
@@ -223,6 +228,7 @@ type depositRow struct {
 	ExternalRef                     *string
 	CreatedAt                       time.Time
 	SettledAt                       *time.Time
+	EffectiveAt                     *time.Time
 }
 
 func (d depositRow) proto() *accountsv1.Deposit {
@@ -239,8 +245,8 @@ func (d depositRow) proto() *accountsv1.Deposit {
 
 func (s *Service) loadDeposit(ctx context.Context, q pgx.Tx, id string) (depositRow, error) {
 	var d depositRow
-	err := q.QueryRow(ctx, `SELECT id::text, account_id::text, currency, status, amount_minor, external_ref, created_at, settled_at FROM deposits WHERE id=$1 FOR UPDATE`, id).
-		Scan(&d.ID, &d.AccountID, &d.Currency, &d.Status, &d.Amount, &d.ExternalRef, &d.CreatedAt, &d.SettledAt)
+	err := q.QueryRow(ctx, `SELECT id::text, account_id::text, currency, status, amount_minor, external_ref, created_at, settled_at, effective_at FROM deposits WHERE id=$1 FOR UPDATE`, id).
+		Scan(&d.ID, &d.AccountID, &d.Currency, &d.Status, &d.Amount, &d.ExternalRef, &d.CreatedAt, &d.SettledAt, &d.EffectiveAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return d, grpcx.Error(codes.NotFound, "deposit_not_found", "deposit not found")
 	}
@@ -313,8 +319,8 @@ func (s *Service) SettleDeposit(ctx context.Context, req *accountsv1.SettleDepos
 			done = true
 			return outbox.Enqueue(ctx, tx, ev)
 		}
-		_, err = tx.Exec(ctx, `UPDATE deposits SET status='settling', external_ref=$2, settling_at=$3 WHERE id=$1`, dep.ID, req.ExternalRef, s.clock.Now())
-		return err
+		return tx.QueryRow(ctx, `UPDATE deposits SET status='settling', external_ref=$2, settling_at=$3, effective_at=`+acctNowSQL("$3", "deposits.account_id")+`
+			WHERE id=$1 RETURNING effective_at`, dep.ID, req.ExternalRef, s.clock.Now()).Scan(&dep.EffectiveAt)
 	})
 	if err != nil {
 		return nil, mapSettleErr(err)
@@ -332,7 +338,7 @@ func (s *Service) SettleDeposit(ctx context.Context, req *accountsv1.SettleDepos
 		return nil, err
 	}
 	jr, err := s.ledger.PostJournal(ctx, &ledgerv1.PostJournalRequest{
-		AccountId: acc.ID, Reference: "deposit:" + dep.ID, EntryType: "collateral_deposit_settled", Meta: req.Meta,
+		AccountId: acc.ID, Reference: "deposit:" + dep.ID, EntryType: "collateral_deposit_settled", Meta: withEffective(req.Meta, dep.EffectiveAt),
 		Postings: []*ledgerv1.Posting{
 			{SubAccount: ledgerv1.SubAccount_SUB_ACCOUNT_CASH_CLEARING, Side: ledgerv1.Side_SIDE_DEBIT, AmountMinor: dep.Amount},
 			{SubAccount: ledgerv1.SubAccount_SUB_ACCOUNT_COLLATERAL_HELD, Side: ledgerv1.Side_SIDE_CREDIT, AmountMinor: dep.Amount},
@@ -370,8 +376,9 @@ func (s *Service) SettleDeposit(ctx context.Context, req *accountsv1.SettleDepos
 		dep.Status = "settled"
 		acc, err = scanAccount(tx.QueryRow(ctx, `
 			UPDATE accounts SET collateral_minor = collateral_minor + $2, credit_limit_minor = collateral_minor + $2,
-			       state = $3, version = version + 1, updated_at = now()
-			WHERE id = $1 RETURNING `+accountCols, acc.ID, dep.Amount, next))
+			       state = $3, activated_at = CASE WHEN $3 = 'active' THEN coalesce(activated_at, $4) ELSE activated_at END,
+			       version = version + 1, updated_at = now()
+			WHERE id = $1 RETURNING `+accountCols, acc.ID, dep.Amount, next, s.accountNow(acc)))
 		if err != nil {
 			return err
 		}
@@ -398,7 +405,7 @@ func (s *Service) settleResponse(ctx context.Context, dep depositRow, acc accoun
 	if err != nil {
 		return nil, err
 	}
-	return &accountsv1.SettleDepositResponse{Deposit: dep.proto(), Account: acc.proto(avail), Replayed: replayed}, nil
+	return &accountsv1.SettleDepositResponse{Deposit: dep.proto(), Account: s.accountProto(acc, avail), Replayed: replayed}, nil
 }
 
 // sagaTimeout bounds the post-reservation steps of a saga, which run detached from the caller.
