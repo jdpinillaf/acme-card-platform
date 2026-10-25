@@ -33,6 +33,7 @@ type Config struct {
 	RateLimitPerMinute int
 
 	BankWebhookSecret    string
+	NetworkWebhookSecret string
 	BankWebhookTolerance time.Duration
 
 	AccountsGRPCAddr string
@@ -49,19 +50,20 @@ type Config struct {
 // Load reads and validates configuration from the environment.
 func Load() (Config, error) {
 	c := Config{
-		AppEnv:            getenv("APP_ENV", "dev"),
-		LogLevel:          getenv("LOG_LEVEL", "info"),
-		DatabaseURL:       os.Getenv("DATABASE_URL"),
-		GatewayHTTPAddr:   getenv("GATEWAY_HTTP_ADDR", ":8080"),
-		GRPCAddr:          getenv("GRPC_ADDR", ":9000"),
-		JWTHS256Secret:    os.Getenv("JWT_HS256_SECRET"),
-		BankWebhookSecret: os.Getenv("BANK_WEBHOOK_SECRET"),
-		AccountsGRPCAddr:  getenv("ACCOUNTS_GRPC_ADDR", "localhost:9001"),
-		LedgerGRPCAddr:    getenv("LEDGER_GRPC_ADDR", "localhost:9002"),
-		AWSRegion:         getenv("AWS_REGION", "us-east-1"),
-		AWSEndpointURL:    os.Getenv("AWS_ENDPOINT_URL"),
-		SNSTopicARN:       os.Getenv("SNS_TOPIC_ARN"),
-		AuditSQSQueueURL:  os.Getenv("AUDIT_SQS_QUEUE_URL"),
+		AppEnv:               getenv("APP_ENV", "dev"),
+		LogLevel:             getenv("LOG_LEVEL", "info"),
+		DatabaseURL:          os.Getenv("DATABASE_URL"),
+		GatewayHTTPAddr:      getenv("GATEWAY_HTTP_ADDR", ":8080"),
+		GRPCAddr:             getenv("GRPC_ADDR", ":9000"),
+		JWTHS256Secret:       os.Getenv("JWT_HS256_SECRET"),
+		BankWebhookSecret:    os.Getenv("BANK_WEBHOOK_SECRET"),
+		NetworkWebhookSecret: os.Getenv("NETWORK_WEBHOOK_SECRET"),
+		AccountsGRPCAddr:     getenv("ACCOUNTS_GRPC_ADDR", "localhost:9001"),
+		LedgerGRPCAddr:       getenv("LEDGER_GRPC_ADDR", "localhost:9002"),
+		AWSRegion:            getenv("AWS_REGION", "us-east-1"),
+		AWSEndpointURL:       os.Getenv("AWS_ENDPOINT_URL"),
+		SNSTopicARN:          os.Getenv("SNS_TOPIC_ARN"),
+		AuditSQSQueueURL:     os.Getenv("AUDIT_SQS_QUEUE_URL"),
 	}
 	if c.DatabaseURL == "" && os.Getenv("DB_HOST") != "" {
 		dsn, err := dsnFromRDSSecret(os.Getenv("DB_HOST"), os.Getenv("DB_CREDENTIALS"))

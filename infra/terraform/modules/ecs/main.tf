@@ -13,6 +13,7 @@ variable "secrets_kms_key_arn" { type = string }
 variable "data_kms_key_arn" { type = string }
 variable "jwt_secret_arn" { type = string }
 variable "bank_webhook_secret_arn" { type = string }
+variable "network_webhook_secret_arn" { type = string }
 variable "db_master_secret_arn" { type = string }
 variable "db_endpoint" { type = string }
 variable "topic_arn" { type = string }
@@ -174,7 +175,7 @@ resource "aws_iam_role_policy_attachment" "execution" {
 data "aws_iam_policy_document" "execution_secrets" {
   statement {
     actions   = ["secretsmanager:GetSecretValue"]
-    resources = [var.jwt_secret_arn, var.bank_webhook_secret_arn, var.db_master_secret_arn]
+    resources = [var.jwt_secret_arn, var.bank_webhook_secret_arn, var.network_webhook_secret_arn, var.db_master_secret_arn]
   }
   statement {
     actions   = ["kms:Decrypt"]
@@ -251,6 +252,7 @@ resource "aws_ecs_task_definition" "svc" {
       each.key == "gateway" ? [
         { name = "JWT_HS256_SECRET", valueFrom = var.jwt_secret_arn },
         { name = "BANK_WEBHOOK_SECRET", valueFrom = var.bank_webhook_secret_arn },
+        { name = "NETWORK_WEBHOOK_SECRET", valueFrom = var.network_webhook_secret_arn },
       ] : []
     )
     readonlyRootFilesystem = true
