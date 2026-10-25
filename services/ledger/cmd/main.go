@@ -50,6 +50,8 @@ func main() {
 	go outbox.NewRelay(pool, events.NewSNSPublisher(clients.SNS, cfg.SNSTopicARN), 100).Run(ctx, 250*time.Millisecond, log)
 
 	svc := ledger.NewService(pool)
+	// Safety net: accounts expires holds at 7 days; anything still active at 8 days is an orphan.
+	go svc.RunStaleHoldSweeper(ctx, 10*time.Minute, 8*24*time.Hour, log)
 	log.Info("ledger listening", "addr", cfg.GRPCAddr)
 	if err := grpcx.Serve(ctx, cfg.GRPCAddr, func(s *grpc.Server) { ledgerv1.RegisterLedgerServiceServer(s, svc) }); err != nil {
 		log.Error("serve", "err", err)

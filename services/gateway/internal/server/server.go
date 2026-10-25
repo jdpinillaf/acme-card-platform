@@ -43,6 +43,7 @@ type Deps struct {
 	Accounts         accountsv1.AccountsServiceClient
 	JWTSecret        []byte
 	BankSecret       []byte
+	NetworkSecret    []byte
 	WebhookTolerance time.Duration
 	Rejections       RejectionRecorder
 	RequestTimeout   time.Duration
@@ -83,6 +84,10 @@ func New(d Deps) http.Handler {
 			r.Use(auth.RequireAccount(func(r *http.Request) string { return chi.URLParam(r, "accountID") }))
 			r.Get("/", s.getAccount)
 			r.Post("/collateral/deposits", s.createDeposit)
+			r.Post("/freeze", s.setFrozen(true))
+			r.Post("/unfreeze", s.setFrozen(false))
+			r.Put("/limits", s.setLimits)
+			r.Get("/transactions", s.listTransactions)
 		})
 	})
 
@@ -91,6 +96,10 @@ func New(d Deps) http.Handler {
 			r.Use(s.audit)
 		}
 		r.Post("/v1/webhooks/bank/deposits", s.bankDepositWebhook)
+		r.Post("/v1/network/authorizations", s.networkAuthorize)
+		r.Post("/v1/network/authorizations/{authID}/capture", s.networkCapture)
+		r.Post("/v1/network/authorizations/{authID}/reversal", s.networkReverse)
+		r.Post("/v1/network/authorizations/{authID}/refunds", s.networkRefund)
 	})
 	return r
 }
@@ -203,19 +212,7 @@ func (s *server) createDeposit(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) bankDepositWebhook(w http.ResponseWriter, r *http.Request) {
-	raw, err := io.ReadAll(io.LimitReader(r.Body, maxBody+1))
-	if err != nil || len(raw) > maxBody {
-		httpx.WriteError(w, 413, "body_too_large", "request body too large")
-		return
-	}
-	if err := webhook.Verify(s.BankSecret, raw, r.Header.Get(webhook.HeaderTimestamp), r.Header.Get(webhook.HeaderSignature), time.Now(), s.WebhookTolerance); err != nil {
-		// Rejections are collapsed per (source, window) in webhook_rejections; skip the per-request
-		// audit event so a flood of forged webhooks cannot grow the append-only audit log.
-		skipAudit(r.Context())
-		if recErr := s.Rejections.Record(r.Context(), s.clientIP(r), err.Error(), time.Now()); recErr != nil {
-			slog.ErrorContext(r.Context(), "record webhook rejection", "err", recErr)
-		}
-		httpx.WriteError(w, 401, err.Error(), "webhook signature rejected")
+	if _, ok := s.verifySigned(w, r, s.BankSecret); !ok {
 		return
 	}
 	var body struct {
@@ -225,7 +222,6 @@ func (s *server) bankDepositWebhook(w http.ResponseWriter, r *http.Request) {
 		Currency    string `json:"currency"`
 		Status      string `json:"status"`
 	}
-	r.Body = io.NopCloser(bytesReader(raw))
 	if err := httpx.DecodeStrict(r, &body, maxBody); err != nil {
 		httpx.WriteError(w, 400, "invalid_body", err.Error())
 		return
@@ -252,6 +248,42 @@ func (s *server) bankDepositWebhook(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(idempotency.HeaderReplayed, "true")
 	}
 	httpx.WriteJSON(w, 200, map[string]any{"deposit": toDepositJSON(res.Deposit), "account": toAccountJSON(res.Account), "replayed": res.Replayed})
+}
+
+// verifySigned checks the HMAC signature with secret and, on success, leaves the raw body readable
+// again on r.Body. Rejections are recorded (deduped per source/window) and not audited per request.
+func (s *server) verifySigned(w http.ResponseWriter, r *http.Request, secret []byte) ([]byte, bool) {
+	return s.verify(w, r, secret, false)
+}
+
+// verifySignedRequest is verifySigned with method and path bound into the signature.
+func (s *server) verifySignedRequest(w http.ResponseWriter, r *http.Request, secret []byte) ([]byte, bool) {
+	return s.verify(w, r, secret, true)
+}
+
+func (s *server) verify(w http.ResponseWriter, r *http.Request, secret []byte, bindRequest bool) ([]byte, bool) {
+	raw, err := io.ReadAll(io.LimitReader(r.Body, maxBody+1))
+	if err != nil || len(raw) > maxBody {
+		httpx.WriteError(w, 413, "body_too_large", "request body too large")
+		return nil, false
+	}
+	ts, sig := r.Header.Get(webhook.HeaderTimestamp), r.Header.Get(webhook.HeaderSignature)
+	var err2 error
+	if bindRequest {
+		err2 = webhook.VerifyRequest(secret, r.Method, r.URL.Path, raw, ts, sig, time.Now(), s.WebhookTolerance)
+	} else {
+		err2 = webhook.Verify(secret, raw, ts, sig, time.Now(), s.WebhookTolerance)
+	}
+	if err := err2; err != nil {
+		skipAudit(r.Context())
+		if recErr := s.Rejections.Record(r.Context(), s.clientIP(r), err.Error(), time.Now()); recErr != nil {
+			slog.ErrorContext(r.Context(), "record webhook rejection", "err", recErr)
+		}
+		httpx.WriteError(w, 401, err.Error(), "webhook signature rejected")
+		return nil, false
+	}
+	r.Body = io.NopCloser(bytesReader(raw))
+	return raw, true
 }
 
 func (s *server) readyz(w http.ResponseWriter, r *http.Request) {
@@ -406,6 +438,11 @@ func writeGRPCError(w http.ResponseWriter, r *http.Request, err error) {
 	}
 	if reason != "" {
 		code = reason
+	}
+	// Reusing an idempotency anchor with a different payload is a semantic error, like
+	// idempotency_key_reuse: 422 (spec C-4, ADR-004).
+	if reason == "network_ref_reuse" {
+		httpStatus = http.StatusUnprocessableEntity
 	}
 	msg := st.Message()
 	if httpStatus == 500 {

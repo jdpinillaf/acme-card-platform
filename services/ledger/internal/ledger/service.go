@@ -73,17 +73,27 @@ func (s *Service) PostJournal(ctx context.Context, req *ledgerv1.PostJournalRequ
 	if err := ValidatePostings(req.Postings); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	hash := PostingsHash(req.EntryType, req.Postings)
 	var resp *ledgerv1.PostJournalResponse
-
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		var opened int
-		if err := tx.QueryRow(ctx, `SELECT count(*) FROM ledger_accounts WHERE account_id=$1`, req.AccountId).Scan(&opened); err != nil {
+		if _, err := lockAccount(ctx, tx, req.AccountId); err != nil {
 			return err
 		}
-		if opened == 0 {
-			return status.Error(codes.NotFound, "ledger not opened for account")
-		}
+		var err error
+		resp, err = postJournalTx(ctx, tx, req)
+		return err
+	})
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	return resp, nil
+}
+
+// postJournalTx records a validated, balanced journal inside tx. The caller must already hold the
+// account mutex (lockAccount). Insert-first on the unique reference makes it idempotent.
+func postJournalTx(ctx context.Context, tx pgx.Tx, req *ledgerv1.PostJournalRequest) (*ledgerv1.PostJournalResponse, error) {
+	hash := PostingsHash(req.EntryType, req.Postings)
+	var resp *ledgerv1.PostJournalResponse
+	err := func() error {
 		id := uuid.Must(uuid.NewV7())
 		var keyHash, actor *string
 		if m := req.Meta; m != nil {
@@ -160,11 +170,22 @@ func (s *Service) PostJournal(ctx context.Context, req *ledgerv1.PostJournalRequ
 		}
 		resp = &ledgerv1.PostJournalResponse{JournalEntryId: id.String(), PostedAt: timestamppb.New(postedAt)}
 		return nil
-	})
-	if err != nil {
-		return nil, toStatus(err)
+	}()
+	return resp, err
+}
+
+// lockAccount takes the per-account mutex (the collateral_held balance row) and returns the
+// account currency. Every money operation locks it first, so concurrent operations on one account
+// serialize and balance rows are never locked in conflicting orders.
+func lockAccount(ctx context.Context, tx pgx.Tx, accountID string) (string, error) {
+	var currency string
+	err := tx.QueryRow(ctx, `
+		SELECT la.currency FROM balances b JOIN ledger_accounts la USING (account_id, sub_account)
+		WHERE b.account_id = $1 AND b.sub_account = 'collateral_held' FOR UPDATE OF b`, accountID).Scan(&currency)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", status.Error(codes.NotFound, "ledger not opened for account")
 	}
-	return resp, nil
+	return currency, err
 }
 
 // GetBalances returns natural-sign balances for every sub-account.
@@ -196,6 +217,19 @@ func (s *Service) GetBalances(ctx context.Context, req *ledgerv1.GetBalancesRequ
 	if len(resp.Balances) == 0 {
 		return nil, status.Error(codes.NotFound, "ledger not opened for account")
 	}
+	var coll, recv int64
+	for _, b := range resp.Balances {
+		switch b.SubAccount {
+		case ledgerv1.SubAccount_SUB_ACCOUNT_COLLATERAL_HELD:
+			coll = b.AmountMinor
+		case ledgerv1.SubAccount_SUB_ACCOUNT_RECEIVABLE:
+			recv = b.AmountMinor
+		}
+	}
+	if err := s.pool.QueryRow(ctx, `SELECT coalesce(sum(amount_minor),0) FROM holds WHERE account_id=$1 AND status='active'`, req.AccountId).Scan(&resp.HoldsMinor); err != nil {
+		return nil, toStatus(err)
+	}
+	resp.AvailableMinor = availableOf(coll, resp.HoldsMinor, recv)
 	return resp, nil
 }
 

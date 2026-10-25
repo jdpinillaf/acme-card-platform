@@ -73,3 +73,42 @@ Append-only. One entry per decision. Format: context → decision → consequenc
 - Freeze/unfreeze moves from Sprint 5 into Sprint 2, because `card_frozen` is a Sprint 2 decline reason.
 - Card network simulated through HMAC-signed endpoints. Holds live 7 days. No partial approvals, incremental authorizations, partial captures, captures without an authorization, standalone refunds or currency conversion. Captures are for at most the authorized amount. Reversals are allowed within 3 days. Refunds after payment leave a credit balance. Velocity is 10 attempts per minute. The purchase limit applies per transaction. Handled declines return 201 with a reason.
 - Full design: `docs/superpowers/specs/2026-10-25-sprint2-card-transactions-design.md`.
+
+## ADR-015 — Sprint 2 implementation rulings (2026-10-25)
+- Every ledger money operation (journal, hold, capture, release, refund) first locks the account's `collateral_held` balance row as a per-account mutex. This prevents deadlocks between hold paths and journal paths.
+- Velocity runs inside the authorization transaction (`ratelimit.AllowTx`). A separate transaction needed a second pooled connection per in-flight authorization and deadlocked the pool under concurrency.
+- Authorization holds use the deterministic reference `auth:<network_ref>`; capture journals use `capture:<authorization_id>` and refunds `refund:<network_ref>`. Retries after a crash therefore re-use the same ledger records.
+- A declined hold stores nothing in the ledger; the decision lives on the authorization row.
+- The account id doubles as the card token until card numbers exist.
+- `buf lint` allows shared response envelopes (`RPC_REQUEST_RESPONSE_UNIQUE`, `RPC_RESPONSE_STANDARD_NAME`).
+- The k6 script is now `tests/load/flows.js` and covers both sprints.
+
+## ADR-016 — Sprint 2 final review fixes (2026-10-25)
+**Context.** The final review found that accounts called the ledger while holding its own transaction and row locks. A lost response could then leave the two services divergent:
+- orphan holds;
+- a refused capture already charged;
+- refunds credited twice;
+- one bad row blocking hold expiry for everyone.
+
+**Decision.** Every card network operation uses the Sprint 1 settlement pattern: **reserve (short committed tx) → ledger (idempotent, outside any accounts lock) → finalize (short tx)**.
+- Authorizations are reserved as `pending`.
+- Captures and reversals claim their `network_ref` and a `pending_op` before the ledger is touched, so a reused ref fails first.
+- Refunds are reserved as `pending` rows that count toward the cap.
+- After a reservation commits, the saga runs on a context detached from the caller's cancellation, bounded by 15 s.
+- `ResolvePending`, run every minute, handles anything left after 2 minutes:
+  - it fails unanswered authorizations and releases their holds, because the network treats them as declined;
+  - it resumes captures, reversals, refunds and settling deposits, because they were explicitly requested.
+- Expiry runs one row per transaction, and failures are marked and retried hourly.
+- The ledger expires active holds older than 8 days as a final safety net.
+
+**Other fixes.**
+- Network HMAC signatures now cover the method and path.
+- `network_ref_reuse` returns 422.
+- A capture replay must carry the same amount.
+- Account policy is read `FOR SHARE` inside the reservation.
+- Velocity windows are swept.
+- The request that performs a transition answers fresh; every other copy is a replay.
+
+**Deferred.**
+- `GetBalances` reads balances and holds in two statements, so available credit can be briefly overstated for display.
+- Replays return the current state rather than a stored original response.

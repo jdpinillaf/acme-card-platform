@@ -7,7 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/acme/acme-card/services/gateway/internal/ratelimit"
+	"github.com/acme/acme-card/pkg/ratelimit"
 	"github.com/acme/acme-card/services/gateway/internal/server"
 )
 

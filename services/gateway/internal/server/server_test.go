@@ -165,6 +165,11 @@ func TestGRPCErrorsMapToHTTP(t *testing.T) {
 	}
 }
 
+func signedWebhookHeaders(body string, secret []byte) map[string]string {
+	ts, sig := webhook.Sign(secret, []byte(body), time.Now())
+	return map[string]string{webhook.HeaderTimestamp: ts, webhook.HeaderSignature: sig}
+}
+
 func signedWebhook(t *testing.T, body string, secret []byte, at time.Time) map[string]string {
 	ts, sig := webhook.Sign(secret, []byte(body), at)
 	return map[string]string{webhook.HeaderTimestamp: ts, webhook.HeaderSignature: sig}

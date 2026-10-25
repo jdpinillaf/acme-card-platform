@@ -33,5 +33,21 @@ resource "aws_secretsmanager_secret_version" "bank_webhook" {
   secret_string = random_password.bank_webhook.result
 }
 
+resource "random_password" "network_webhook" {
+  length  = 64
+  special = false
+}
+
+resource "aws_secretsmanager_secret" "network_webhook" {
+  name       = "${var.name}/network-webhook-hmac"
+  kms_key_id = var.kms_key_arn
+}
+
+resource "aws_secretsmanager_secret_version" "network_webhook" {
+  secret_id     = aws_secretsmanager_secret.network_webhook.id
+  secret_string = random_password.network_webhook.result
+}
+
+output "network_webhook_secret_arn" { value = aws_secretsmanager_secret.network_webhook.arn }
 output "jwt_secret_arn" { value = aws_secretsmanager_secret.jwt.arn }
 output "bank_webhook_secret_arn" { value = aws_secretsmanager_secret.bank_webhook.arn }

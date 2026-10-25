@@ -57,3 +57,20 @@ func TestSignatureBindsTimestamp(t *testing.T) {
 		t.Fatalf("replaying signature with a new timestamp must fail: %v", err)
 	}
 }
+
+func TestRequestSignatureBindsMethodAndPath(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	body := []byte(`{"network_ref":"x","amount_minor":1}`)
+	ts, sig := SignRequest(secret, "POST", "/v1/network/authorizations/A/capture", body, now)
+	if err := VerifyRequest(secret, "POST", "/v1/network/authorizations/A/capture", body, ts, sig, now, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/v1/network/authorizations/A/refunds", "/v1/network/authorizations/B/capture"} {
+		if err := VerifyRequest(secret, "POST", path, body, ts, sig, now, time.Minute); !errors.Is(err, ErrBadSignature) {
+			t.Errorf("signature replayed on %s must fail: %v", path, err)
+		}
+	}
+	if err := VerifyRequest(secret, "PUT", "/v1/network/authorizations/A/capture", body, ts, sig, now, time.Minute); !errors.Is(err, ErrBadSignature) {
+		t.Errorf("method must be bound: %v", err)
+	}
+}

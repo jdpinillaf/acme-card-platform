@@ -100,7 +100,9 @@ func Middleware(store *Store, subject SubjectFunc) func(http.Handler) http.Handl
 			defer func() {
 				if p := recover(); p != nil {
 					slog.ErrorContext(ctx, "handler panic", "panic", p)
-					_ = claim.Complete(ctx, Result{Status: 500, Body: []byte(`{"error":{"code":"internal","message":"internal error"}}`), Outcome: OutcomeServerError})
+					if err := claim.Abort(ctx); err != nil {
+						slog.ErrorContext(ctx, "idempotency abort failed", "err", err)
+					}
 					if !rec.wroteHeader {
 						httpx.WriteError(w, http.StatusInternalServerError, "internal", "internal error")
 					}
@@ -108,6 +110,16 @@ func Middleware(store *Store, subject SubjectFunc) func(http.Handler) http.Handl
 			}()
 			next.ServeHTTP(rec, r.WithContext(ctx))
 
+			// A 5xx (upstream failure, timeout, rollback) is not a result the client asked for: the
+			// key is released so the retry runs again instead of replaying the failure until the
+			// TTL. Downstream operations are idempotent on their own anchors, so a retry after a
+			// timeout whose effect did land resolves to that effect. 2xx and 4xx are stored.
+			if rec.status >= 500 {
+				if err := claim.Abort(ctx); err != nil {
+					slog.ErrorContext(ctx, "idempotency abort failed", "err", err)
+				}
+				return
+			}
 			res := Result{Status: rec.status, Body: rec.buf.Bytes(), Outcome: outcome}
 			if err := claim.Complete(ctx, res); err != nil {
 				slog.ErrorContext(ctx, "idempotency complete failed", "err", err)

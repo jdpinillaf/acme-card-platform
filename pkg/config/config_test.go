@@ -98,3 +98,12 @@ func TestLoadParsesTrustedProxies(t *testing.T) {
 		t.Fatal("bad CIDR must fail")
 	}
 }
+
+func TestLoadReadsNetworkWebhookSecret(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://x")
+	t.Setenv("NETWORK_WEBHOOK_SECRET", "net-secret")
+	c, err := Load()
+	if err != nil || c.NetworkWebhookSecret != "net-secret" {
+		t.Fatalf("%v %q", err, c.NetworkWebhookSecret)
+	}
+}

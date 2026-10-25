@@ -17,10 +17,12 @@ import (
 	accountsv1 "github.com/acme/acme-card/gen/go/acme/accounts/v1"
 	commonv1 "github.com/acme/acme-card/gen/go/acme/common/v1"
 	ledgerv1 "github.com/acme/acme-card/gen/go/acme/ledger/v1"
+	"github.com/acme/acme-card/pkg/clock"
 	"github.com/acme/acme-card/pkg/events"
 	"github.com/acme/acme-card/pkg/grpcx"
 	"github.com/acme/acme-card/pkg/money"
 	"github.com/acme/acme-card/pkg/outbox"
+	"github.com/acme/acme-card/pkg/ratelimit"
 )
 
 const uniqueViolation = "23505"
@@ -31,13 +33,31 @@ const MaxDepositMinor int64 = 1_000_000_000_000
 // Service implements accountsv1.AccountsServiceServer.
 type Service struct {
 	accountsv1.UnimplementedAccountsServiceServer
-	pool   *pgxpool.Pool
-	ledger ledgerv1.LedgerServiceClient
+	pool     *pgxpool.Pool
+	ledger   ledgerv1.LedgerServiceClient
+	clock    clock.Clock
+	velocity *ratelimit.Limiter
+}
+
+// Option configures the Service.
+type Option func(*Service)
+
+// WithClock injects the clock used for transaction timestamps, expiry and windows.
+func WithClock(c clock.Clock) Option { return func(s *Service) { s.clock = c } }
+
+// WithVelocity overrides the card velocity limit (default 10 attempts per minute).
+func WithVelocity(limit int, window time.Duration) Option {
+	return func(s *Service) { s.velocity = ratelimit.New(s.pool, limit, window) }
 }
 
 // NewService builds the accounts service.
-func NewService(pool *pgxpool.Pool, ledger ledgerv1.LedgerServiceClient) *Service {
-	return &Service{pool: pool, ledger: ledger}
+func NewService(pool *pgxpool.Pool, ledger ledgerv1.LedgerServiceClient, opts ...Option) *Service {
+	s := &Service{pool: pool, ledger: ledger, clock: clock.System{}}
+	s.velocity = ratelimit.New(pool, VelocityLimit, VelocityWindow)
+	for _, o := range opts {
+		o(s)
+	}
+	return s
 }
 
 type accountRow struct {
@@ -279,7 +299,7 @@ func (s *Service) SettleDeposit(ctx context.Context, req *accountsv1.SettleDepos
 			resp = &accountsv1.SettleDepositResponse{Deposit: dep.proto(), Account: acc.proto(avail)}
 			return nil
 		}
-		_, err = tx.Exec(ctx, `UPDATE deposits SET status='settling', external_ref=$2 WHERE id=$1`, dep.ID, req.ExternalRef)
+		_, err = tx.Exec(ctx, `UPDATE deposits SET status='settling', external_ref=$2, settling_at=$3 WHERE id=$1`, dep.ID, req.ExternalRef, s.clock.Now())
 		return err
 	})
 	if err != nil {
@@ -288,6 +308,10 @@ func (s *Service) SettleDeposit(ctx context.Context, req *accountsv1.SettleDepos
 	if resp != nil {
 		return resp, nil
 	}
+
+	// Past the reservation the saga must finish even if the caller goes away.
+	ctx, cancel := detached(ctx)
+	defer cancel()
 
 	// Step 2: ledger (idempotent on the deposit reference).
 	if _, err := s.ledger.OpenLedger(ctx, &ledgerv1.OpenLedgerRequest{AccountId: acc.ID, Currency: acc.Currency}); err != nil {
@@ -362,6 +386,15 @@ func (s *Service) SettleDeposit(ctx context.Context, req *accountsv1.SettleDepos
 	return resp, nil
 }
 
+// sagaTimeout bounds the post-reservation steps of a saga, which run detached from the caller.
+const sagaTimeout = 15 * time.Second
+
+// detached returns a context that ignores the caller's cancellation (client disconnect, upstream
+// deadline) but keeps its values, bounded by sagaTimeout. Used once a reservation is committed.
+func detached(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), sagaTimeout)
+}
+
 func mapSettleErr(err error) error {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == uniqueViolation {
@@ -405,7 +438,8 @@ func (s *Service) load(ctx context.Context, q querier, id string, lock bool) (ac
 	return acc, err
 }
 
-// available = collateral_held − receivable from the ledger, never above the account's credit limit.
+// available comes from the ledger (strict-limit rule, net of active holds), never above the
+// account's credit limit.
 func (s *Service) available(ctx context.Context, acc accountRow) (int64, error) {
 	b, err := s.ledger.GetBalances(ctx, &ledgerv1.GetBalancesRequest{AccountId: acc.ID})
 	if status.Code(err) == codes.NotFound {
@@ -414,16 +448,7 @@ func (s *Service) available(ctx context.Context, acc accountRow) (int64, error) 
 	if err != nil {
 		return 0, err
 	}
-	var coll, recv int64
-	for _, x := range b.Balances {
-		switch x.SubAccount {
-		case ledgerv1.SubAccount_SUB_ACCOUNT_COLLATERAL_HELD:
-			coll = x.AmountMinor
-		case ledgerv1.SubAccount_SUB_ACCOUNT_RECEIVABLE:
-			recv = x.AmountMinor
-		}
-	}
-	return min(max(coll-recv, 0), acc.CreditLimit), nil
+	return min(b.AvailableMinor, acc.CreditLimit), nil
 }
 
 func stateProto(s State) accountsv1.AccountState {

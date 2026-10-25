@@ -17,6 +17,7 @@ enum DeclineReason {
   DECLINE_REASON_VELOCITY_LIMIT_EXCEEDED = 4;
   DECLINE_REASON_PURCHASE_LIMIT_EXCEEDED = 5;
   DECLINE_REASON_INSUFFICIENT_CREDIT = 6;
+  DECLINE_REASON_CURRENCY_NOT_SUPPORTED = 7;
 }
 
 // RequestMeta carries idempotency and actor context across service calls.

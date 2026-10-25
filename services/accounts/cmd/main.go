@@ -58,6 +58,7 @@ func main() {
 	defer conn.Close()
 
 	svc := accounts.NewService(pool, ledgerv1.NewLedgerServiceClient(conn))
+	go svc.RunExpiry(ctx, time.Minute, log)
 	log.Info("accounts listening", "addr", cfg.GRPCAddr)
 	if err := grpcx.Serve(ctx, cfg.GRPCAddr, func(s *grpc.Server) { accountsv1.RegisterAccountsServiceServer(s, svc) }); err != nil {
 		log.Error("serve", "err", err)

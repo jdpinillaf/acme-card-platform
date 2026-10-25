@@ -117,3 +117,29 @@ Skeleton + Sprint 1 implemented with TDD: money, config, db, idempotency, auth, 
 ### Prompt 9 (user)
 
 > Si, aprobado
+
+## Sprint 2 delivery notes (2026-10-25)
+
+Sprint 2 implemented on branch `sprint-2` from `docs/superpowers/plans/2026-10-25-sprint2-card-transactions.md`. Results in `docs/TESTING.md`, rulings in ADR-015.
+
+### Prompt 10 (user)
+
+> Si, aprobado (Sprint 2 design) — Sprint 2 implemented on branch `sprint-2`, final review fixes in ADR-016.
+
+---
+
+## 2026-10-25 — Sprint 3 discovery
+
+### Prompt 11 (user)
+
+> Vamos a planear sprint 3 ahora
+
+### Prompt 12 (user) — Sprint 3 answers
+
+> Sí vamos a copiar el flujo del depósito de garantía. El inicio del pago lo va a hacer solo el cliente. La unidad mínima va a ser $1. Entonces usemos solo la unidad de la cuenta en USD. El cupo solo se va a liberar cuando el banco confirma el sobrepago. Solamente sería en el caso en el que el usuario pagó y después se le volvió dinero por alguna transacción. En ese caso tiene algún saldo a favor en su cuenta, en su tarjeta.
+>
+> Lo que va a pasar con ese saldo a favor es que va a gastarse directamente cuando él compre. Es decir, tiene saldo a favor de 700 y compra algo de 500, entonces le va a quedar un saldo a favor de 200 y no se le va a descontar nada. El pago fallido sí no tiene efecto en el saldo. Si agregamos payment, return, net, acepto el punto 8. El saldo, por favor, no se va a devolver en efectivo. Va a funcionar como te dije. Sí exactamente. Vamos a crear un simulador para crear pagos, confirmarlos, fallar y volver. Debo avisarle de todas las acciones que se pueden hacer aquí.
+
+### Prompt 13 (user) — Sprint 3 clarifications
+
+> Devoluciones: Aceptar el riesgo. "Avisar": de haber todas las acciones que se puedan hacer. Rama: Fusionar y seguir.

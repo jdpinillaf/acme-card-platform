@@ -48,3 +48,29 @@ Under load the top Postgres wait is `LWLock:WALWrite` on commit, i.e. fsync on t
 - merge the rate-limit and idempotency writes into one transaction.
 
 Re-run `make load` on an idle machine before using these numbers to gate anything.
+
+## Sprint 2 results (2026-10-25)
+
+| Gate | Result |
+|---|---|
+| Ledger holds | Strict limit `holds + max(receivable,0) + amount ≤ limit`; 10×25% concurrent → 4 holds; capture vs release ×25 → exactly one wins; credit balance never raises available |
+| Decline order | Each reason alone and full precedence chain (unit) |
+| Authorize | 10 concurrent at 25% → 4 approved / 6 `insufficient_credit`; same `network_ref` ×50 → 1 row, 49 replays; velocity exact (10 of 50) under concurrency; declined attempts count |
+| Capture / reversal / refund | Capture ≤ authorized, once; capture after 7 days refused; capture vs reverse ×25 → one winner; 3-day reversal window; partial refunds capped; closed account: capture refused, refund/reversal accepted; frozen card still captures |
+| Expiry worker | Releases due holds; races with capture → always expired, never posted |
+| Gateway | HMAC network routes (bank secret rejected), strict JSON, 201 for declines, replay header, freeze/limits/transactions with account authorization |
+| End to end (`TestSprint2EndToEnd`) | 7 scenarios through HTTP + gRPC + LocalStack audit: PASS |
+| Load, `SHORT=1` (1000 VUs, Sprint 1 + 2 flows) | 48,507 requests, 0 failed, 100% checks, p95 863 ms, 0 wrong balances |
+| Load, full | 62,128 requests, 0 failed, 100% checks, 0 wrong balances; p95 3.85 s on a loaded host (load average ≈ 21), latency gate not met there |
+| Invariants (`verify.sql`) | 13/13 checks, 0 violations |
+| Simulator | 6/6 tests; browser QA: partial capture 100, refund 40, available 440, frozen → `card_frozen` |
+
+### After Sprint 2 final-review fixes (2026-10-25)
+
+| Gate | Result |
+|---|---|
+| Unit + integration | all packages pass with `-race` (accounts suite includes 10 resilience tests with an injected "lost response" ledger) |
+| Load, full 1000 VUs (Sprint 1 + 2 flows) | 89,555 requests, 0 failed, 100% checks, **p95 1.18 s (gate met)**, 765 req/s, 0 wrong balances |
+| Invariants after reconciler window | 16/16 checks, 0 violations; the 5 new cross-checks were verified to fire on deliberately corrupted data |
+
+The fix pass also raised throughput: before it, no locks were released during ledger calls (435 req/s, p95 863 ms in the short run); after it, 913 req/s and p95 664 ms in the same short run.

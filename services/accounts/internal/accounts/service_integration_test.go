@@ -15,6 +15,7 @@ import (
 
 	accountsv1 "github.com/acme/acme-card/gen/go/acme/accounts/v1"
 	commonv1 "github.com/acme/acme-card/gen/go/acme/common/v1"
+	ledgerv1 "github.com/acme/acme-card/gen/go/acme/ledger/v1"
 	"github.com/acme/acme-card/pkg/db"
 	"github.com/acme/acme-card/pkg/grpcx"
 	"github.com/acme/acme-card/pkg/testutil"
@@ -24,9 +25,10 @@ import (
 )
 
 type fixture struct {
-	svc    *Service
-	pool   *pgxpool.Pool
-	ledger *pgxpool.Pool
+	svc          *Service
+	pool         *pgxpool.Pool
+	ledger       *pgxpool.Pool
+	ledgerClient ledgerv1.LedgerServiceClient
 }
 
 func setup(t *testing.T) *fixture {
@@ -47,7 +49,8 @@ func setup(t *testing.T) *fixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { ap.Close(); lp.Close() })
-	return &fixture{svc: NewService(ap, ledgertest.NewClient(lp)), pool: ap, ledger: lp}
+	lc := ledgertest.NewClient(lp)
+	return &fixture{svc: NewService(ap, lc), pool: ap, ledger: lp, ledgerClient: lc}
 }
 
 func (f *fixture) open(t *testing.T, customer string) *accountsv1.Account {
@@ -328,5 +331,41 @@ func TestConcurrentSettledAndFailedWebhooksStayConsistent(t *testing.T) {
 		close(start)
 		wg.Wait()
 		f.ledgerMatchesAccounts(t, acc.Id, dep.Id)
+	}
+}
+
+// activeAccount opens an account and settles a deposit of amt, returning the active account.
+func (f *fixture) activeAccount(t *testing.T, customer string, amt int64) *accountsv1.Account {
+	t.Helper()
+	acc := f.open(t, customer)
+	dep := f.deposit(t, acc.Id, amt)
+	r, err := f.svc.SettleDeposit(context.Background(), settled(dep, "bank-"+dep.Id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r.Account
+}
+
+func TestAvailableComesFromLedgerHolds(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	acc := f.activeAccount(t, "cust-holds", 1000)
+	if _, err := f.ledgerClient.PlaceHold(ctx, &ledgerv1.PlaceHoldRequest{AccountId: acc.Id, Reference: "h-direct", AmountMinor: 300, Currency: "USD"}); err != nil {
+		t.Fatal(err)
+	}
+	g, err := f.svc.GetAccount(ctx, &accountsv1.GetAccountRequest{AccountId: acc.Id})
+	if err != nil || g.Account.AvailableCreditMinor != 700 {
+		t.Fatalf("available=%d want 700 (%v)", g.Account.AvailableCreditMinor, err)
+	}
+}
+
+// ledgerMatchesAccountsOrSettling allows the one legal transient divergence: a deposit reserved
+// ('settling') whose journal is posted but not yet finalized.
+func (f *fixture) ledgerMatchesAccountsOrSettling(t *testing.T, depID string) {
+	t.Helper()
+	var st string
+	_ = f.pool.QueryRow(context.Background(), `SELECT status FROM deposits WHERE id=$1`, depID).Scan(&st)
+	if st != "settling" {
+		t.Fatalf("deposit status=%s want settling", st)
 	}
 }

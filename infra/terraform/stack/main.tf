@@ -77,26 +77,27 @@ module "audit_archive_bucket" {
 }
 
 module "ecs" {
-  source                  = "../modules/ecs"
-  name                    = local.name
-  region                  = var.region
-  vpc_id                  = module.network.vpc_id
-  vpc_cidr                = var.vpc_cidr
-  public_subnet_ids       = module.network.public_subnet_ids
-  private_subnet_ids      = module.network.private_subnet_ids
-  certificate_arn         = var.certificate_arn
-  image_repository        = var.image_repository
-  image_tag               = var.image_tag
-  secrets_kms_key_arn     = module.kms.secrets_key_arn
-  data_kms_key_arn        = module.kms.data_key_arn
-  jwt_secret_arn          = module.secrets.jwt_secret_arn
-  bank_webhook_secret_arn = module.secrets.bank_webhook_secret_arn
-  db_master_secret_arn    = module.rds.master_secret_arn
-  db_endpoint             = module.rds.endpoint
-  topic_arn               = module.messaging.topic_arn
-  audit_queue_url         = module.messaging.audit_queue_url
-  audit_queue_arn         = module.messaging.audit_queue_arn
-  services                = var.services
+  source                     = "../modules/ecs"
+  name                       = local.name
+  region                     = var.region
+  vpc_id                     = module.network.vpc_id
+  vpc_cidr                   = var.vpc_cidr
+  public_subnet_ids          = module.network.public_subnet_ids
+  private_subnet_ids         = module.network.private_subnet_ids
+  certificate_arn            = var.certificate_arn
+  image_repository           = var.image_repository
+  image_tag                  = var.image_tag
+  secrets_kms_key_arn        = module.kms.secrets_key_arn
+  data_kms_key_arn           = module.kms.data_key_arn
+  jwt_secret_arn             = module.secrets.jwt_secret_arn
+  bank_webhook_secret_arn    = module.secrets.bank_webhook_secret_arn
+  network_webhook_secret_arn = module.secrets.network_webhook_secret_arn
+  db_master_secret_arn       = module.rds.master_secret_arn
+  db_endpoint                = module.rds.endpoint
+  topic_arn                  = module.messaging.topic_arn
+  audit_queue_url            = module.messaging.audit_queue_url
+  audit_queue_arn            = module.messaging.audit_queue_arn
+  services                   = var.services
 }
 
 module "rds" {

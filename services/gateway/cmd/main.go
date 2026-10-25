@@ -21,7 +21,7 @@ import (
 	"github.com/acme/acme-card/pkg/idempotency"
 	"github.com/acme/acme-card/pkg/logging"
 	"github.com/acme/acme-card/pkg/outbox"
-	"github.com/acme/acme-card/services/gateway/internal/ratelimit"
+	"github.com/acme/acme-card/pkg/ratelimit"
 	"github.com/acme/acme-card/services/gateway/internal/server"
 	"github.com/acme/acme-card/services/gateway/migrations"
 )
@@ -33,8 +33,8 @@ func main() {
 		log.Error("config", "err", err)
 		os.Exit(1)
 	}
-	if cfg.JWTHS256Secret == "" || cfg.BankWebhookSecret == "" {
-		log.Error("JWT_HS256_SECRET and BANK_WEBHOOK_SECRET are required")
+	if cfg.JWTHS256Secret == "" || cfg.BankWebhookSecret == "" || cfg.NetworkWebhookSecret == "" {
+		log.Error("JWT_HS256_SECRET, BANK_WEBHOOK_SECRET and NETWORK_WEBHOOK_SECRET are required")
 		os.Exit(1)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -80,6 +80,7 @@ func main() {
 		Accounts:         accountsv1.NewAccountsServiceClient(conn),
 		JWTSecret:        []byte(cfg.JWTHS256Secret),
 		BankSecret:       []byte(cfg.BankWebhookSecret),
+		NetworkSecret:    []byte(cfg.NetworkWebhookSecret),
 		WebhookTolerance: cfg.BankWebhookTolerance,
 		Rejections:       server.NewRejectionLog(pool, 5*time.Minute),
 		RequestTimeout:   10 * time.Second,

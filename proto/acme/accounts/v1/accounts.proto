@@ -11,6 +11,119 @@ service AccountsService {
   rpc CreateDeposit(CreateDepositRequest) returns (CreateDepositResponse);
   // SettleDeposit is driven by the bank webhook. Idempotent on external_ref.
   rpc SettleDeposit(SettleDepositRequest) returns (SettleDepositResponse);
+
+  // Card network messages. Idempotent on network_ref per message type.
+  rpc Authorize(AuthorizeRequest) returns (AuthorizationResponse);
+  rpc Capture(CaptureRequest) returns (AuthorizationResponse);
+  rpc Reverse(ReverseRequest) returns (AuthorizationResponse);
+  rpc Refund(RefundRequest) returns (RefundResponse);
+
+  // Customer controls.
+  rpc SetFrozen(SetFrozenRequest) returns (GetAccountResponse);
+  rpc SetPurchaseLimit(SetPurchaseLimitRequest) returns (GetAccountResponse);
+  rpc ListTransactions(ListTransactionsRequest) returns (ListTransactionsResponse);
+}
+
+enum AuthorizationStatus {
+  AUTHORIZATION_STATUS_UNSPECIFIED = 0;
+  AUTHORIZATION_STATUS_APPROVED = 1;
+  AUTHORIZATION_STATUS_DECLINED = 2;
+  AUTHORIZATION_STATUS_CAPTURED = 3;
+  AUTHORIZATION_STATUS_REVERSED = 4;
+  AUTHORIZATION_STATUS_EXPIRED = 5;
+  // Reserved; the ledger hold is being placed. Resolved within seconds or by the reconciler.
+  AUTHORIZATION_STATUS_PENDING = 6;
+  // The network never received an answer (lost response); any hold was released.
+  AUTHORIZATION_STATUS_FAILED = 7;
+}
+
+message Merchant {
+  string id = 1;
+  string name = 2;
+  string mcc = 3;
+}
+
+message Authorization {
+  string id = 1;
+  string account_id = 2;
+  string network_ref = 3;
+  acme.common.v1.Money amount = 4;
+  Merchant merchant = 5;
+  AuthorizationStatus status = 6;
+  acme.common.v1.DeclineReason decline_reason = 7;
+  int64 captured_amount_minor = 8;
+  int64 refunded_amount_minor = 9;
+  google.protobuf.Timestamp created_at = 10;
+  google.protobuf.Timestamp expires_at = 11;
+  google.protobuf.Timestamp captured_at = 12;
+  google.protobuf.Timestamp reversed_at = 13;
+}
+
+message AuthorizeRequest {
+  string network_ref = 1;
+  string card_id = 2;
+  int64 amount_minor = 3;
+  string currency = 4;
+  Merchant merchant = 5;
+  acme.common.v1.RequestMeta meta = 6;
+}
+message AuthorizationResponse {
+  Authorization authorization = 1;
+  bool replayed = 2;
+}
+
+message CaptureRequest {
+  string authorization_id = 1;
+  string network_ref = 2;
+  int64 amount_minor = 3;
+  acme.common.v1.RequestMeta meta = 4;
+}
+
+message ReverseRequest {
+  string authorization_id = 1;
+  string network_ref = 2;
+  acme.common.v1.RequestMeta meta = 3;
+}
+
+message Refund {
+  string id = 1;
+  string authorization_id = 2;
+  string network_ref = 3;
+  acme.common.v1.Money amount = 4;
+  google.protobuf.Timestamp created_at = 5;
+}
+message RefundRequest {
+  string authorization_id = 1;
+  string network_ref = 2;
+  int64 amount_minor = 3;
+  acme.common.v1.RequestMeta meta = 4;
+}
+message RefundResponse {
+  Refund refund = 1;
+  Authorization authorization = 2;
+  bool replayed = 3;
+}
+
+message SetFrozenRequest {
+  string account_id = 1;
+  bool frozen = 2;
+  acme.common.v1.RequestMeta meta = 3;
+}
+
+message SetPurchaseLimitRequest {
+  string account_id = 1;
+  int64 purchase_limit_minor = 2;
+  acme.common.v1.RequestMeta meta = 3;
+}
+
+message ListTransactionsRequest {
+  string account_id = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+}
+message ListTransactionsResponse {
+  repeated Authorization authorizations = 1;
+  string next_page_token = 2;
 }
 
 enum AccountState {

@@ -56,6 +56,17 @@ go run ./cmd/banksim --deposit <deposit_id> --amount 50000 --repeat 10   # 1 app
 curl localhost:8088/v1/accounts/<account_id> -H "Authorization: Bearer $T"
 ```
 
+### Card network (simulated, HMAC with `NETWORK_WEBHOOK_SECRET`)
+
+| Route | Result |
+|---|---|
+| `POST /v1/network/authorizations` | 201 `approved` or 201 `declined` + `decline_reason` |
+| `POST /v1/network/authorizations/{id}/capture` | 201, at most the authorized amount, once |
+| `POST /v1/network/authorizations/{id}/reversal` | 200, uncaptured and within 3 days |
+| `POST /v1/network/authorizations/{id}/refunds` | 201, partials up to the captured amount |
+
+Customer controls (JWT): `POST /v1/accounts/{id}/freeze|unfreeze`, `PUT /v1/accounts/{id}/limits`, `GET /v1/accounts/{id}/transactions`.
+
 ## Docs
 - `docs/DECISIONS.md` — architecture decisions (ADRs)
 - `docs/SPRINTS.md` — sprint plan
