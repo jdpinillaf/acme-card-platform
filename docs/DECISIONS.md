@@ -148,3 +148,14 @@ Append-only. One entry per decision. Format: context → decision → consequenc
 - The restriction is re-evaluated after the finalize commit, never with a ledger call inside accounts locks.
 - The idempotency invariant follows the audit session's lease design.
 - The k6 flow retries lease-based `409 request_in_progress`.
+
+**Sprint 3 final review fixes (2026-10-25).**
+- **Fail-safe restriction.** A payment return restricts the card inside its own finalize transaction and bumps `accounts.exposure_epoch`. A lift happens after commit, only if exposure is within the limit and the epoch is unchanged.
+- **Late settlements are applied.** A bank settlement arriving after the intent expired is still applied, because the money already moved.
+- **Small debts can be paid off.** The payment minimum is `min(100, outstanding)`.
+- **Payment reconciliation never aborts the pass.**
+- **422 on reference reuse.** `external_ref_reused` and `return_ref_reused` answer 422.
+
+**Deferred minors.**
+- The payment cap can race a settlement in a millisecond window; an overpayment becomes a spendable credit balance.
+- The simulator's bank-payments proxy returns 500 on malformed input.
