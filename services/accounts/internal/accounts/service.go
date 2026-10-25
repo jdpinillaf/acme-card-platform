@@ -299,7 +299,7 @@ func (s *Service) SettleDeposit(ctx context.Context, req *accountsv1.SettleDepos
 			resp = &accountsv1.SettleDepositResponse{Deposit: dep.proto(), Account: acc.proto(avail)}
 			return nil
 		}
-		_, err = tx.Exec(ctx, `UPDATE deposits SET status='settling', external_ref=$2 WHERE id=$1`, dep.ID, req.ExternalRef)
+		_, err = tx.Exec(ctx, `UPDATE deposits SET status='settling', external_ref=$2, settling_at=$3 WHERE id=$1`, dep.ID, req.ExternalRef, s.clock.Now())
 		return err
 	})
 	if err != nil {
@@ -308,6 +308,10 @@ func (s *Service) SettleDeposit(ctx context.Context, req *accountsv1.SettleDepos
 	if resp != nil {
 		return resp, nil
 	}
+
+	// Past the reservation the saga must finish even if the caller goes away.
+	ctx, cancel := detached(ctx)
+	defer cancel()
 
 	// Step 2: ledger (idempotent on the deposit reference).
 	if _, err := s.ledger.OpenLedger(ctx, &ledgerv1.OpenLedgerRequest{AccountId: acc.ID, Currency: acc.Currency}); err != nil {
@@ -380,6 +384,15 @@ func (s *Service) SettleDeposit(ctx context.Context, req *accountsv1.SettleDepos
 		return nil, mapSettleErr(err)
 	}
 	return resp, nil
+}
+
+// sagaTimeout bounds the post-reservation steps of a saga, which run detached from the caller.
+const sagaTimeout = 15 * time.Second
+
+// detached returns a context that ignores the caller's cancellation (client disconnect, upstream
+// deadline) but keeps its values, bounded by sagaTimeout. Used once a reservation is committed.
+func detached(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), sagaTimeout)
 }
 
 func mapSettleErr(err error) error {

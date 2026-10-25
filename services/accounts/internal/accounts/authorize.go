@@ -213,7 +213,9 @@ func (s *Service) Authorize(ctx context.Context, req *accountsv1.AuthorizeReques
 	if final != nil {
 		return final, nil
 	}
-	return s.finishAuthorization(ctx, row, req.Meta)
+	dctx, cancel := detached(ctx)
+	defer cancel()
+	return s.finishAuthorization(dctx, row, req.Meta)
 }
 
 // finishAuthorization places the hold and finalizes a pending authorization.

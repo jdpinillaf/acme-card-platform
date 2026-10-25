@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	accountsv1 "github.com/acme/acme-card/gen/go/acme/accounts/v1"
+	commonv1 "github.com/acme/acme-card/gen/go/acme/common/v1"
 	ledgerv1 "github.com/acme/acme-card/gen/go/acme/ledger/v1"
 )
 
@@ -78,8 +79,8 @@ func (s *Service) expireOne(ctx context.Context) (done bool, err error) {
 // ResolvePending finishes work interrupted after a reservation (review C3/I1b):
 //   - authorizations still 'pending' after PendingTimeout never got an answer to the network:
 //     release any hold and mark them 'failed' (the network treats an unanswered auth as declined);
-//   - captures, reversals and refunds reserved but unfinished are resumed — the network asked for
-//     them and every ledger step is idempotent.
+//   - captures, reversals, refunds and deposit settlements reserved but unfinished are resumed —
+//     the network or bank asked for them and every ledger step is idempotent.
 func (s *Service) ResolvePending(ctx context.Context) error {
 	cutoff := s.clock.Now().Add(-PendingTimeout)
 
@@ -125,6 +126,31 @@ func (s *Service) ResolvePending(ctx context.Context) error {
 		}
 		if err != nil {
 			slog.ErrorContext(ctx, "resuming pending operation failed", "authorization_id", a.ID, "op", *a.PendingOp, "err", err)
+		}
+	}
+
+	depRows, err := s.pool.Query(ctx, `SELECT id::text, external_ref, amount_minor, currency FROM deposits WHERE status='settling' AND settling_at < $1 LIMIT 100`, cutoff)
+	if err != nil {
+		return err
+	}
+	type pd struct {
+		id, ref, cur string
+		amt          int64
+	}
+	var deps []pd
+	for depRows.Next() {
+		var d pd
+		if err := depRows.Scan(&d.id, &d.ref, &d.amt, &d.cur); err != nil {
+			depRows.Close()
+			return err
+		}
+		deps = append(deps, d)
+	}
+	depRows.Close()
+	for _, d := range deps {
+		if _, err := s.SettleDeposit(ctx, &accountsv1.SettleDepositRequest{DepositId: d.id, ExternalRef: d.ref, AmountMinor: d.amt, Currency: d.cur,
+			Status: accountsv1.DepositStatus_DEPOSIT_STATUS_SETTLED, Meta: &commonv1.RequestMeta{Actor: "accounts.reconciler"}}); err != nil {
+			slog.ErrorContext(ctx, "resuming settling deposit failed", "deposit_id", d.id, "err", err)
 		}
 	}
 

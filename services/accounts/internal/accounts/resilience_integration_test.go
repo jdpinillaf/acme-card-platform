@@ -23,7 +23,15 @@ import (
 // a timeout after the ledger committed.
 type flakyLedger struct {
 	ledgerv1.LedgerServiceClient
-	failPlace, failCapture, failRefund atomic.Bool
+	failPlace, failCapture, failRefund, failJournal atomic.Bool
+}
+
+func (l *flakyLedger) PostJournal(ctx context.Context, r *ledgerv1.PostJournalRequest, o ...grpc.CallOption) (*ledgerv1.PostJournalResponse, error) {
+	res, err := l.LedgerServiceClient.PostJournal(ctx, r, o...)
+	if err == nil && l.failJournal.CompareAndSwap(true, false) {
+		return nil, errLost
+	}
+	return res, err
 }
 
 var errLost = status.Error(codes.DeadlineExceeded, "simulated: response lost after ledger commit")
@@ -238,3 +246,52 @@ func TestRefundLostResponseCannotDoubleCredit(t *testing.T) {
 }
 
 var _ = errors.New
+
+func TestSettlingDepositIsResumedByReconciler(t *testing.T) {
+	f, c, fl := flakyFixture(t)
+	ctx := context.Background()
+	acc := f.open(t, "cust-r8")
+	dep := f.deposit(t, acc.Id, 1000)
+	fl.failJournal.Store(true)
+	if _, err := f.svc.SettleDeposit(ctx, settled(dep, "bank-r8")); err == nil {
+		t.Fatal("expected lost response")
+	}
+	f.ledgerMatchesAccountsOrSettling(t, dep.Id)
+	c.Advance(PendingTimeout + time.Second)
+	if err := f.svc.ResolvePending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	g, _ := f.svc.GetAccount(ctx, &accountsv1.GetAccountRequest{AccountId: acc.Id})
+	if g.Account.State != accountsv1.AccountState_ACCOUNT_STATE_ACTIVE || g.Account.CreditLimitMinor != 1000 {
+		t.Fatalf("reconciled account: %+v", g.Account)
+	}
+	f.ledgerMatchesAccounts(t, acc.Id, dep.Id)
+}
+
+func TestSagaSurvivesClientCancellationAfterReservation(t *testing.T) {
+	f, _, _ := flakyFixture(t)
+	acc := f.activeAccount(t, "cust-r9", 1000)
+	// Cancel the caller's context as soon as the ledger has the hold: the finalize step must
+	// still run, detached from the caller.
+	cl := &cancelAfterPlace{LedgerServiceClient: f.ledgerClient}
+	f.svc = NewService(f.pool, cl, WithClock(f.svc.clock))
+	ctx, cancel := context.WithCancel(context.Background())
+	cl.cancel = cancel
+	_, _ = f.svc.Authorize(ctx, authReq(acc.Id, "net-r9", 300))
+	var st string
+	_ = f.pool.QueryRow(context.Background(), `SELECT status FROM authorizations WHERE network_ref='net-r9'`).Scan(&st)
+	if st != "approved" {
+		t.Fatalf("status=%s want approved (finalize must not depend on the caller staying connected)", st)
+	}
+}
+
+type cancelAfterPlace struct {
+	ledgerv1.LedgerServiceClient
+	cancel context.CancelFunc
+}
+
+func (c *cancelAfterPlace) PlaceHold(ctx context.Context, r *ledgerv1.PlaceHoldRequest, o ...grpc.CallOption) (*ledgerv1.PlaceHoldResponse, error) {
+	res, err := c.LedgerServiceClient.PlaceHold(ctx, r, o...)
+	c.cancel()
+	return res, err
+}

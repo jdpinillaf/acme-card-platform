@@ -189,7 +189,9 @@ func (s *Service) runOp(ctx context.Context, authID string, o opReq, meta *commo
 	if final {
 		return &accountsv1.AuthorizationResponse{Authorization: a.proto(), Replayed: true}, nil
 	}
-	return s.finishOp(ctx, a, o, meta)
+	dctx, cancel := detached(ctx)
+	defer cancel()
+	return s.finishOp(dctx, a, o, meta)
 }
 
 // Capture posts the purchase (amount ≤ authorized, exactly once) and frees the rest of the hold.
@@ -261,6 +263,8 @@ func (s *Service) Refund(ctx context.Context, req *accountsv1.RefundRequest) (*a
 	if final {
 		return &accountsv1.RefundResponse{Refund: refundProto(r.id, a, req.NetworkRef, r.amount, r.createdAt), Authorization: a.proto(), Replayed: true}, nil
 	}
+	ctx, cancel := detached(ctx)
+	defer cancel()
 	if _, err := s.ledger.PostRefund(ctx, &ledgerv1.PostRefundRequest{
 		AccountId: a.AccountID, Reference: "refund:" + req.NetworkRef, AmountMinor: r.amount, Meta: req.Meta}); err != nil {
 		return nil, err // refund stays pending and keeps counting toward the cap; resumed later

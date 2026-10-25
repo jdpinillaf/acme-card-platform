@@ -358,3 +358,14 @@ func TestAvailableComesFromLedgerHolds(t *testing.T) {
 		t.Fatalf("available=%d want 700 (%v)", g.Account.AvailableCreditMinor, err)
 	}
 }
+
+// ledgerMatchesAccountsOrSettling allows the one legal transient divergence: a deposit reserved
+// ('settling') whose journal is posted but not yet finalized.
+func (f *fixture) ledgerMatchesAccountsOrSettling(t *testing.T, depID string) {
+	t.Helper()
+	var st string
+	_ = f.pool.QueryRow(context.Background(), `SELECT status FROM deposits WHERE id=$1`, depID).Scan(&st)
+	if st != "settling" {
+		t.Fatalf("deposit status=%s want settling", st)
+	}
+}
