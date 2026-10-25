@@ -22,138 +22,143 @@ rate limit 500/min per subject (default in tests 100,000).
 
 | Phase | Lifecycle | Intruder |
 |---|---|---|
-| onboarding | open → deposit intent → bank settles → card active (limit = collateral) | same key replay / other body; `alg=none`, expired, foreign-secret tokens; token without accounts; existence oracle; unknown field; amount 0; bad signature; stale timestamp; 2 MiB body; amount mismatch; webhook replay; `external_ref` reuse |
-| spending | 30,000 purchase; 5,000 reversal; 5,000 refund; declines (currency, credit, purchase limit, frozen) | over-refund; over-capture; double capture; double reversal; velocity (31st attempt); intruder mutations (pay, limit, freeze, clock); unsigned / wrong-secret network calls; tampered page token |
+| onboarding | open → deposit intent → bank settles → card active (limit = collateral) | same key replay / other body; `alg=none`, expired, foreign-secret tokens; token without accounts; existence oracle; unknown field and amount 0 on the intent route and on the webhook; bad signature; stale timestamp; 2 MiB body with a bad signature; amount mismatch; webhook replay; `external_ref` reuse |
+| spending | 30,000 purchase; 5,000 reversal; 5,000 refund; declines (currency, credit, purchase limit, frozen) | over-refund; over-capture; double capture; double reversal; velocity (31st attempt); intruder mutations (pay, limit, freeze, clock); unsigned / wrong-secret network calls; tampered page token on payments and transactions |
 | billing-1 | statement 1 (25,000; min 2,500; no interest); pay minimum; bank returns it with exposure over the limit → `payment_returned`; pay again → lifted | below-minimum and over-balance payments; 20 concurrent creates with one key; same key string under another tenant; wrong-amount settlement; double return |
 | billing-2 | statement 2 with interest; pay in full → grace; statement 3 at 0; 10,000 purchase; statement 4; miss minimum → `past_due`, 25.00 fee, decline; support waiver cures | customer on the support route; support token on a customer route; waiver replay |
 | charge-off | 200 days unpaid → `charged_off`, collateral applied (= limit reduction), decline | payment after charge-off (observed, not asserted) |
-| closing-checks | every statement document matches its S3 hash; `http.request` audit coverage of every authenticated call | statement of customer A under customer B's path (IDOR); waiver of A's fee under B's path; 501-call burst → 429 |
+| closing-checks | every statement document matches its S3 hash; exactly one `http.request` audit event per mutating authenticated call (GETs are not audited by design) | statement of customer A under customer B's path (IDOR); waiver of A's fee under B's path; burst by one subject → first 429 at call 501 (a boundary straddle may push it to ≤ 540) |
 
-Every 2xx body is scanned for internals (database and RPC errors, Go traces, internal column
-names such as `pending_op`/`lease_until`, secrets, host paths); none leaked.
+Every response body, success or error, is scanned for internals (database and RPC errors, Go
+traces, internal column names such as `pending_op`/`lease_until`, secrets, host paths); none
+leaked.
 
 ## First green run — timings (laptop, in-process stack, `-race`)
 
 | Phase | Step | Kind | Status | ms |
 |---|---|---|---|---|
-| onboarding | open account | http | 201 | 10 |
-| onboarding | open again, same key | http | 201 | 3 |
-| onboarding | open same key, other body | http | 422 | 3 |
-| onboarding | audit: account.opened | async | - | 106 |
-| onboarding | token: alg none | http | 401 | 0 |
+| onboarding | open account | http | 201 | 75 |
+| onboarding | open again, same key | http | 201 | 11 |
+| onboarding | open same key, other body | http | 422 | 25 |
+| onboarding | audit: account.opened | async | - | 338 |
+| onboarding | token: alg none | http | 401 | 1 |
 | onboarding | token: expired | http | 401 | 0 |
 | onboarding | token: foreign secret | http | 401 | 0 |
-| onboarding | token: valid, no accounts | http | 403 | 1 |
-| onboarding | tenancy: intruder reads customer account | http | 403 | 1 |
-| onboarding | tenancy: intruder reads random account | http | 403 | 1 |
-| onboarding | deposit intent 100,000 | http | 201 | 6 |
-| onboarding | deposit: unknown field | http | 400 | 3 |
-| onboarding | deposit: amount 0 | http | 400 | 10 |
-| onboarding | webhook: bad signature | http | 401 | 3 |
+| onboarding | token: valid, no accounts | http | 403 | 3 |
+| onboarding | tenancy: intruder reads customer account | http | 403 | 4 |
+| onboarding | tenancy: intruder reads random account | http | 403 | 5 |
+| onboarding | deposit intent 100,000 | http | 201 | 19 |
+| onboarding | deposit: unknown field | http | 400 | 5 |
+| onboarding | deposit: amount 0 | http | 400 | 11 |
+| onboarding | webhook: unknown field | http | 400 | 4 |
+| onboarding | webhook: amount 0 | http | 400 | 6 |
+| onboarding | webhook: bad signature | http | 401 | 2 |
 | onboarding | webhook: stale timestamp | http | 401 | 1 |
-| onboarding | webhook: oversize body | http | 413 | 21 |
-| onboarding | webhook: amount mismatch | http | 400 | 4 |
-| onboarding | webhook: settle deposit | http | 200 | 22 |
-| onboarding | account active after webhook | async | - | 4 |
-| onboarding | webhook: replay | http | 200 | 5 |
-| onboarding | second deposit intent | http | 201 | 11 |
-| onboarding | webhook: same external_ref, other deposit | http | 422 | 5 |
-| onboarding | audit: collateral.confirmed | async | - | 64 |
+| onboarding | webhook: oversize body, bad signature | http | 413 | 23 |
+| onboarding | webhook: amount mismatch | http | 400 | 16 |
+| onboarding | webhook: settle deposit | http | 200 | 55 |
+| onboarding | account active after webhook | async | - | 12 |
+| onboarding | webhook: replay | http | 200 | 15 |
+| onboarding | second deposit intent | http | 201 | 12 |
+| onboarding | webhook: same external_ref, other deposit | http | 422 | 9 |
+| onboarding | audit: collateral.confirmed | async | - | 48 |
 | onboarding | audit: card.activated | async | - | 0 |
-| spending | authorize 30,000 | http | 201 | 19 |
-| spending | capture 30,000 | http | 201 | 53 |
-| spending | audit: authorization.captured | async | - | 21 |
-| spending | authorize 5,000 (to reverse) | http | 201 | 15 |
-| spending | reversal | http | 200 | 9 |
-| spending | reversal twice | http | 409 | 2 |
-| spending | refund 5,000 | http | 201 | 15 |
-| spending | refund over captured | http | 409 | 3 |
-| spending | authorize 1,000 (capture over) | http | 201 | 11 |
-| spending | capture over authorized | http | 400 | 3 |
-| spending | reversal (cleanup) | http | 200 | 11 |
-| spending | capture twice | http | 409 | 2 |
-| spending | decline: currency | http | 201 | 6 |
-| spending | decline: insufficient credit | http | 201 | 9 |
-| spending | set purchase limit 1,000 | http | 200 | 8 |
-| spending | decline: purchase limit | http | 201 | 5 |
-| spending | clear purchase limit | http | 200 | 7 |
-| spending | freeze | http | 200 | 7 |
-| spending | decline: frozen | http | 201 | 4 |
-| spending | unfreeze | http | 200 | 6 |
-| spending | velocity: 31 authorizations | http | 201 | 319 |
-| spending | tenancy: intruder pays | http | 403 | 3 |
-| spending | tenancy: intruder sets limit | http | 403 | 3 |
-| spending | tenancy: intruder freezes | http | 403 | 2 |
-| spending | tenancy: intruder advances clock | http | 403 | 2 |
+| spending | authorize 30,000 | http | 201 | 49 |
+| spending | capture 30,000 | http | 201 | 26 |
+| spending | audit: authorization.captured | async | - | 23 |
+| spending | authorize 5,000 (to reverse) | http | 201 | 26 |
+| spending | reversal | http | 200 | 28 |
+| spending | reversal twice | http | 409 | 13 |
+| spending | refund 5,000 | http | 201 | 39 |
+| spending | refund over captured | http | 409 | 13 |
+| spending | authorize 1,000 (capture over) | http | 201 | 59 |
+| spending | capture over authorized | http | 400 | 13 |
+| spending | reversal (cleanup) | http | 200 | 36 |
+| spending | capture twice | http | 409 | 5 |
+| spending | decline: currency | http | 201 | 13 |
+| spending | decline: insufficient credit | http | 201 | 21 |
+| spending | set purchase limit 1,000 | http | 200 | 23 |
+| spending | decline: purchase limit | http | 201 | 25 |
+| spending | clear purchase limit | http | 200 | 24 |
+| spending | freeze | http | 200 | 27 |
+| spending | decline: frozen | http | 201 | 16 |
+| spending | unfreeze | http | 200 | 14 |
+| spending | velocity: 31 authorizations | http | 201 | 997 |
+| spending | tenancy: intruder pays | http | 403 | 18 |
+| spending | tenancy: intruder sets limit | http | 403 | 12 |
+| spending | tenancy: intruder freezes | http | 403 | 9 |
+| spending | tenancy: intruder advances clock | http | 403 | 10 |
 | spending | network: unsigned | http | 401 | 1 |
-| spending | network: bank secret | http | 401 | 0 |
-| spending | payments: tampered page token | http | 400 | 2 |
-| spending | transactions list | http | 200 | 5 |
-| billing-1 | close cycle 1 (+31d) | http | 200 | 38 |
-| billing-1 | audit: statement.generated | async | - | 62 |
-| billing-1 | pay 50 (below 1.00) | http | 400 | 7 |
-| billing-1 | pay 1,000,000 (over balance) | http | 409 | 6 |
-| billing-1 | pay 2,500 ×20 concurrent, same key | http | 201 | 95 |
-| billing-1 | other tenant, same key string | http | 201 | 7 |
-| billing-1 | bank settles wrong amount | http | 400 | 2 |
-| billing-1 | bank settles 2,500 | http | 200 | 11 |
-| billing-1 | outstanding 22,500 after settlement | async | - | 3 |
-| billing-1 | audit: payment.settled | async | - | 21 |
-| billing-1 | authorize 76,000 (spend freed credit) | http | 201 | 12 |
-| billing-1 | capture 76,000 | http | 201 | 16 |
-| billing-1 | bank returns the payment | http | 200 | 23 |
-| billing-1 | restricted after return (exposure 101,000 > limit) | async | - | 4 |
-| billing-1 | decline: payment_returned | http | 201 | 5 |
-| billing-1 | return twice, other ref | http | 409 | 5 |
-| billing-1 | pay 2,500 again | http | 201 | 15 |
-| billing-1 | pay 2,500 again: bank settles | http | 200 | 18 |
-| billing-1 | restriction lifted | async | - | 5 |
-| billing-1 | audit: card.restricted | async | - | 41 |
-| billing-1 | audit: card.unrestricted | async | - | 62 |
-| billing-2 | close cycle 2 (+30d) | http | 200 | 52 |
-| billing-2 | audit: interest.charged | async | - | 20 |
-| billing-2 | pay in full 100345 | http | 201 | 19 |
-| billing-2 | pay in full 100345: bank settles | http | 200 | 17 |
-| billing-2 | paid in full | async | - | 3 |
-| billing-2 | close cycle 3 (+31d) | http | 200 | 38 |
-| billing-2 | authorize 10,000 | http | 201 | 9 |
-| billing-2 | capture 10,000 | http | 201 | 16 |
-| billing-2 | close cycle 4 (+31d) | http | 200 | 38 |
-| billing-2 | miss the minimum: due + 15d (+36d) | http | 200 | 66 |
-| billing-2 | decline: past_due | http | 201 | 4 |
-| billing-2 | support boundary: customer waives | http | 403 | 0 |
-| billing-2 | support boundary: support reads account | http | 403 | 1 |
-| billing-2 | support waives the fee | http | 201 | 43 |
-| billing-2 | waiver replay, same key | http | 201 | 3 |
-| billing-2 | audit: fee.charged | async | - | 0 |
-| billing-2 | audit: charge.waived | async | - | 21 |
-| charge-off | stop paying (+200d) | http | 200 | 266 |
-| charge-off | charged off | async | - | 3 |
-| charge-off | decline: charged_off | http | 201 | 4 |
-| charge-off | payment after charge-off | http | 409 | 9 |
+| spending | network: bank secret | http | 401 | 3 |
+| spending | payments: tampered page token | http | 400 | 5 |
+| spending | transactions: tampered page token | http | 400 | 13 |
+| spending | transactions list | http | 200 | 18 |
+| billing-1 | close cycle 1 (+31d) | http | 200 | 103 |
+| billing-1 | audit: statement.generated | async | - | 0 |
+| billing-1 | pay 50 (below 1.00) | http | 400 | 19 |
+| billing-1 | pay 1,000,000 (over balance) | http | 409 | 18 |
+| billing-1 | pay 2,500 ×20 concurrent, same key | http | 201 | 170 |
+| billing-1 | other tenant, same key string | http | 201 | 126 |
+| billing-1 | bank settles wrong amount | http | 400 | 13 |
+| billing-1 | bank settles 2,500 | http | 200 | 84 |
+| billing-1 | outstanding 22,500 after settlement | async | - | 13 |
+| billing-1 | audit: payment.settled | async | - | 89 |
+| billing-1 | authorize 76,000 (spend freed credit) | http | 201 | 21 |
+| billing-1 | capture 76,000 | http | 201 | 30 |
+| billing-1 | bank returns the payment | http | 200 | 64 |
+| billing-1 | restricted after return (exposure 101,000 > limit) | async | - | 12 |
+| billing-1 | decline: payment_returned | http | 201 | 32 |
+| billing-1 | return twice, other ref | http | 409 | 7 |
+| billing-1 | pay 2,500 again | http | 201 | 20 |
+| billing-1 | pay 2,500 again: bank settles | http | 200 | 43 |
+| billing-1 | restriction lifted | async | - | 6 |
+| billing-1 | audit: card.restricted | async | - | 1 |
+| billing-1 | audit: card.unrestricted | async | - | 69 |
+| billing-2 | close cycle 2 (+30d) | http | 200 | 125 |
+| billing-2 | audit: interest.charged | async | - | 0 |
+| billing-2 | pay in full 100345 | http | 201 | 20 |
+| billing-2 | pay in full 100345: bank settles | http | 200 | 54 |
+| billing-2 | paid in full | async | - | 8 |
+| billing-2 | close cycle 3 (+31d) | http | 200 | 116 |
+| billing-2 | authorize 10,000 | http | 201 | 44 |
+| billing-2 | capture 10,000 | http | 201 | 48 |
+| billing-2 | close cycle 4 (+31d) | http | 200 | 92 |
+| billing-2 | miss the minimum: due + 15d (+36d) | http | 200 | 181 |
+| billing-2 | decline: past_due | http | 201 | 13 |
+| billing-2 | support boundary: customer waives | http | 403 | 1 |
+| billing-2 | support boundary: support reads account | http | 403 | 6 |
+| billing-2 | support waives the fee | http | 201 | 134 |
+| billing-2 | waiver replay, same key | http | 201 | 10 |
+| billing-2 | audit: fee.charged | async | - | 1 |
+| billing-2 | audit: charge.waived | async | - | 24 |
+| charge-off | stop paying (+200d) | http | 200 | 623 |
+| charge-off | charged off | async | - | 7 |
+| charge-off | decline: charged_off | http | 201 | 16 |
+| charge-off | payment after charge-off | http | 409 | 14 |
 | charge-off | audit: account.charged_off | async | - | 0 |
-| closing-checks | statement 1.json | http | 200 | 4 |
-| closing-checks | statement 2.json | http | 200 | 3 |
-| closing-checks | statement 3.json | http | 200 | 7 |
-| closing-checks | statement 4.json | http | 200 | 4 |
-| closing-checks | statement 5.json | http | 200 | 5 |
-| closing-checks | statement 6.json | http | 200 | 4 |
-| closing-checks | statement 7.json | http | 200 | 4 |
-| closing-checks | statement 8.json | http | 200 | 3 |
-| closing-checks | statement 9.json | http | 200 | 3 |
-| closing-checks | statement 10.json | http | 200 | 3 |
-| closing-checks | statement 11.json | http | 200 | 3 |
-| closing-checks | IDOR: customer statement under intruder account | http | 404 | 3 |
-| closing-checks | IDOR: waiver of customer fee under intruder account | http | 404 | 6 |
-| closing-checks | audit: http.request coverage | async | - | 0 |
-| closing-checks | rate limit burst (501 calls) | http | 429 | 799 |
+| closing-checks | statement 1.json | http | 200 | 5 |
+| closing-checks | statement 2.json | http | 200 | 7 |
+| closing-checks | statement 3.json | http | 200 | 14 |
+| closing-checks | statement 4.json | http | 200 | 6 |
+| closing-checks | statement 5.json | http | 200 | 8 |
+| closing-checks | statement 6.json | http | 200 | 10 |
+| closing-checks | statement 7.json | http | 200 | 6 |
+| closing-checks | statement 8.json | http | 200 | 4 |
+| closing-checks | statement 9.json | http | 200 | 6 |
+| closing-checks | statement 10.json | http | 200 | 7 |
+| closing-checks | statement 11.json | http | 200 | 14 |
+| closing-checks | IDOR: customer statement under intruder account | http | 404 | 10 |
+| closing-checks | IDOR: waiver of customer fee under intruder account | http | 404 | 21 |
+| closing-checks | audit: http.request coverage | async | - | 4 |
+| closing-checks | rate limit burst (until 429) | http | 429 | 2463 |
 
-HTTP steps: 92, p50 5 ms, p95 66 ms, max 799 ms
+HTTP steps: 95, p50 15 ms, p95 170 ms, max 2463 ms
 
 Async rows measure delivery: account state visible after the bank webhook, and outbox → SNS → SQS →
 `audit_events` for each domain event (0–106 ms here). HTTP p95 is dominated by the clock advances,
 which run whole billing cycles per call, and by the two deliberate multi-call steps (velocity: 31
-authorizations; rate limit: 501 calls).
+authorizations; rate limit: 501 calls). An earlier run without the sibling knob test in the same
+process measured p50 5 ms, p95 66 ms.
 
 ## Security probe matrix (observed)
 
@@ -165,20 +170,20 @@ authorizations; rate limit: 501 calls).
 | Intruder pays / sets limit / freezes / advances the clock | 403; state unchanged |
 | Customer on the support waiver route; support token on a customer route | 403 / 403 |
 | Webhook: bad signature, stale timestamp (10 min), wrong secret, unsigned | 401 |
-| Webhook: 2 MiB body | 413 `body_too_large` before signature work |
-| Webhook: amount mismatch | 400 `amount_mismatch`, nothing applied |
+| Webhook: 2 MiB body with a bad signature | 413 `body_too_large` (size is checked before the signature) |
+| Webhook: unknown JSON field / `amount_minor: 0` / amount mismatch | 400 `invalid_body` / 400 `amount_mismatch` / 400 `amount_mismatch`; nothing applied |
 | Webhook replay (same `external_ref`) | 200 replay, one settlement, one `collateral.confirmed` |
 | Same `external_ref` on another deposit | 422 `external_ref_reused` |
 | Same `Idempotency-Key`, other body | 422 `idempotency_key_reuse` |
 | Same key ×20 concurrent | 201 ×20, one payment |
 | Same key string, other subject | independent (201, not replayed) |
 | Unknown JSON field | 400 `invalid_body` |
-| Tampered `page_token` | 400 `invalid_page_token` |
+| Tampered `page_token` on payments and transactions | 400 `invalid_page_token` |
 | Capture > authorized / twice; refund > captured; reversal twice | 400 `invalid_capture_amount` / 409 `already_captured` / 409 `refund_exceeds_captured` / 409 `already_reversed` |
 | Payment < 1.00 / > balance | 400 `invalid_amount` / 409 `payment_exceeds_balance` |
 | Statement of A requested under B's account path | 404 |
 | Waiver of A's fee under B's account path (support) | 404, A's fee unchanged |
-| 501 calls in a minute by one subject | 429 `velocity_limit_exceeded` with numeric `Retry-After` |
+| Burst by one fresh subject | first 429 `velocity_limit_exceeded` at call 501, numeric `Retry-After` |
 
 ## Findings
 
@@ -197,6 +202,9 @@ No defect. Observations worth knowing (all by design, confirmed in code):
   answer 201.
 - Webhook 401 bodies carry the verifier's reason as `error.code` (e.g. signature or timestamp);
   informational, no secret material.
+- GET requests are not audited (`http.request` is emitted for mutating requests only), and a
+  403 from the support-role check happens before the audit middleware. The completeness check
+  counts exactly those calls.
 
 ## Not covered
 

@@ -21,9 +21,10 @@ type stepRecord struct {
 
 // journal records timings for the customer journey. It never asserts on them (v1 reports only).
 type journal struct {
-	s     *stack
-	phase string
-	steps []stepRecord
+	s      *stack
+	phase  string
+	steps  []stepRecord
+	onResp func(name string, r resp) // called with every step's response (e.g. leak scan)
 }
 
 func newJournal(s *stack) *journal { return &journal{s: s} }
@@ -35,6 +36,9 @@ func (j *journal) step(name string, f func() resp) resp {
 	start := time.Now()
 	r := f()
 	j.steps = append(j.steps, stepRecord{Phase: j.phase, Name: name, Kind: "http", Status: r.status, Dur: time.Since(start)})
+	if j.onResp != nil {
+		j.onResp(name, r)
+	}
 	return r
 }
 

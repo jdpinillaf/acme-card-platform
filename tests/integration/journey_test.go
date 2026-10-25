@@ -61,29 +61,26 @@ func TestCustomerJourney(t *testing.T) {
 	j := newJournal(s)
 	defer j.report(t)
 
-	// Actors.
+	// Actors. Helpers report through cur, the running phase's *testing.T, so a failure inside a
+	// helper fails that phase and skips the later ones instead of aborting the parent test.
 	sub := "cust-J-" + uuid.NewString()[:8]
 	var acc, tok string
-	authed := 0 // authenticated calls made with the customer's token (audit completeness check)
+	cur := t
+	j.onResp = func(name string, r resp) { assertNoLeak(cur, name, r) } // every body, every status
+	mutating := 0                                                       // audited calls by the customer: mutating, authenticated, past RequireRole
 	cust := func(name, method, path, key string, body any) resp {
-		authed++
-		r := j.step(name, func() resp { return s.call(t, method, path, tok, key, body) })
-		if r.status < 300 {
-			assertNoLeak(t, name, r)
+		if method != "GET" && !strings.HasPrefix(path, "/v1/support/") {
+			mutating++
 		}
-		return r
+		return j.step(name, func() resp { return s.call(cur, method, path, tok, key, body) })
 	}
 	net := func(name, path string, body map[string]any) resp {
-		r := j.step(name, func() resp { return s.network(t, path, body, networkSecret) })
-		if r.status < 300 {
-			assertNoLeak(t, name, r)
-		}
-		return r
+		return j.step(name, func() resp { return s.network(cur, path, body, networkSecret) })
 	}
 	expect := func(name string, r resp, status int, code string) {
-		t.Helper()
+		cur.Helper()
 		if r.status != status || (code != "" && errCode(r) != code) {
-			t.Fatalf("%s: want %d %s, got %d %s", name, status, code, r.status, r.raw)
+			cur.Fatalf("%s: want %d %s, got %d %s", name, status, code, r.status, r.raw)
 		}
 	}
 	authorize := func(name string, amt int64, mutate func(map[string]any)) resp {
@@ -93,21 +90,21 @@ func TestCustomerJourney(t *testing.T) {
 		}
 		r := net(name, "/v1/network/authorizations", b)
 		if r.status != 201 {
-			t.Fatalf("%s: %d %s", name, r.status, r.raw)
+			cur.Fatalf("%s: %d %s", name, r.status, r.raw)
 		}
 		return r
 	}
 	declined := func(name string, amt int64, reason string, mutate func(map[string]any)) {
-		t.Helper()
+		cur.Helper()
 		if r := authorize(name, amt, mutate); r.body["status"] != "declined" || r.body["decline_reason"] != reason {
-			t.Fatalf("%s: want declined %s, got %s", name, reason, r.raw)
+			cur.Fatalf("%s: want declined %s, got %s", name, reason, r.raw)
 		}
 	}
-	acct := func() map[string]any { return s.account(t, acc, tok) }
+	acct := func() map[string]any { return s.account(cur, acc, tok) }
 	waitAccount := func(name string, ok func(a map[string]any) bool) {
-		t.Helper()
+		cur.Helper()
 		if j.until(name, 10*time.Second, func() bool { return ok(acct()) }) < 0 {
-			t.Fatalf("%s: account never reached the expected state: %v", name, acct())
+			cur.Fatalf("%s: account never reached the expected state: %v", name, acct())
 		}
 	}
 	xcard, xtok := s.activeCard(t, 50_000) // the intruder: a legitimate customer of their own
@@ -124,7 +121,10 @@ func TestCustomerJourney(t *testing.T) {
 			if failed {
 				t.Skip("an earlier phase failed")
 			}
+			prev := cur
+			cur = t
 			defer func() {
+				cur = prev
 				if t.Failed() {
 					failed = true
 				}
@@ -184,10 +184,18 @@ func TestCustomerJourney(t *testing.T) {
 		wh := func(name string, body map[string]any, at time.Time, mutate func(*http.Request)) resp {
 			return j.step(name, func() resp { return s.signedAt(t, "/v1/webhooks/bank/deposits", body, bankSecret, at, mutate) })
 		}
+		withNote := map[string]any{"deposit_id": dep, "external_ref": "bank-" + dep, "amount_minor": 100_000, "currency": "USD", "status": "settled", "note": "x"}
+		expect("webhook unknown field", wh("webhook: unknown field", withNote, time.Now(), nil), 400, "invalid_body")
+		zero := map[string]any{"deposit_id": dep, "external_ref": "bank-" + dep, "amount_minor": 0, "currency": "USD", "status": "settled"}
+		if z := wh("webhook: amount 0", zero, time.Now(), nil); z.status != 400 {
+			t.Fatalf("webhook amount 0: %d %s", z.status, z.raw)
+		} else {
+			t.Logf("webhook amount 0 → %d %s", z.status, errCode(z))
+		}
 		expect("bad signature", wh("webhook: bad signature", settled, time.Now(), func(r *http.Request) { r.Header.Set(webhook.HeaderSignature, "deadbeef") }), 401, "")
 		expect("stale timestamp", wh("webhook: stale timestamp", settled, time.Now().Add(-10*time.Minute), nil), 401, "")
 		big := map[string]any{"deposit_id": dep, "external_ref": strings.Repeat("x", 2<<20), "amount_minor": 100_000, "currency": "USD", "status": "settled"}
-		expect("oversize", wh("webhook: oversize body", big, time.Now(), nil), 413, "body_too_large")
+		expect("oversize", wh("webhook: oversize body, bad signature", big, time.Now(), func(r *http.Request) { r.Header.Set(webhook.HeaderSignature, "deadbeef") }), 413, "body_too_large")
 		mism := map[string]any{"deposit_id": dep, "external_ref": "bank-" + dep, "amount_minor": 99_999, "currency": "USD", "status": "settled"}
 		expect("amount mismatch", wh("webhook: amount mismatch", mism, time.Now(), nil), 400, "amount_mismatch")
 		if a := acct(); a["state"] != "pending_collateral" {
@@ -311,6 +319,7 @@ func TestCustomerJourney(t *testing.T) {
 
 		// Lists.
 		expect("page token", cust("payments: tampered page token", "GET", "/v1/accounts/"+acc+"/payments?page_token=AAAA", "", nil), 400, "invalid_page_token")
+		expect("page token", cust("transactions: tampered page token", "GET", "/v1/accounts/"+acc+"/transactions?page_token=AAAA", "", nil), 400, "invalid_page_token")
 		l := cust("transactions list", "GET", "/v1/accounts/"+acc+"/transactions", "", nil)
 		expect("transactions", l, 200, "")
 		seen := map[string]bool{}
@@ -323,18 +332,18 @@ func TestCustomerJourney(t *testing.T) {
 	})
 
 	advanceTo := func(name string, at time.Time) map[string]any {
-		t.Helper()
-		days := daysUntil(t, s.summary(t, acc, tok), at)
+		cur.Helper()
+		days := daysUntil(cur, s.summary(cur, acc, tok), at)
 		r := cust(name+" (+"+strconv.Itoa(days)+"d)", "POST", "/v1/dev/accounts/"+acc+"/clock/advance", uuid.NewString(), map[string]any{"days": days})
 		expect(name, r, 200, "")
-		return s.summary(t, acc, tok)
+		return s.summary(cur, acc, tok)
 	}
 	settlePay := func(name string, amt int64) string {
-		t.Helper()
+		cur.Helper()
 		p := cust(name, "POST", "/v1/accounts/"+acc+"/payments", uuid.NewString(), map[string]any{"amount_minor": amt})
 		expect(name, p, 201, "")
 		id := p.body["payment"].(map[string]any)["id"].(string)
-		expect(name+" settle", j.step(name+": bank settles", func() resp { return s.settle(t, id, amt, "settled") }), 200, "")
+		expect(name+" settle", j.step(name+": bank settles", func() resp { return s.settle(cur, id, amt, "settled") }), 200, "")
 		return id
 	}
 
@@ -371,7 +380,7 @@ func TestCustomerJourney(t *testing.T) {
 			close(results)
 			return resp{status: 201}
 		})
-		authed++
+		mutating += 20
 		for r := range results {
 			if r.status != 201 {
 				t.Fatalf("concurrent payment: %d %s", r.status, r.raw)
@@ -482,7 +491,6 @@ func TestCustomerJourney(t *testing.T) {
 			return s.call(t, "POST", waive, support, kw, map[string]any{"amount_minor": 2_500, "reason": "journey goodwill"})
 		})
 		expect("waiver", w, 201, "")
-		assertNoLeak(t, "waiver", w)
 		if b := s.summary(t, acc, tok); b["stage"] != "none" {
 			t.Fatalf("after waiver: %v", b)
 		}
@@ -553,18 +561,34 @@ func TestCustomerJourney(t *testing.T) {
 		if fees := s.chargeList(t, acc, tok, "fee"); fees[0]["waived_minor"] != 2_500.0 {
 			t.Fatalf("fee changed by cross-account waiver: %v", fees)
 		}
-		// Audit completeness: every authenticated call by the customer left an http.request event.
-		if j.until("audit: http.request coverage", 30*time.Second, func() bool {
-			return count(t, s.audit, `SELECT count(*) FROM audit_events WHERE event_type='http.request' AND actor=$1`, sub) >= authed
-		}) < 0 {
-			t.Fatalf("http.request events for %s: %d < %d calls", sub, count(t, s.audit, `SELECT count(*) FROM audit_events WHERE event_type='http.request' AND actor=$1`, sub), authed)
+		// Audit completeness: every mutating authenticated call by the customer left exactly one
+		// http.request event (GETs are not audited by design; RequireRole 403s never reach it).
+		events := func() int {
+			return count(t, s.audit, `SELECT count(*) FROM audit_events WHERE event_type='http.request' AND actor=$1`, sub)
 		}
-		// Rate limit: the 501st call in a minute by one subject is 429.
+		if j.until("audit: http.request coverage", 30*time.Second, func() bool { return events() >= mutating }) < 0 {
+			t.Fatalf("http.request events for %s: %d < %d mutating calls", sub, events(), mutating)
+		}
+		// Let in-flight deliveries land (2 s without change), then the count must match exactly.
+		settled := events()
+		for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+			time.Sleep(200 * time.Millisecond)
+			if n := events(); n != settled {
+				settled, deadline = n, time.Now().Add(2*time.Second)
+			}
+		}
+		if settled != mutating {
+			t.Fatalf("http.request events for %s: %d, mutating calls: %d", sub, settled, mutating)
+		}
+		// Rate limit: a fresh subject is cut off at the 501st call of the minute. The window slides
+		// over wall-clock minutes, so a burst that straddles a boundary may get a few calls more:
+		// no 429 may come before call 501, and one must come by call 540.
 		burst := token(t, "cust-burst-"+uuid.NewString()[:8])
 		var last resp
 		var retryAfter string
-		j.step("rate limit burst (501 calls)", func() resp {
-			for i := 0; i < 501; i++ {
+		hit := 0
+		j.step("rate limit burst (until 429)", func() resp {
+			for i := 1; i <= 540; i++ {
 				req, _ := http.NewRequest("GET", s.url+"/v1/accounts/"+uuid.NewString(), nil)
 				req.Header.Set("Authorization", "Bearer "+burst)
 				res, err := http.DefaultClient.Do(req)
@@ -576,15 +600,17 @@ func TestCustomerJourney(t *testing.T) {
 				last = resp{status: res.StatusCode, raw: string(raw)}
 				_ = json.Unmarshal(raw, &last.body)
 				retryAfter = res.Header.Get("Retry-After")
-				if i < 500 && res.StatusCode == 429 {
-					t.Fatalf("rate limited at call %d", i+1)
+				if res.StatusCode == 429 {
+					hit = i
+					break
 				}
 			}
 			return last
 		})
-		if last.status != 429 || errCode(last) != "velocity_limit_exceeded" {
-			t.Fatalf("501st call: %d %s", last.status, last.raw)
+		if hit < 501 || errCode(last) != "velocity_limit_exceeded" {
+			t.Fatalf("rate limit: first 429 at call %d (%d %s)", hit, last.status, last.raw)
 		}
+		t.Logf("rate limit: first 429 at call %d", hit)
 		if _, err := strconv.Atoi(retryAfter); err != nil {
 			t.Fatalf("Retry-After %q", retryAfter)
 		}
