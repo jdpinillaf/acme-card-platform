@@ -1,6 +1,6 @@
 # Sprint 2 — Card transactions: authorizations, captures, reversals, refunds, declines
 
-Status: draft for review · 2026-10-25 · builds on Sprint 1 (`docs/DECISIONS.md` ADR-001…013)
+Status: ready for user approval · 2026-10-25 · builds on Sprint 1 (`docs/DECISIONS.md` ADR-001…013)
 
 ## 1. Intent
 
@@ -35,7 +35,7 @@ Success looks like this:
 - Overdraft. **It is removed from the product entirely, not deferred.**
 
 **Anti-goals: failure even if "it works"**
-- Any state where `holds + receivable > collateral` for an account.
+- Any state where `holds + max(receivable, 0) > credit_limit` for an account.
 - A declined attempt that leaves no stored, audited record.
 - A duplicate network message that creates a second hold, capture or refund.
 - Available credit shown above the credit limit, even with a credit balance.
@@ -65,9 +65,9 @@ Success looks like this:
 | 19 | Notifications | Moved to a later sprint |
 | 20 | Overdraft | Removed from the product |
 
-## 4. Interpretations to confirm
+## 4. Interpretations (confirmed by the user)
 
-These follow from the answers, but the wording left room. Each one is the builder's default unless the user corrects it.
+All five were confirmed by the user on 2026-10-25.
 
 - **I-1 Foreign currency (6).** A purchase in a currency different from the account currency is **declined** with a new reason, `currency_not_supported`. It is checked right after `collateral_not_confirmed` and before `card_frozen`.
 - **I-2 Reversal window (10).** A reversal voids an **uncaptured** authorization and releases its hold. It is accepted only within 3 days of the authorization. After 3 days the network gets 409 `reversal_window_expired`; the hold still expires on its own at day 7. A captured purchase is undone with a refund, not a reversal.
@@ -115,9 +115,11 @@ Everything Sprint 1 established carries over:
 ### 6.2 Money model in the ledger
 
 - **Holds.** New ledger table `holds` with `active`, `captured`, `released` or `expired`. Holds are reservations, not postings.
-- **Available credit.**
-  - `available = collateral_held − receivable − Σ active holds`, capped at `credit_limit` and floored at 0.
+- **Available credit (user decision: strict limit, a credit balance is not spendable).**
+  - `available = credit_limit − max(receivable, 0) − Σ active holds`, floored at 0.
   - `receivable` may go **negative**. A negative receivable is the customer's credit balance.
+  - The credit balance never raises spending power. It offsets the next statement (Sprint 4) or is returned on close (Sprint 5).
+  - The locked check is `Σ active holds + max(receivable, 0) + amount ≤ credit_limit`.
 - **Capture.** One ledger transaction that marks the hold `captured` and posts `debit receivable / credit cash_clearing` for the captured amount. Whatever was authorized but not captured is released by that same step.
 - **Refund.** Posts `debit cash_clearing / credit receivable`.
 - **Reversal and expiry.** Mark the hold `released` or `expired`. Nothing is posted.
@@ -176,16 +178,16 @@ A new "Merchant / network" panel:
 
 ## 7. Test gates (must pass before Sprint 2 is done)
 
-- **Limit never exceeded.** 50 concurrent authorizations of 10% of the limit each on one card: exactly 10 approve, 40 decline `insufficient_credit`, and `holds + receivable ≤ collateral` at the end.
+- **Limit never exceeded.** 10 concurrent authorizations of 25% of the limit each on one card: exactly 4 approve, 6 decline `insufficient_credit`, and `holds + max(receivable, 0) ≤ credit_limit` at the end (see C-1).
 - **One effect per network message.** The same `network_ref` ×50 gives one authorization. The same holds for captures and refunds.
 - **Competing operations.** Concurrent capture vs reversal of one authorization: exactly one wins. Concurrent refunds that together exceed the captured amount: the sum never exceeds it.
 - **Decline order.** Each reason is reproducible in isolation, and every combination returns the highest-precedence reason.
 - **Velocity.** The 11th attempt within a minute is declined, and declined attempts count.
 - **Lifecycle.** Expiry at 7 days and the 3-day reversal window, both tested with an injectable clock.
-- **Credit balance.** A refund after the receivable reaches zero makes receivable negative, and available stays capped at the limit.
+- **Credit balance.** With a negative receivable, available never exceeds `credit_limit − holds`. In Sprint 2 this is tested with a ledger fixture; end to end in Sprint 3 (see C-2).
 - **Security.** Unsigned or stale network messages → 401. Foreign JWT on freeze or limits → 403.
 - **Load.** The k6 scenario gains authorize → capture → partial refund. The SQL invariants gain:
-  - `holds + receivable ≤ collateral` per account;
+  - `holds + max(receivable, 0) ≤ credit_limit` per account;
   - one capture per authorization;
   - Σ refunds ≤ captured.
 

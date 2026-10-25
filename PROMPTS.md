@@ -109,3 +109,7 @@ Skeleton + Sprint 1 implemented with TDD: money, config, db, idempotency, auth, 
 
 > Sí para la primera vamos a simular un endpoint firmado con HMAC. Va a vivir 7 días. No se van a aprobar los montos parciales. No va a haber autorizaciones incrementales. Vamos a guardar el ID, el nombre y la categoría. No vamos a hacer directamente las conversiones a la divisa base de la cuenta.
 > Sí la captura va a ser igual o menos. No se van a permitir capturas parciales, no va a haber capturas sin autorización previa y se pueden hacer reversos en un lapso de 3 días de la transacción. Los refunds van sobre la compra capturada. No hay refunds en la compra original. Sí quedaría un saldo a favor para la tarjeta si llega refund después de que el cliente ya pagó con la tarjeta. Si ese orden está bien para testear, los intentos de compra van a ser 10 por minuto. Van a hacer otra transacción de compra. El congelar la tarjeta, podemos meterlo antes porque al final va a ser una opción para rechazo. Sí, dependiendo del caso va a ser un 201. Si es un caso manejado, por ejemplo, en el que está declinada la tarjeta o de pronto está congelada, se va a manejar como un 201 y se da la razón. Vamos a mover las notificaciones a otro sprint. El sobregiro lo vamos a quitar. Eso no se va a poder permitir.
+
+### Prompt 8 (user) — Sprint 2 clarifications
+
+> Saldo a favor: No, límite estricto. Otra moneda: Sí, razón nueva `currency_not_supported`. Interpretaciones (a)-(d): Sí, todas.
