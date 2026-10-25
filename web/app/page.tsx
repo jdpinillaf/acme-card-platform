@@ -9,6 +9,10 @@ type Account = {
   credit_limit_minor: number; available_credit_minor: number; collateral_minor: number;
 };
 type Deposit = { id: string; amount_minor: number; currency: string; status: string; external_ref?: string };
+type Tx = {
+  id: string; network_ref: string; amount_minor: number; currency: string; status: string; decline_reason?: string;
+  captured_amount_minor: number; refunded_amount_minor: number; merchant: { id: string; name: string; mcc: string };
+};
 
 const newKey = () => crypto.randomUUID();
 const fmt = (minor: number, cur: string) => `${(minor / 100).toLocaleString(undefined, { minimumFractionDigits: 2 })} ${cur}`;
@@ -28,6 +32,10 @@ export default function Simulator() {
   const [busy, setBusy] = useState(false);
   const [log, setLog] = useState<LogEntry[]>([]);
   const [last, setLast] = useState<{ method: string; path: string; body?: string; key: string; label: string } | null>(null);
+  const [txs, setTxs] = useState<Tx[]>([]);
+  const [buy, setBuy] = useState({ amount: 12000, currency: "USD", merchantId: "m-001", merchantName: "Corner Bookstore", mcc: "5942" });
+  const [rowAmount, setRowAmount] = useState<Record<string, number>>({});
+  const [purchaseLimit, setPurchaseLimit] = useState(0);
 
   const push = (e: Omit<LogEntry, "id" | "at">) =>
     setLog((l) => [{ ...e, id: ++seq, at: new Date().toLocaleTimeString() }, ...l].slice(0, 200));
@@ -103,6 +111,40 @@ export default function Simulator() {
     }
   }
 
+  async function refreshTx(acc = account) {
+    if (!acc) return;
+    const [r] = await gateway("list transactions", "GET", `/v1/accounts/${acc.id}/transactions?page_size=50`);
+    if (r.status === 200) setTxs(r.body.transactions);
+  }
+
+  async function network(label: string, op: "authorize" | "capture" | "reversal" | "refunds", payload: object, authId?: string) {
+    setBusy(true);
+    try {
+      const res = await fetch("/api/network", { method: "POST", body: JSON.stringify({ op, authId, payload, repeat, tamper }) });
+      const results = (await res.json()) as CallResult[];
+      const path = authId ? `/v1/network/authorizations/${authId}/${op}` : "/v1/network/authorizations";
+      push({ label: `network ${label}${tamper ? " (tampered)" : ""}`, method: "POST", path, results });
+    } finally {
+      setBusy(false);
+    }
+    await refresh();
+    await refreshTx();
+  }
+
+  async function authorize() {
+    if (!account) return;
+    await network("authorize", "authorize", {
+      network_ref: `n-${crypto.randomUUID()}`, card_id: account.id, amount_minor: buy.amount, currency: buy.currency,
+      merchant: { id: buy.merchantId, name: buy.merchantName, mcc: buy.mcc },
+    });
+  }
+
+  async function control(label: string, method: string, path: string, body?: object) {
+    if (!account) return;
+    const [r] = await gateway(label, method, path, body);
+    if (r.status === 200) setAccount(r.body);
+  }
+
   async function replayLast(times: number) {
     if (!last) return;
     await gateway(`${last.label} (same key ×${times})`, last.method, last.path, last.body, { key: last.key, times });
@@ -118,7 +160,7 @@ export default function Simulator() {
     <main>
       <header>
         <h1>acme-card · flow simulator</h1>
-        <span className="muted">Sprint 1 · open account → deposit collateral → bank settles → card active</span>
+        <span className="muted">open account → deposit collateral → bank settles → card active → authorize · capture · reverse · refund</span>
       </header>
 
       <div className="grid">
@@ -153,6 +195,16 @@ export default function Simulator() {
                   <div className="stat"><span className="muted">Collateral</span><b>{fmt(account.collateral_minor, account.currency)}</b></div>
                   <div className="stat"><span className="muted">Credit limit</span><b>{fmt(account.credit_limit_minor, account.currency)}</b></div>
                   <div className="stat"><span className="muted">Available</span><b>{fmt(account.available_credit_minor, account.currency)}</b></div>
+                </div>
+                <div className="row">
+                  {account.frozen
+                    ? <button disabled={busy} onClick={() => control("unfreeze card", "POST", `/v1/accounts/${account.id}/unfreeze`)}>Unfreeze card</button>
+                    : <button disabled={busy} onClick={() => control("freeze card", "POST", `/v1/accounts/${account.id}/freeze`)}>Freeze card</button>}
+                  {account.frozen && <span className="badge s-failed">frozen</span>}
+                  <label className="inline">Purchase limit (minor, 0 = none)
+                    <input type="number" min={0} value={purchaseLimit} onChange={(e) => setPurchaseLimit(Number(e.target.value))} />
+                  </label>
+                  <button disabled={busy} onClick={() => control("set purchase limit", "PUT", `/v1/accounts/${account.id}/limits`, { purchase_limit_minor: purchaseLimit })}>Set limit</button>
                 </div>
               </>
             )}
@@ -199,6 +251,56 @@ export default function Simulator() {
               <button disabled={!last || busy} onClick={() => replayLast(20)}>Burst ×20 same key</button>
               <button disabled={!last || busy} onClick={tamperedBody}>Same key, different body</button>
             </div>
+          </section>
+          <section className="panel">
+            <h2>5 · Merchant / network</h2>
+            <div className="row">
+              <label>Amount (minor)<input type="number" min={1} value={buy.amount} onChange={(e) => setBuy({ ...buy, amount: Number(e.target.value) })} /></label>
+              <label>Currency
+                <select value={buy.currency} onChange={(e) => setBuy({ ...buy, currency: e.target.value })}>
+                  {["USD", "COP", "EUR", "MXN"].map((c) => <option key={c}>{c}</option>)}
+                </select>
+              </label>
+            </div>
+            <div className="row">
+              <label>Merchant id<input value={buy.merchantId} onChange={(e) => setBuy({ ...buy, merchantId: e.target.value })} /></label>
+              <label>Name<input value={buy.merchantName} onChange={(e) => setBuy({ ...buy, merchantName: e.target.value })} /></label>
+              <label>MCC<input style={{ width: 70 }} maxLength={4} value={buy.mcc} onChange={(e) => setBuy({ ...buy, mcc: e.target.value })} /></label>
+            </div>
+            <div className="row">
+              <button className="primary" disabled={!account || busy} onClick={authorize}>Authorize purchase</button>
+              <button disabled={!account || busy} onClick={() => refreshTx()}>Refresh transactions</button>
+              <span className="muted">Uses "Concurrent sends" and "bad signature" from panel 3.</span>
+            </div>
+            {txs.length > 0 && (
+              <table>
+                <thead><tr><th>Merchant</th><th>Amount</th><th>Status</th><th>Captured / refunded</th><th>Actions</th></tr></thead>
+                <tbody>
+                  {txs.map((t) => (
+                    <tr key={t.id}>
+                      <td>{t.merchant.name}<div className="mono muted">{t.merchant.mcc}</div></td>
+                      <td>{fmt(t.amount_minor, t.currency)}</td>
+                      <td>
+                        <span className={`badge s-${t.status === "approved" ? "pending" : t.status === "captured" ? "settled" : "failed"}`}>{t.status}</span>
+                        {t.decline_reason && <div className="mono muted">{t.decline_reason}</div>}
+                      </td>
+                      <td>{fmt(t.captured_amount_minor, t.currency)} / {fmt(t.refunded_amount_minor, t.currency)}</td>
+                      <td>
+                        <div className="row">
+                          <input type="number" min={1} aria-label={`Amount for ${t.merchant.name} ${t.id.slice(-6)}`} value={rowAmount[t.id] ?? t.amount_minor}
+                            onChange={(e) => setRowAmount({ ...rowAmount, [t.id]: Number(e.target.value) })} />
+                        </div>
+                        <div className="row">
+                          <button disabled={busy || t.status !== "approved"} onClick={() => network("capture", "capture", { network_ref: `c-${t.id}`, amount_minor: rowAmount[t.id] ?? t.amount_minor }, t.id)}>Capture</button>
+                          <button disabled={busy || t.status !== "approved"} onClick={() => network("reversal", "reversal", { network_ref: `v-${t.id}` }, t.id)}>Reverse</button>
+                          <button disabled={busy || t.status !== "captured"} onClick={() => network("refund", "refunds", { network_ref: `r-${crypto.randomUUID()}`, amount_minor: rowAmount[t.id] ?? t.captured_amount_minor }, t.id)}>Refund</button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
           </section>
         </div>
 
