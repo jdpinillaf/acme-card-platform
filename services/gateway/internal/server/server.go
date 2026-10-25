@@ -98,6 +98,9 @@ func New(d Deps) http.Handler {
 			r.Get("/statements/{statementID}", s.getStatement)
 			r.Get("/billing", s.getBilling)
 			r.Get("/charges", s.listCharges)
+			r.Post("/close", s.closeAccount(false))
+			r.Post("/cancel", s.cancelAccount)
+			r.Get("/payouts", s.listPayouts)
 		})
 		if d.DevClock {
 			r.With(auth.RequireAccount(func(r *http.Request) string { return chi.URLParam(r, "accountID") })).
@@ -112,6 +115,8 @@ func New(d Deps) http.Handler {
 			r.Use(s.rateLimit, s.audit, idempotency.Middleware(d.Idempotency, auth.Subject))
 		}
 		r.Post("/v1/support/accounts/{accountID}/charges/{chargeID}/waivers", s.waiveCharge)
+		r.Post("/v1/support/accounts/{accountID}/close", s.closeAccount(true))
+		r.Post("/v1/support/accounts/{accountID}/payouts/{payoutID}/retry", s.retryPayout)
 	})
 
 	r.Group(func(r chi.Router) {
@@ -121,6 +126,8 @@ func New(d Deps) http.Handler {
 		r.Post("/v1/webhooks/bank/deposits", s.bankDepositWebhook)
 		r.Post("/v1/webhooks/bank/payments", s.bankPaymentWebhook)
 		r.Post("/v1/webhooks/bank/payments/{paymentID}/return", s.bankPaymentReturn)
+		r.Post("/v1/webhooks/bank/payouts", s.bankPayoutWebhook)
+		r.Get("/v1/bank/payout-instructions/{attemptID}", s.bankPayoutInstruction)
 		r.Post("/v1/network/authorizations", s.networkAuthorize)
 		r.Post("/v1/network/authorizations/{authID}/capture", s.networkCapture)
 		r.Post("/v1/network/authorizations/{authID}/reversal", s.networkReverse)
@@ -147,6 +154,9 @@ type accountJSON struct {
 	AccountTime          string `json:"account_time,omitempty"`
 	ActivatedAt          string `json:"activated_at,omitempty"`
 	Delinquency          string `json:"delinquency,omitempty"`
+	CloseStage           string `json:"close_stage,omitempty"`
+	CloseRequestedAt     string `json:"close_requested_at,omitempty"`
+	DestinationLast4     string `json:"destination_last4,omitempty"`
 	CreatedAt            string `json:"created_at,omitempty"`
 	UpdatedAt            string `json:"updated_at,omitempty"`
 }
@@ -165,13 +175,16 @@ type depositJSON struct {
 var accountStates = map[accountsv1.AccountState]string{
 	accountsv1.AccountState_ACCOUNT_STATE_PENDING_COLLATERAL: "pending_collateral",
 	accountsv1.AccountState_ACCOUNT_STATE_ACTIVE:             "active",
+	accountsv1.AccountState_ACCOUNT_STATE_CLOSING:            "closing",
 	accountsv1.AccountState_ACCOUNT_STATE_CLOSED:             "closed",
+	accountsv1.AccountState_ACCOUNT_STATE_CANCELLED:          "cancelled",
 }
 
 var depositStatuses = map[accountsv1.DepositStatus]string{
 	accountsv1.DepositStatus_DEPOSIT_STATUS_PENDING: "pending",
 	accountsv1.DepositStatus_DEPOSIT_STATUS_SETTLED: "settled",
 	accountsv1.DepositStatus_DEPOSIT_STATUS_FAILED:  "failed",
+	accountsv1.DepositStatus_DEPOSIT_STATUS_VOIDED:  "voided",
 }
 
 func ts(t *timestamppb.Timestamp) string {
@@ -186,7 +199,8 @@ func toAccountJSON(a *accountsv1.Account) accountJSON {
 		CreditLimitMinor: a.CreditLimitMinor, AvailableCreditMinor: a.AvailableCreditMinor, CollateralMinor: a.CollateralMinor,
 		PurchaseLimitMinor: a.PurchaseLimitMinor, CreatedAt: ts(a.CreatedAt), UpdatedAt: ts(a.UpdatedAt),
 		OutstandingMinor: a.OutstandingMinor, CreditBalanceMinor: a.CreditBalanceMinor, RestrictedReason: a.RestrictedReason,
-		AccountTime: ts(a.AccountTime), ActivatedAt: ts(a.ActivatedAt), Delinquency: a.Delinquency}
+		AccountTime: ts(a.AccountTime), ActivatedAt: ts(a.ActivatedAt), Delinquency: a.Delinquency,
+		CloseStage: a.CloseStage, CloseRequestedAt: ts(a.CloseRequestedAt), DestinationLast4: a.DestinationLast4}
 }
 
 func toDepositJSON(d *accountsv1.Deposit) depositJSON {
@@ -441,6 +455,13 @@ func (s *server) audit(next http.Handler) http.Handler {
 
 // ---------- errors ----------
 
+// semantic422 are well-formed requests that contradict an anchor already on record (spec C-4,
+// ADR-004) or the payout they settle (ADR-020).
+var semantic422 = map[string]bool{
+	"network_ref_reuse": true, "external_ref_reused": true, "return_ref_reused": true, "idempotency_key_reuse": true,
+	"destination_mismatch": true, "amount_mismatch": true,
+}
+
 func writeGRPCError(w http.ResponseWriter, r *http.Request, err error) {
 	if errors.Is(r.Context().Err(), context.DeadlineExceeded) {
 		setOutcome(r.Context(), idempotency.OutcomeTimeout)
@@ -474,8 +495,7 @@ func writeGRPCError(w http.ResponseWriter, r *http.Request, err error) {
 	}
 	// Reusing an idempotency anchor with a different payload is a semantic error, like
 	// idempotency_key_reuse: 422 (spec C-4, ADR-004).
-	switch reason {
-	case "network_ref_reuse", "external_ref_reused", "return_ref_reused", "idempotency_key_reuse":
+	if semantic422[reason] {
 		httpStatus = http.StatusUnprocessableEntity
 	}
 	msg := st.Message()

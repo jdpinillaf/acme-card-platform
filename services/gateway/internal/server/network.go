@@ -52,6 +52,7 @@ var declineReasons = map[commonv1.DeclineReason]string{
 	commonv1.DeclineReason_DECLINE_REASON_PAST_DUE:                 "past_due",
 	commonv1.DeclineReason_DECLINE_REASON_CHARGED_OFF:              "charged_off",
 	commonv1.DeclineReason_DECLINE_REASON_OVER_LIMIT:               "over_limit",
+	commonv1.DeclineReason_DECLINE_REASON_ACCOUNT_CLOSING:          "account_closing",
 	commonv1.DeclineReason_DECLINE_REASON_CARD_FROZEN:              "card_frozen",
 	commonv1.DeclineReason_DECLINE_REASON_VELOCITY_LIMIT_EXCEEDED:  "velocity_limit_exceeded",
 	commonv1.DeclineReason_DECLINE_REASON_PURCHASE_LIMIT_EXCEEDED:  "purchase_limit_exceeded",
