@@ -168,3 +168,24 @@ func TestSettlingPaymentResumedByReconciler(t *testing.T) {
 		t.Fatalf("status=%s journals=%d", st, f.paymentJournals(t, acc.Id))
 	}
 }
+
+func TestLateSettlementAfterExpiryIsApplied(t *testing.T) {
+	f, c := txFixture(t)
+	ctx := context.Background()
+	acc := f.withDebt(t, "cust-late", 1000, 400)
+	p, _ := f.createPayment(acc.Id, 400, nil)
+	c.Advance(PaymentTTL + time.Second)
+	if n, _ := f.svc.ExpirePayments(ctx, 100); n != 1 {
+		t.Fatal("precondition: intent expired")
+	}
+	r, err := f.svc.SettlePayment(ctx, settlePay(p.Payment, "bank-late", paySettled))
+	if err != nil || r.Payment.Status != paySettled || r.Account.OutstandingMinor != 0 {
+		t.Fatalf("money moved after expiry must still be applied: %v %+v", err, r)
+	}
+	fail, _ := f.createPayment(f.withDebt(t, "cust-late2", 1000, 300).Id, 300, nil)
+	c.Advance(PaymentTTL + time.Second)
+	_, _ = f.svc.ExpirePayments(ctx, 100)
+	if _, err := f.svc.SettlePayment(ctx, settlePay(fail.Payment, "bank-late2", payFailed)); grpcx.Reason(err) != "payment_expired" {
+		t.Fatalf("a failed notice for an expired intent stays refused: %v", err)
+	}
+}

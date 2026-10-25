@@ -66,7 +66,14 @@ func (s *Service) SettlePayment(ctx context.Context, req *accountsv1.SettlePayme
 			return err
 		}
 		switch p.Status {
-		case "settled", "failed", "returning", "returned", "expired":
+		case "expired":
+			// The bank moved the money after our intent expired (review I2): a settlement must still
+			// be applied (any excess over the debt becomes a credit balance, as in spec I-2). A
+			// failure notice for an expired intent has nothing left to do.
+			if req.Status != paySettledStatus {
+				return grpcx.Error(codes.FailedPrecondition, "payment_expired", "payment intent expired")
+			}
+		case "settled", "failed", "returning", "returned":
 			done, replayed = true, true
 			return settleReplayConflict(p, req)
 		case "settling":
