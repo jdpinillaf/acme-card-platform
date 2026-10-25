@@ -405,7 +405,8 @@ func (s *Service) load(ctx context.Context, q querier, id string, lock bool) (ac
 	return acc, err
 }
 
-// available = collateral_held − receivable from the ledger, never above the account's credit limit.
+// available comes from the ledger (strict-limit rule, net of active holds), never above the
+// account's credit limit.
 func (s *Service) available(ctx context.Context, acc accountRow) (int64, error) {
 	b, err := s.ledger.GetBalances(ctx, &ledgerv1.GetBalancesRequest{AccountId: acc.ID})
 	if status.Code(err) == codes.NotFound {
@@ -414,16 +415,7 @@ func (s *Service) available(ctx context.Context, acc accountRow) (int64, error) 
 	if err != nil {
 		return 0, err
 	}
-	var coll, recv int64
-	for _, x := range b.Balances {
-		switch x.SubAccount {
-		case ledgerv1.SubAccount_SUB_ACCOUNT_COLLATERAL_HELD:
-			coll = x.AmountMinor
-		case ledgerv1.SubAccount_SUB_ACCOUNT_RECEIVABLE:
-			recv = x.AmountMinor
-		}
-	}
-	return min(max(coll-recv, 0), acc.CreditLimit), nil
+	return min(b.AvailableMinor, acc.CreditLimit), nil
 }
 
 func stateProto(s State) accountsv1.AccountState {
