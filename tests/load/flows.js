@@ -34,7 +34,9 @@ export const options = {
             { duration: "60s", target: 1000 },
             { duration: "10s", target: 0 },
           ],
-      gracefulRampDown: "10s",
+      // Long enough for in-flight iterations to finish instead of being cut mid-request
+      // (cancellations are covered by the reconciler tests, not by this load gate).
+      gracefulRampDown: "30s",
     },
   },
   thresholds: {
@@ -86,10 +88,22 @@ export default function () {
 
   // Same deposit request twice, concurrently, same key → one deposit, one replay.
   const key = uuid();
-  const deps = http.batch([
+  let deps = http.batch([
     post(`/v1/accounts/${acc}/collateral/deposits`, { amount_minor: amount }, tok, key),
     post(`/v1/accounts/${acc}/collateral/deposits`, { amount_minor: amount }, tok, key),
   ]);
+  // Lease-based idempotency (ADR-017): a duplicate that arrives while the original is in flight
+  // gets 409 request_in_progress + Retry-After; retrying it with the same key replays the result.
+  deps = deps.map((r) => {
+    for (let i = 0; i < 5 && r.status === 409 && r.json("error.code") === "request_in_progress"; i++) {
+      sleep(Number(r.headers["Retry-After"] || 1));
+      r = http.post(`${BASE}/v1/accounts/${acc}/collateral/deposits`, JSON.stringify({ amount_minor: amount }), {
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${tok}`, "Idempotency-Key": key },
+        tags: { name: "/v1/accounts/:id/collateral/deposits" },
+      });
+    }
+    return r;
+  });
   if (!check(deps, {
     "deposits 201": (rs) => rs.every((r) => r.status === 201),
     "same deposit id": (rs) => rs[0].json("id") === rs[1].json("id"),
@@ -145,13 +159,14 @@ export default function () {
   const captured = Math.floor(purchase * 0.8);
   const refunded = Math.floor(captured / 2);
   const cap = http.request(...Object.values(net(`/v1/network/authorizations/${authId}/capture`, { network_ref: `c-${authId}`, amount_minor: captured }, "/v1/network/authorizations/:id/capture")));
-  check(cap, { "captured": (r) => r.status === 201 && r.json("status") === "captured" });
+  if (!check(cap, { "captured": (r) => r.status === 201 && r.json("status") === "captured" })) return;
   const rf = http.request(...Object.values(net(`/v1/network/authorizations/${authId}/refunds`, { network_ref: `r-${authId}`, amount_minor: refunded }, "/v1/network/authorizations/:id/refunds")));
-  check(rf, { "refunded": (r) => r.status === 201 });
+  if (!check(rf, { "refunded": (r) => r.status === 201 })) return;
   const second = http.request(...Object.values(net("/v1/network/authorizations", { network_ref: `${ref}-2`, card_id: acc, amount_minor: 100, currency: "USD", merchant }, "/v1/network/authorizations")));
-  if (second.status === 201 && second.json("status") === "approved") {
+  if (second.status !== 201) return; // aborted: the balance assertion below would be meaningless
+  if (second.json("status") === "approved") {
     const rev = http.request(...Object.values(net(`/v1/network/authorizations/${second.json("id")}/reversal`, { network_ref: `v-${second.json("id")}` }, "/v1/network/authorizations/:id/reversal")));
-    check(rev, { "reversed": (r) => r.status === 200 && r.json("status") === "reversed" });
+    if (!check(rev, { "reversed": (r) => r.status === 200 && r.json("status") === "reversed" })) return;
   }
   const after = http.get(`${BASE}/v1/accounts/${acc}`, { headers: { Authorization: `Bearer ${tok}` }, tags: { name: "/v1/accounts/:id" } });
   if (!check(after, { "available = deposit - captured + refunded": (r) => r.json("available_credit_minor") === amount - captured + refunded })) {
@@ -177,7 +192,7 @@ export default function () {
     const settled = http.post(`${BASE}${path}`, body, {
       headers: { "Content-Type": "application/json", "X-Acme-Timestamp": ts, "X-Acme-Signature": sig }, tags: { name: path },
     });
-    check(settled, { "payment settled": (r) => r.status === 200 && r.json("payment.status") === "settled" });
+    if (!check(settled, { "payment settled": (r) => r.status === 200 && r.json("payment.status") === "settled" })) return;
     const final = http.get(`${BASE}/v1/accounts/${acc}`, { headers: { Authorization: `Bearer ${tok}` }, tags: { name: "/v1/accounts/:id" } });
     if (!check(final, { "available restored to the limit": (r) => r.json("available_credit_minor") === amount && r.json("outstanding_minor") === 0 })) {
       wrongBalance.add(1);

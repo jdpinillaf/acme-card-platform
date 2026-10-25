@@ -111,10 +111,14 @@ func (s *Service) CreatePayment(ctx context.Context, req *accountsv1.CreatePayme
 	if err != nil {
 		return nil, err
 	}
-	var p paymentRow
-	replayed := false
+	var (
+		p        paymentRow
+		locked   accountRow
+		replayed bool
+	)
 	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		locked, err := s.load(ctx, tx, acc.ID, true) // serializes cap checks per account
+		var err error
+		locked, err = s.load(ctx, tx, acc.ID, true) // serializes cap checks per account
 		if err != nil {
 			return err
 		}
@@ -156,7 +160,8 @@ func (s *Service) CreatePayment(ctx context.Context, req *accountsv1.CreatePayme
 	if err != nil {
 		return nil, internal(err)
 	}
-	return s.paymentResponse(ctx, p, replayed)
+	// Creating an intent does not touch the ledger, so the view read above is still current.
+	return &accountsv1.PaymentResponse{Payment: p.proto(), Account: locked.proto(view), Replayed: replayed}, nil
 }
 
 // ExpirePayments expires pending payment intents the bank never answered (PaymentTTL), freeing

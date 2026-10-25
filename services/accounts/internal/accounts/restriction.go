@@ -20,6 +20,9 @@ func (s *Service) applyRestriction(ctx context.Context, accountID string, allowS
 	if err != nil {
 		return err
 	}
+	if acc.Restricted == nil && !allowSet {
+		return nil // nothing to lift and not allowed to set: skip the ledger round trip
+	}
 	v, err := s.available(ctx, acc)
 	if err != nil {
 		return err
