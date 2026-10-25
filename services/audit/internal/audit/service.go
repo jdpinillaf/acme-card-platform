@@ -59,5 +59,13 @@ func NewService(pool *pgxpool.Pool, objects ObjectStore, key ed25519.PrivateKey,
 		_, err := s.RunReconciliation(ctx, &auditv1.RunReconciliationRequest{})
 		return err
 	})
+	// retention is monthly: on the 1st (UTC); a missed month is caught up by the next run
+	s.dailyJobs = append(s.dailyJobs, func(ctx context.Context) error {
+		if s.now().Day() != 1 {
+			return nil
+		}
+		_, err := s.RunRetention(ctx, &auditv1.RunRetentionRequest{})
+		return err
+	})
 	return s
 }

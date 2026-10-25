@@ -195,8 +195,7 @@ func (s *Service) verifyCheckpoints(ctx context.Context) (int, bool, string, err
 	return len(keys), true, "", nil
 }
 
-// archivedHash is overridden once retention exists (Task 7): a purged anchor is checked against
-// its archive manifest.
+// archivedHash checks a purged anchor against its archive manifest.
 func (s *Service) archivedHash(ctx context.Context, seq int64, hash string) (bool, error) {
 	return s.archivedHashFromManifest(ctx, seq, hash)
 }

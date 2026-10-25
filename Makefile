@@ -3,7 +3,7 @@ GOBIN ?= $(shell go env GOPATH)/bin
 export PATH := $(GOBIN):$(PATH)
 COMPOSE := docker compose -f deploy/docker-compose.yml --env-file .env.dev
 
-.PHONY: all proto build test test-integration load load-verify lint web-test up down logs devtoken banksim tf-validate migrate-check
+.PHONY: all proto build test test-integration load load-verify lint web-test up down logs devtoken banksim auditctl tf-validate migrate-check
 
 all: proto build test
 
@@ -43,6 +43,9 @@ devtoken:
 
 banksim:
 	go run ./cmd/banksim $(ARGS)
+
+auditctl:
+	go run ./services/audit/cmd/auditctl $(ARGS)
 
 tf-validate:
 	cd infra/terraform/envs/dev && terraform init -backend=false -input=false >/dev/null && terraform validate

@@ -75,8 +75,3 @@ func internal(err error) error {
 	}
 	return status.Error(codes.Internal, err.Error())
 }
-
-// archivedHashFromManifest: placeholder until retention (Task 7) archives purged ranges.
-func (s *Service) archivedHashFromManifest(context.Context, int64, string) (bool, error) {
-	return false, nil
-}

@@ -228,3 +228,38 @@ func (s *Store) Head(ctx context.Context) (int64, string, error) {
 	err := s.pool.QueryRow(ctx, `SELECT chain_seq, hash FROM chain_head WHERE id=1`).Scan(&seq, &hash)
 	return seq, hash, err
 }
+
+// Each calls fn for every stored row with from <= chain_seq <= to, in chain order.
+func (s *Store) Each(ctx context.Context, from, to int64, fn func(ev events.Event, chainSeq int64, prevHash, hash string) error) error {
+	const page = 5000
+	for next := from; next <= to; {
+		rows, err := s.pool.Query(ctx, `SELECT `+rowCols+`, chain_seq, prev_hash, hash FROM audit_events
+			WHERE chain_seq >= $1 AND chain_seq <= $2 ORDER BY chain_seq LIMIT $3`, next, to, page)
+		if err != nil {
+			return err
+		}
+		got := 0
+		for rows.Next() {
+			var seq int64
+			var prev, hash string
+			ev, err := scanRowEvent(rows, &seq, &prev, &hash)
+			if err == nil {
+				err = fn(ev, seq, prev, hash)
+			}
+			if err != nil {
+				rows.Close()
+				return err
+			}
+			got++
+			next = seq + 1
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		if got < page {
+			return nil
+		}
+	}
+	return nil
+}
