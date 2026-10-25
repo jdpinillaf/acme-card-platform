@@ -143,3 +143,7 @@ Sprint 2 implemented on branch `sprint-2` from `docs/superpowers/plans/2026-10-2
 ### Prompt 13 (user) — Sprint 3 clarifications
 
 > Devoluciones: Aceptar el riesgo. "Avisar": de haber todas las acciones que se puedan hacer. Rama: Fusionar y seguir.
+
+### Prompt 14 (user)
+
+> Vamos con el plan

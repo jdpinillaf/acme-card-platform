@@ -193,8 +193,11 @@ func (s *Service) GetBalances(ctx context.Context, req *ledgerv1.GetBalancesRequ
 	if _, err := uuid.Parse(req.AccountId); err != nil {
 		return nil, status.Error(codes.InvalidArgument, "account_id must be a uuid")
 	}
+	// Balances and active holds come from one statement, i.e. one snapshot: available credit can
+	// never be computed from a balance of one moment and holds of another.
 	rows, err := s.pool.Query(ctx, `
-		SELECT la.currency, b.sub_account, b.raw_balance_minor
+		SELECT la.currency, b.sub_account, b.raw_balance_minor,
+		       (SELECT coalesce(sum(amount_minor), 0) FROM holds WHERE account_id = $1 AND status = 'active')
 		FROM balances b JOIN ledger_accounts la USING (account_id, sub_account)
 		WHERE b.account_id = $1 ORDER BY b.sub_account`, req.AccountId)
 	if err != nil {
@@ -205,7 +208,7 @@ func (s *Service) GetBalances(ctx context.Context, req *ledgerv1.GetBalancesRequ
 	for rows.Next() {
 		var name string
 		var raw int64
-		if err := rows.Scan(&resp.Currency, &name, &raw); err != nil {
+		if err := rows.Scan(&resp.Currency, &name, &raw, &resp.HoldsMinor); err != nil {
 			return nil, toStatus(err)
 		}
 		sa := subAccountFromName(name)
@@ -225,9 +228,6 @@ func (s *Service) GetBalances(ctx context.Context, req *ledgerv1.GetBalancesRequ
 		case ledgerv1.SubAccount_SUB_ACCOUNT_RECEIVABLE:
 			recv = b.AmountMinor
 		}
-	}
-	if err := s.pool.QueryRow(ctx, `SELECT coalesce(sum(amount_minor),0) FROM holds WHERE account_id=$1 AND status='active'`, req.AccountId).Scan(&resp.HoldsMinor); err != nil {
-		return nil, toStatus(err)
 	}
 	resp.AvailableMinor = availableOf(coll, resp.HoldsMinor, recv)
 	return resp, nil

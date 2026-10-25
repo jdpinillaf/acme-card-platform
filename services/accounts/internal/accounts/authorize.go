@@ -4,12 +4,14 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -20,6 +22,8 @@ import (
 	"github.com/acme/acme-card/pkg/money"
 	"github.com/acme/acme-card/pkg/outbox"
 )
+
+const foreignKeyViolation = "23503"
 
 const (
 	// HoldTTL is how long an uncaptured authorization reserves credit.
@@ -146,11 +150,6 @@ func (s *Service) Authorize(ctx context.Context, req *accountsv1.AuthorizeReques
 	if err := validateAuthorize(req); err != nil {
 		return nil, err
 	}
-	if _, err := s.load(ctx, s.pool, req.CardId, false); grpcx.Reason(err) == "account_not_found" {
-		return nil, grpcx.Error(codes.NotFound, "card_not_found", "card not found")
-	} else if err != nil {
-		return nil, err
-	}
 	reqHash := hashParts(req.CardId, req.AmountMinor, req.Currency, req.Merchant.Id, req.Merchant.Name, req.Merchant.Mcc)
 	now := s.clock.Now()
 
@@ -160,14 +159,12 @@ func (s *Service) Authorize(ctx context.Context, req *accountsv1.AuthorizeReques
 	)
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		id := uuid.Must(uuid.NewV7()).String()
-		tag, err := tx.Exec(ctx, `
+		inserted, err := scanAuth(tx.QueryRow(ctx, `
 			INSERT INTO authorizations (id, account_id, network_ref, request_hash, amount_minor, currency, merchant_id, merchant_name, mcc, status, created_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending',$10) ON CONFLICT (network_ref) DO NOTHING`,
-			id, req.CardId, req.NetworkRef, reqHash, req.AmountMinor, req.Currency, req.Merchant.Id, req.Merchant.Name, req.Merchant.Mcc, now)
-		if err != nil {
-			return err
-		}
-		if tag.RowsAffected() == 0 {
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending',$10) ON CONFLICT (network_ref) DO NOTHING
+			RETURNING `+authCols,
+			id, req.CardId, req.NetworkRef, reqHash, req.AmountMinor, req.Currency, req.Merchant.Id, req.Merchant.Name, req.Merchant.Mcc, now))
+		if errors.Is(err, pgx.ErrNoRows) {
 			existing, err := scanAuth(tx.QueryRow(ctx, `SELECT `+authCols+` FROM authorizations WHERE network_ref=$1`, req.NetworkRef))
 			if err != nil {
 				return err
@@ -180,6 +177,9 @@ func (s *Service) Authorize(ctx context.Context, req *accountsv1.AuthorizeReques
 			}
 			row = existing
 			return nil
+		}
+		if err != nil {
+			return err // includes an unknown card: the account foreign key fails
 		}
 
 		// Every attempt that reaches here counts toward velocity, whatever the outcome.
@@ -195,8 +195,8 @@ func (s *Service) Authorize(ctx context.Context, req *accountsv1.AuthorizeReques
 		reason := EvaluateDecline(DeclineInput{State: acc.State, Frozen: acc.Frozen, AccountCurrency: acc.Currency, Currency: req.Currency,
 			VelocityOK: velocityOK, PurchaseLimit: acc.PurchaseLimit, Amount: req.AmountMinor})
 		if reason == "" {
-			row, err = scanAuth(tx.QueryRow(ctx, `SELECT `+authCols+` FROM authorizations WHERE id=$1`, id))
-			return err
+			row = inserted
+			return nil
 		}
 		declined, err := scanAuth(tx.QueryRow(ctx, `UPDATE authorizations SET status='declined', decline_reason=$2 WHERE id=$1 RETURNING `+authCols, id, string(reason)))
 		if err != nil {
@@ -207,6 +207,10 @@ func (s *Service) Authorize(ctx context.Context, req *accountsv1.AuthorizeReques
 		final = &accountsv1.AuthorizationResponse{Authorization: declined.proto()}
 		return outbox.Enqueue(ctx, tx, ev)
 	})
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == foreignKeyViolation {
+		return nil, grpcx.Error(codes.NotFound, "card_not_found", "card not found")
+	}
 	if err != nil {
 		return nil, internal(err)
 	}
