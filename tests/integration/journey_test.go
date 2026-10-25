@@ -41,9 +41,3 @@ func TestJourneyStackKnobs(t *testing.T) {
 		t.Fatalf("3rd authorization: %s", a.raw)
 	}
 }
-
-func errCode(r resp) string {
-	e, _ := r.body["error"].(map[string]any)
-	c, _ := e["code"].(string)
-	return c
-}
