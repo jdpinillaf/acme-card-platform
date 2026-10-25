@@ -19,13 +19,15 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	LedgerService_OpenLedger_FullMethodName  = "/acme.ledger.v1.LedgerService/OpenLedger"
-	LedgerService_PostJournal_FullMethodName = "/acme.ledger.v1.LedgerService/PostJournal"
-	LedgerService_GetBalances_FullMethodName = "/acme.ledger.v1.LedgerService/GetBalances"
-	LedgerService_PlaceHold_FullMethodName   = "/acme.ledger.v1.LedgerService/PlaceHold"
-	LedgerService_CaptureHold_FullMethodName = "/acme.ledger.v1.LedgerService/CaptureHold"
-	LedgerService_ReleaseHold_FullMethodName = "/acme.ledger.v1.LedgerService/ReleaseHold"
-	LedgerService_PostRefund_FullMethodName  = "/acme.ledger.v1.LedgerService/PostRefund"
+	LedgerService_OpenLedger_FullMethodName        = "/acme.ledger.v1.LedgerService/OpenLedger"
+	LedgerService_PostJournal_FullMethodName       = "/acme.ledger.v1.LedgerService/PostJournal"
+	LedgerService_GetBalances_FullMethodName       = "/acme.ledger.v1.LedgerService/GetBalances"
+	LedgerService_PlaceHold_FullMethodName         = "/acme.ledger.v1.LedgerService/PlaceHold"
+	LedgerService_CaptureHold_FullMethodName       = "/acme.ledger.v1.LedgerService/CaptureHold"
+	LedgerService_ReleaseHold_FullMethodName       = "/acme.ledger.v1.LedgerService/ReleaseHold"
+	LedgerService_PostRefund_FullMethodName        = "/acme.ledger.v1.LedgerService/PostRefund"
+	LedgerService_PostPayment_FullMethodName       = "/acme.ledger.v1.LedgerService/PostPayment"
+	LedgerService_PostPaymentReturn_FullMethodName = "/acme.ledger.v1.LedgerService/PostPaymentReturn"
 )
 
 // LedgerServiceClient is the client API for LedgerService service.
@@ -49,6 +51,10 @@ type LedgerServiceClient interface {
 	ReleaseHold(ctx context.Context, in *ReleaseHoldRequest, opts ...grpc.CallOption) (*ReleaseHoldResponse, error)
 	// PostRefund credits the receivable (may go negative: credit balance). Idempotent on reference.
 	PostRefund(ctx context.Context, in *PostRefundRequest, opts ...grpc.CallOption) (*PostJournalResponse, error)
+	// PostPayment credits the receivable with a confirmed customer payment. Idempotent on reference.
+	PostPayment(ctx context.Context, in *PostPaymentRequest, opts ...grpc.CallOption) (*PostJournalResponse, error)
+	// PostPaymentReturn reverses a returned payment (receivable goes back up). Idempotent on reference.
+	PostPaymentReturn(ctx context.Context, in *PostPaymentReturnRequest, opts ...grpc.CallOption) (*PostJournalResponse, error)
 }
 
 type ledgerServiceClient struct {
@@ -129,6 +135,26 @@ func (c *ledgerServiceClient) PostRefund(ctx context.Context, in *PostRefundRequ
 	return out, nil
 }
 
+func (c *ledgerServiceClient) PostPayment(ctx context.Context, in *PostPaymentRequest, opts ...grpc.CallOption) (*PostJournalResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PostJournalResponse)
+	err := c.cc.Invoke(ctx, LedgerService_PostPayment_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *ledgerServiceClient) PostPaymentReturn(ctx context.Context, in *PostPaymentReturnRequest, opts ...grpc.CallOption) (*PostJournalResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PostJournalResponse)
+	err := c.cc.Invoke(ctx, LedgerService_PostPaymentReturn_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // LedgerServiceServer is the server API for LedgerService service.
 // All implementations must embed UnimplementedLedgerServiceServer
 // for forward compatibility.
@@ -150,6 +176,10 @@ type LedgerServiceServer interface {
 	ReleaseHold(context.Context, *ReleaseHoldRequest) (*ReleaseHoldResponse, error)
 	// PostRefund credits the receivable (may go negative: credit balance). Idempotent on reference.
 	PostRefund(context.Context, *PostRefundRequest) (*PostJournalResponse, error)
+	// PostPayment credits the receivable with a confirmed customer payment. Idempotent on reference.
+	PostPayment(context.Context, *PostPaymentRequest) (*PostJournalResponse, error)
+	// PostPaymentReturn reverses a returned payment (receivable goes back up). Idempotent on reference.
+	PostPaymentReturn(context.Context, *PostPaymentReturnRequest) (*PostJournalResponse, error)
 	mustEmbedUnimplementedLedgerServiceServer()
 }
 
@@ -180,6 +210,12 @@ func (UnimplementedLedgerServiceServer) ReleaseHold(context.Context, *ReleaseHol
 }
 func (UnimplementedLedgerServiceServer) PostRefund(context.Context, *PostRefundRequest) (*PostJournalResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method PostRefund not implemented")
+}
+func (UnimplementedLedgerServiceServer) PostPayment(context.Context, *PostPaymentRequest) (*PostJournalResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method PostPayment not implemented")
+}
+func (UnimplementedLedgerServiceServer) PostPaymentReturn(context.Context, *PostPaymentReturnRequest) (*PostJournalResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method PostPaymentReturn not implemented")
 }
 func (UnimplementedLedgerServiceServer) mustEmbedUnimplementedLedgerServiceServer() {}
 func (UnimplementedLedgerServiceServer) testEmbeddedByValue()                       {}
@@ -328,6 +364,42 @@ func _LedgerService_PostRefund_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _LedgerService_PostPayment_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PostPaymentRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LedgerServiceServer).PostPayment(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LedgerService_PostPayment_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LedgerServiceServer).PostPayment(ctx, req.(*PostPaymentRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LedgerService_PostPaymentReturn_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PostPaymentReturnRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LedgerServiceServer).PostPaymentReturn(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LedgerService_PostPaymentReturn_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LedgerServiceServer).PostPaymentReturn(ctx, req.(*PostPaymentReturnRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // LedgerService_ServiceDesc is the grpc.ServiceDesc for LedgerService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -362,6 +434,14 @@ var LedgerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "PostRefund",
 			Handler:    _LedgerService_PostRefund_Handler,
+		},
+		{
+			MethodName: "PostPayment",
+			Handler:    _LedgerService_PostPayment_Handler,
+		},
+		{
+			MethodName: "PostPaymentReturn",
+			Handler:    _LedgerService_PostPaymentReturn_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

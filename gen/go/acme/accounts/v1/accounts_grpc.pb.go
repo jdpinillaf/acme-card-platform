@@ -30,6 +30,10 @@ const (
 	AccountsService_SetFrozen_FullMethodName        = "/acme.accounts.v1.AccountsService/SetFrozen"
 	AccountsService_SetPurchaseLimit_FullMethodName = "/acme.accounts.v1.AccountsService/SetPurchaseLimit"
 	AccountsService_ListTransactions_FullMethodName = "/acme.accounts.v1.AccountsService/ListTransactions"
+	AccountsService_CreatePayment_FullMethodName    = "/acme.accounts.v1.AccountsService/CreatePayment"
+	AccountsService_SettlePayment_FullMethodName    = "/acme.accounts.v1.AccountsService/SettlePayment"
+	AccountsService_ReturnPayment_FullMethodName    = "/acme.accounts.v1.AccountsService/ReturnPayment"
+	AccountsService_ListPayments_FullMethodName     = "/acme.accounts.v1.AccountsService/ListPayments"
 )
 
 // AccountsServiceClient is the client API for AccountsService service.
@@ -50,6 +54,13 @@ type AccountsServiceClient interface {
 	SetFrozen(ctx context.Context, in *SetFrozenRequest, opts ...grpc.CallOption) (*GetAccountResponse, error)
 	SetPurchaseLimit(ctx context.Context, in *SetPurchaseLimitRequest, opts ...grpc.CallOption) (*GetAccountResponse, error)
 	ListTransactions(ctx context.Context, in *ListTransactionsRequest, opts ...grpc.CallOption) (*ListTransactionsResponse, error)
+	// Customer repayments (Sprint 3).
+	CreatePayment(ctx context.Context, in *CreatePaymentRequest, opts ...grpc.CallOption) (*PaymentResponse, error)
+	// SettlePayment is driven by the bank webhook (settled | failed). Idempotent on external_ref.
+	SettlePayment(ctx context.Context, in *SettlePaymentRequest, opts ...grpc.CallOption) (*PaymentResponse, error)
+	// ReturnPayment is driven by the bank webhook within the return window. Idempotent on return_ref.
+	ReturnPayment(ctx context.Context, in *ReturnPaymentRequest, opts ...grpc.CallOption) (*PaymentResponse, error)
+	ListPayments(ctx context.Context, in *ListPaymentsRequest, opts ...grpc.CallOption) (*ListPaymentsResponse, error)
 }
 
 type accountsServiceClient struct {
@@ -170,6 +181,46 @@ func (c *accountsServiceClient) ListTransactions(ctx context.Context, in *ListTr
 	return out, nil
 }
 
+func (c *accountsServiceClient) CreatePayment(ctx context.Context, in *CreatePaymentRequest, opts ...grpc.CallOption) (*PaymentResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PaymentResponse)
+	err := c.cc.Invoke(ctx, AccountsService_CreatePayment_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *accountsServiceClient) SettlePayment(ctx context.Context, in *SettlePaymentRequest, opts ...grpc.CallOption) (*PaymentResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PaymentResponse)
+	err := c.cc.Invoke(ctx, AccountsService_SettlePayment_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *accountsServiceClient) ReturnPayment(ctx context.Context, in *ReturnPaymentRequest, opts ...grpc.CallOption) (*PaymentResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PaymentResponse)
+	err := c.cc.Invoke(ctx, AccountsService_ReturnPayment_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *accountsServiceClient) ListPayments(ctx context.Context, in *ListPaymentsRequest, opts ...grpc.CallOption) (*ListPaymentsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListPaymentsResponse)
+	err := c.cc.Invoke(ctx, AccountsService_ListPayments_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AccountsServiceServer is the server API for AccountsService service.
 // All implementations must embed UnimplementedAccountsServiceServer
 // for forward compatibility.
@@ -188,6 +239,13 @@ type AccountsServiceServer interface {
 	SetFrozen(context.Context, *SetFrozenRequest) (*GetAccountResponse, error)
 	SetPurchaseLimit(context.Context, *SetPurchaseLimitRequest) (*GetAccountResponse, error)
 	ListTransactions(context.Context, *ListTransactionsRequest) (*ListTransactionsResponse, error)
+	// Customer repayments (Sprint 3).
+	CreatePayment(context.Context, *CreatePaymentRequest) (*PaymentResponse, error)
+	// SettlePayment is driven by the bank webhook (settled | failed). Idempotent on external_ref.
+	SettlePayment(context.Context, *SettlePaymentRequest) (*PaymentResponse, error)
+	// ReturnPayment is driven by the bank webhook within the return window. Idempotent on return_ref.
+	ReturnPayment(context.Context, *ReturnPaymentRequest) (*PaymentResponse, error)
+	ListPayments(context.Context, *ListPaymentsRequest) (*ListPaymentsResponse, error)
 	mustEmbedUnimplementedAccountsServiceServer()
 }
 
@@ -230,6 +288,18 @@ func (UnimplementedAccountsServiceServer) SetPurchaseLimit(context.Context, *Set
 }
 func (UnimplementedAccountsServiceServer) ListTransactions(context.Context, *ListTransactionsRequest) (*ListTransactionsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListTransactions not implemented")
+}
+func (UnimplementedAccountsServiceServer) CreatePayment(context.Context, *CreatePaymentRequest) (*PaymentResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CreatePayment not implemented")
+}
+func (UnimplementedAccountsServiceServer) SettlePayment(context.Context, *SettlePaymentRequest) (*PaymentResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SettlePayment not implemented")
+}
+func (UnimplementedAccountsServiceServer) ReturnPayment(context.Context, *ReturnPaymentRequest) (*PaymentResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ReturnPayment not implemented")
+}
+func (UnimplementedAccountsServiceServer) ListPayments(context.Context, *ListPaymentsRequest) (*ListPaymentsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListPayments not implemented")
 }
 func (UnimplementedAccountsServiceServer) mustEmbedUnimplementedAccountsServiceServer() {}
 func (UnimplementedAccountsServiceServer) testEmbeddedByValue()                         {}
@@ -450,6 +520,78 @@ func _AccountsService_ListTransactions_Handler(srv interface{}, ctx context.Cont
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AccountsService_CreatePayment_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreatePaymentRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AccountsServiceServer).CreatePayment(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AccountsService_CreatePayment_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AccountsServiceServer).CreatePayment(ctx, req.(*CreatePaymentRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AccountsService_SettlePayment_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SettlePaymentRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AccountsServiceServer).SettlePayment(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AccountsService_SettlePayment_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AccountsServiceServer).SettlePayment(ctx, req.(*SettlePaymentRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AccountsService_ReturnPayment_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReturnPaymentRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AccountsServiceServer).ReturnPayment(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AccountsService_ReturnPayment_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AccountsServiceServer).ReturnPayment(ctx, req.(*ReturnPaymentRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AccountsService_ListPayments_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListPaymentsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AccountsServiceServer).ListPayments(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AccountsService_ListPayments_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AccountsServiceServer).ListPayments(ctx, req.(*ListPaymentsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AccountsService_ServiceDesc is the grpc.ServiceDesc for AccountsService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -500,6 +642,22 @@ var AccountsService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListTransactions",
 			Handler:    _AccountsService_ListTransactions_Handler,
+		},
+		{
+			MethodName: "CreatePayment",
+			Handler:    _AccountsService_CreatePayment_Handler,
+		},
+		{
+			MethodName: "SettlePayment",
+			Handler:    _AccountsService_SettlePayment_Handler,
+		},
+		{
+			MethodName: "ReturnPayment",
+			Handler:    _AccountsService_ReturnPayment_Handler,
+		},
+		{
+			MethodName: "ListPayments",
+			Handler:    _AccountsService_ListPayments_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

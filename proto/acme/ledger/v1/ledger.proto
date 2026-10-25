@@ -25,10 +25,17 @@ service LedgerService {
   // PostPayment credits the receivable with a confirmed customer payment. Idempotent on reference.
   rpc PostPayment(PostPaymentRequest) returns (PostJournalResponse);
   // PostPaymentReturn reverses a returned payment (receivable goes back up). Idempotent on reference.
-  rpc PostPaymentReturn(PostPaymentRequest) returns (PostJournalResponse);
+  rpc PostPaymentReturn(PostPaymentReturnRequest) returns (PostJournalResponse);
 }
 
 message PostPaymentRequest {
+  string account_id = 1;
+  string reference = 2;
+  int64 amount_minor = 3;
+  acme.common.v1.RequestMeta meta = 4;
+}
+
+message PostPaymentReturnRequest {
   string account_id = 1;
   string reference = 2;
   int64 amount_minor = 3;
