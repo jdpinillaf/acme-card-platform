@@ -64,3 +64,13 @@ Re-run `make load` on an idle machine before using these numbers to gate anythin
 | Load, full | 62,128 requests, 0 failed, 100% checks, 0 wrong balances; p95 3.85 s on a loaded host (load average ≈ 21), latency gate not met there |
 | Invariants (`verify.sql`) | 13/13 checks, 0 violations |
 | Simulator | 6/6 tests; browser QA: partial capture 100, refund 40, available 440, frozen → `card_frozen` |
+
+### After Sprint 2 final-review fixes (2026-10-25)
+
+| Gate | Result |
+|---|---|
+| Unit + integration | all packages pass with `-race` (accounts suite includes 10 resilience tests with an injected "lost response" ledger) |
+| Load, full 1000 VUs (Sprint 1 + 2 flows) | 89,555 requests, 0 failed, 100% checks, **p95 1.18 s (gate met)**, 765 req/s, 0 wrong balances |
+| Invariants after reconciler window | 16/16 checks, 0 violations; the 5 new cross-checks were verified to fire on deliberately corrupted data |
+
+The fix pass also raised throughput: before it, no locks were released during ledger calls (435 req/s, p95 863 ms in the short run); after it, 913 req/s and p95 664 ms in the same short run.

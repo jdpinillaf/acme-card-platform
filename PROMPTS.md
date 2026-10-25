@@ -121,3 +121,7 @@ Skeleton + Sprint 1 implemented with TDD: money, config, db, idempotency, auth, 
 ## Sprint 2 delivery notes (2026-10-25)
 
 Sprint 2 implemented on branch `sprint-2` from `docs/superpowers/plans/2026-10-25-sprint2-card-transactions.md`. Results in `docs/TESTING.md`, rulings in ADR-015.
+
+### Prompt 10 (user)
+
+> Si, aprobado (Sprint 2 design) — Sprint 2 implemented on branch `sprint-2`, final review fixes in ADR-016.
