@@ -38,3 +38,17 @@ Append-only. One entry per decision. Format: context → decision → consequenc
 ## ADR-011 — Next.js flow simulator (2026-10-25)
 **Context.** Manual and exploratory testing of the flows needs a UI; curl alone is slow for demos.
 **Decision.** `web/` is a single-page Next.js (App Router, TypeScript) app. Browser talks only to its own route handlers (`/api/*`), which hold `JWT_HS256_SECRET` and `BANK_WEBHOOK_SECRET`, mint tokens, sign webhooks and forward to the gateway. It ships in docker-compose as `web` on port 3000. It is a dev tool, not a customer product.
+
+## ADR-012 — Sprint 1 implementation rulings (2026-10-25)
+- `POST /v1/accounts` takes `customer_id` from the JWT `sub`; the body only carries `currency`.
+- Bank webhook duplicates are deduplicated by `external_ref`; the route does not require `Idempotency-Key`.
+- Webhook amount or currency mismatch → 400, deposit stays `pending` so the bank can resend.
+- `credit_available` is never posted; available credit = `collateral_held − receivable`, derived from the ledger.
+- Settlement saga: ledger `PostJournal` (idempotent on `deposit:<id>`) first, then the accounts transaction. A crash in between heals on the next webhook retry.
+- The gateway has its own outbox. Every mutating request emits `http.request` with status and outcome (`success`, `client_error`, `server_error`, `timeout`, `rolled_back`).
+- Rate limit is a Postgres sliding-window counter per JWT subject.
+- Each `migrations/` directory is a Go package exporting `embed.FS`. Cross-service tests use exported `*test` packages, so `internal/` stays private.
+- Go 1.26 toolchain, required by transitive dependencies.
+- Local host ports: lb 8088, web 3010, because other local projects use 8080 and 3000.
+- Load gate: 1000 VUs with think time and p95 < 1.5 s. `STRESS=1` measures saturation without a latency gate.
+- In AWS, services build the DSN from `DB_HOST` + the RDS-managed secret, with `sslmode=verify-full`.

@@ -86,3 +86,9 @@ Verbatim log of the prompts that drive this project, one section per session. Ne
 ### Prompt 4 (user)
 
 > Continua
+
+---
+
+## Sprint 1 delivery notes (2026-10-25)
+
+Skeleton + Sprint 1 implemented with TDD: money, config, db, idempotency, auth, outbox/events, audit, ledger, accounts, gateway, simulator, e2e + k6, Terraform. See `docs/TESTING.md` for results and `docs/DECISIONS.md` ADR-012 for rulings made during implementation.
