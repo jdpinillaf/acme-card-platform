@@ -21,6 +21,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	accountsv1 "github.com/acme/acme-card/gen/go/acme/accounts/v1"
+	billingv1 "github.com/acme/acme-card/gen/go/acme/billing/v1"
 	commonv1 "github.com/acme/acme-card/gen/go/acme/common/v1"
 	"github.com/acme/acme-card/pkg/auth"
 	"github.com/acme/acme-card/pkg/events"
@@ -40,7 +41,10 @@ type Limiter interface {
 
 // Deps wires the gateway.
 type Deps struct {
-	Accounts         accountsv1.AccountsServiceClient
+	Accounts accountsv1.AccountsServiceClient
+	Billing  billingv1.BillingServiceClient
+	// DevClock registers the simulated-clock route (DEV_CLOCK_ENABLED; dev only, ADR-019).
+	DevClock         bool
 	JWTSecret        []byte
 	BankSecret       []byte
 	NetworkSecret    []byte
@@ -90,7 +94,24 @@ func New(d Deps) http.Handler {
 			r.Get("/transactions", s.listTransactions)
 			r.Post("/payments", s.createPayment)
 			r.Get("/payments", s.listPayments)
+			r.Get("/statements", s.listStatements)
+			r.Get("/statements/{statementID}", s.getStatement)
+			r.Get("/billing", s.getBilling)
+			r.Get("/charges", s.listCharges)
 		})
+		if d.DevClock {
+			r.With(auth.RequireAccount(func(r *http.Request) string { return chi.URLParam(r, "accountID") })).
+				Post("/v1/dev/accounts/{accountID}/clock/advance", s.advanceClock)
+		}
+	})
+
+	// Support agents (role claim) act on any account; same rate limit, audit and idempotency.
+	r.Group(func(r chi.Router) {
+		r.Use(auth.Middleware(d.JWTSecret), auth.RequireRole(auth.RoleSupport))
+		if !d.DisableStateful {
+			r.Use(s.rateLimit, s.audit, idempotency.Middleware(d.Idempotency, auth.Subject))
+		}
+		r.Post("/v1/support/accounts/{accountID}/charges/{chargeID}/waivers", s.waiveCharge)
 	})
 
 	r.Group(func(r chi.Router) {
@@ -123,6 +144,9 @@ type accountJSON struct {
 	OutstandingMinor     int64  `json:"outstanding_minor"`
 	CreditBalanceMinor   int64  `json:"credit_balance_minor"`
 	RestrictedReason     string `json:"restricted_reason,omitempty"`
+	AccountTime          string `json:"account_time,omitempty"`
+	ActivatedAt          string `json:"activated_at,omitempty"`
+	Delinquency          string `json:"delinquency,omitempty"`
 	CreatedAt            string `json:"created_at,omitempty"`
 	UpdatedAt            string `json:"updated_at,omitempty"`
 }
@@ -161,7 +185,8 @@ func toAccountJSON(a *accountsv1.Account) accountJSON {
 	return accountJSON{ID: a.Id, CustomerID: a.CustomerId, Currency: a.Currency, State: accountStates[a.State], Frozen: a.Frozen,
 		CreditLimitMinor: a.CreditLimitMinor, AvailableCreditMinor: a.AvailableCreditMinor, CollateralMinor: a.CollateralMinor,
 		PurchaseLimitMinor: a.PurchaseLimitMinor, CreatedAt: ts(a.CreatedAt), UpdatedAt: ts(a.UpdatedAt),
-		OutstandingMinor: a.OutstandingMinor, CreditBalanceMinor: a.CreditBalanceMinor, RestrictedReason: a.RestrictedReason}
+		OutstandingMinor: a.OutstandingMinor, CreditBalanceMinor: a.CreditBalanceMinor, RestrictedReason: a.RestrictedReason,
+		AccountTime: ts(a.AccountTime), ActivatedAt: ts(a.ActivatedAt), Delinquency: a.Delinquency}
 }
 
 func toDepositJSON(d *accountsv1.Deposit) depositJSON {
@@ -450,7 +475,7 @@ func writeGRPCError(w http.ResponseWriter, r *http.Request, err error) {
 	// Reusing an idempotency anchor with a different payload is a semantic error, like
 	// idempotency_key_reuse: 422 (spec C-4, ADR-004).
 	switch reason {
-	case "network_ref_reuse", "external_ref_reused", "return_ref_reused":
+	case "network_ref_reuse", "external_ref_reused", "return_ref_reused", "idempotency_key_reuse":
 		httpStatus = http.StatusUnprocessableEntity
 	}
 	msg := st.Message()
