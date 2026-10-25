@@ -13,20 +13,24 @@ SELECT 'balance snapshot drift',              count(*) FROM ledger.balances b LE
 UNION ALL
 SELECT 'deposits stuck in settling',          count(*) FROM accounts.deposits WHERE status = 'settling' AND created_at < now() - interval '1 minute' 
 UNION ALL
--- Signed exposure (ADR-018): holds + receivable ≤ limit, except an overage explained by returned
--- payments (accepted risk), which must instead be restricted (checked below).
-SELECT 'exposure > limit (not explained by returns)', count(*) FROM (
+-- Signed exposure (ADR-018/019): holds + receivable ≤ limit, except an overage explained by returned
+-- payments (accepted risk) or by billing charges (interest + fees − waivers), which must instead be
+-- restricted (checked below).
+SELECT 'exposure > limit (not explained by returns or charges)', count(*) FROM (
   SELECT b.account_id FROM ledger.balances b
   JOIN ledger.balances r ON r.account_id=b.account_id AND r.sub_account='receivable'
   LEFT JOIN (SELECT account_id, sum(amount_minor) h FROM ledger.holds WHERE status='active' GROUP BY 1) h ON h.account_id=b.account_id
   LEFT JOIN (SELECT account_id, sum(amount_minor) s FROM accounts.payments WHERE status IN ('returning','returned') GROUP BY 1) rt ON rt.account_id=b.account_id
+  LEFT JOIN (SELECT account_id, sum(amount_minor - waived_minor) s FROM billing.charges WHERE status='posted' GROUP BY 1) ch ON ch.account_id=b.account_id
   WHERE b.sub_account='collateral_held'
-    AND coalesce(h.h,0) + r.raw_balance_minor + b.raw_balance_minor > coalesce(rt.s, 0)) x
+    AND coalesce(h.h,0) + r.raw_balance_minor + b.raw_balance_minor > coalesce(rt.s, 0) + coalesce(ch.s, 0)) x
 UNION ALL
 SELECT 'over limit but not restricted',       count(*) FROM accounts.accounts a
   JOIN ledger.balances r ON r.account_id=a.id AND r.sub_account='receivable'
   LEFT JOIN (SELECT account_id, sum(amount_minor) h FROM ledger.holds WHERE status='active' GROUP BY 1) h ON h.account_id=a.id
-  WHERE coalesce(h.h,0) + r.raw_balance_minor > a.credit_limit_minor AND a.restricted_reason IS NULL
+  WHERE coalesce(h.h,0) + r.raw_balance_minor > a.credit_limit_minor AND a.restricted_reason IS NULL AND a.delinquency <> 'charged_off'
+  -- billing restricts after its catch-up; allow the per-minute sweep to get there
+  AND a.updated_at < now() - interval '2 minutes'
 UNION ALL
 SELECT 'restricted but within limit > 5 min', count(*) FROM accounts.accounts a
   JOIN ledger.balances r ON r.account_id=a.id AND r.sub_account='receivable'
@@ -82,4 +86,44 @@ SELECT 'refunded_minor ≠ Σ posted refunds',   count(*) FROM accounts.authoriz
   WHERE a.refunded_minor <> coalesce(r.s, 0)
 UNION ALL
 SELECT 'work stuck pending > 5 min',          (SELECT count(*) FROM accounts.authorizations WHERE (status='pending' AND created_at < now() - interval '5 minutes') OR (pending_op IS NOT NULL AND pending_op_at < now() - interval '5 minutes'))
-                                            + (SELECT count(*) FROM accounts.refunds WHERE status='pending' AND created_at < now() - interval '5 minutes');
+                                            + (SELECT count(*) FROM accounts.refunds WHERE status='pending' AND created_at < now() - interval '5 minutes')
+UNION ALL
+-- ---------- Sprint 4: billing (ADR-019) ----------
+SELECT 'statement new balance ≠ ledger at close', count(*) FROM billing.statements s
+  WHERE s.new_balance_minor <> (SELECT coalesce(sum(CASE WHEN p.side='debit' THEN p.amount_minor ELSE -p.amount_minor END), 0)
+    FROM ledger.journal_entries j JOIN ledger.postings p ON p.journal_entry_id=j.id AND p.sub_account='receivable'
+    WHERE j.account_id=s.account_id AND j.effective_at < s.period_end)
+UNION ALL
+SELECT 'statement lines/buckets do not add up', count(*) FROM billing.statements
+  WHERE previous_balance_minor + purchases_minor - refunds_minor - payments_minor + returns_minor + interest_minor + fees_minor
+        - waivers_minor - collateral_applied_minor <> new_balance_minor
+     OR principal_minor + interest_bucket_minor + fee_bucket_minor <> new_balance_minor
+UNION ALL
+SELECT 'statement cycles not contiguous',     count(*) FROM (SELECT account_id FROM billing.statements GROUP BY 1 HAVING max(cycle) <> count(*)) x
+UNION ALL
+SELECT 'more than one interest/fee per cycle', count(*) FROM (SELECT account_id, kind, cycle FROM billing.charges GROUP BY 1,2,3 HAVING count(*) > 1) x
+UNION ALL
+SELECT 'waived ≠ Σ waivers or > charged',     count(*) FROM billing.charges c
+  LEFT JOIN (SELECT charge_id, sum(amount_minor) s FROM billing.waivers WHERE status IN ('pending','posted') GROUP BY 1) w ON w.charge_id=c.id
+  WHERE c.waived_minor <> coalesce(w.s, 0) OR c.waived_minor > c.amount_minor
+UNION ALL
+SELECT 'charge ≠ ledger journal',             count(*) FROM (
+  SELECT c.id FROM billing.charges c
+  FULL JOIN (SELECT j.reference, x.amount_minor FROM ledger.journal_entries j JOIN ledger.postings x ON x.journal_entry_id=j.id AND x.side='debit'
+             WHERE j.entry_type IN ('interest_charged','fee_charged')) l ON l.reference = c.reference
+  WHERE (c.status='posted' AND (l.reference IS NULL OR l.amount_minor <> c.amount_minor))
+     OR (l.reference IS NOT NULL AND (c.id IS NULL OR c.status <> 'posted' AND c.status <> 'pending'))) x
+UNION ALL
+SELECT 'waiver ≠ ledger journal',             count(*) FROM (
+  SELECT w.id FROM billing.waivers w
+  FULL JOIN (SELECT j.reference, x.amount_minor FROM ledger.journal_entries j JOIN ledger.postings x ON x.journal_entry_id=j.id AND x.side='debit'
+             WHERE j.entry_type IN ('interest_waived','fee_waived')) l ON l.reference = 'waiver:'||w.id
+  WHERE (w.status='posted' AND (l.reference IS NULL OR l.amount_minor <> w.amount_minor))
+     OR (l.reference IS NOT NULL AND (w.id IS NULL OR w.status = 'failed'))) x
+UNION ALL
+SELECT 'charged-off account with active holds', count(*) FROM accounts.accounts a JOIN ledger.holds h ON h.account_id=a.id AND h.status='active'
+  WHERE a.delinquency='charged_off' AND a.charge_off_pending_at IS NULL
+UNION ALL
+SELECT 'billing work stuck > 5 min',          (SELECT count(*) FROM billing.charges WHERE status='pending' AND created_at < now() - interval '5 minutes')
+                                            + (SELECT count(*) FROM billing.waivers WHERE status='pending' AND created_at < now() - interval '5 minutes')
+                                            + (SELECT count(*) FROM accounts.accounts WHERE charge_off_pending_at < now() - interval '5 minutes');

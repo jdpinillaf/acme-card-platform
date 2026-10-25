@@ -1,4 +1,4 @@
-// k6 load test — Sprints 1, 2 and 3. Simulates up to 1000 concurrent customers through the load balancer:
+// k6 load test — Sprints 1 to 4. Simulates up to 1000 concurrent customers through the load balancer:
 // open account → create deposit (sent twice with the same Idempotency-Key) → bank webhook
 // (sent twice, concurrently) → read account. Asserts idempotent replays and final state.
 import http from "k6/http";
@@ -16,6 +16,8 @@ const activated = new Counter("cards_activated");
 const replays = new Counter("idempotent_replays");
 const wrongState = new Counter("wrong_final_state");
 const wrongBalance = new Counter("wrong_available_after_transactions");
+const statementsSeen = new Counter("statements_generated");
+const wrongBilling = new Counter("wrong_billing_state");
 
 // STRESS=1 removes think time (closed-loop saturation); latency is then reported, not gated.
 const STRESS = __ENV.STRESS === "1";
@@ -44,6 +46,7 @@ export const options = {
     http_req_duration: STRESS ? ["p(95)<10000"] : ["p(95)<1500"],
     wrong_final_state: ["count==0"],
     wrong_available_after_transactions: ["count==0"],
+    wrong_billing_state: ["count==0"],
     checks: ["rate>0.99"],
     // Per-endpoint breakdown (reporting only).
     "http_req_duration{name:/v1/accounts}": ["p(95)<100000"],
@@ -51,6 +54,7 @@ export const options = {
     "http_req_duration{name:/v1/webhooks/bank/deposits}": ["p(95)<100000"],
     "http_req_duration{name:/v1/accounts/:id}": ["p(95)<100000"],
     "http_req_duration{name:/v1/network/authorizations}": ["p(95)<100000"],
+    "http_req_duration{name:/v1/dev/accounts/:id/clock/advance}": ["p(95)<100000"],
   },
 };
 
@@ -214,5 +218,60 @@ export default function () {
     })) {
       wrongBalance.add(1);
     }
+  }
+
+  think();
+
+  // Sprint 4: a fresh purchase, then the account's simulated clock runs through a statement close,
+  // its due date and 40 days past it. Two iterations in three pay the minimum on time; the third
+  // misses it (late fee, and the account is past due by the end).
+  const buy = http.request(...Object.values(net("/v1/network/authorizations", { network_ref: `${ref}-4`, card_id: acc, amount_minor: 5000, currency: "USD", merchant }, "/v1/network/authorizations")));
+  if (buy.status !== 201 || buy.json("status") !== "approved") return;
+  const cap4 = http.request(...Object.values(net(`/v1/network/authorizations/${buy.json("id")}/capture`, { network_ref: `c4-${buy.json("id")}`, amount_minor: 5000 }, "/v1/network/authorizations/:id/capture")));
+  if (!check(cap4, { "sprint 4 purchase captured": (r) => r.status === 201 })) return;
+  const advance = (days) => {
+    const k = uuid();
+    let r;
+    for (let i = 0; i < 5; i++) {
+      r = http.post(`${BASE}/v1/dev/accounts/${acc}/clock/advance`, JSON.stringify({ days }), {
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${tok}`, "Idempotency-Key": k },
+        tags: { name: "/v1/dev/accounts/:id/clock/advance" },
+      });
+      if (r.status !== 409 || r.json("error.code") !== "request_in_progress") break;
+      sleep(Number(r.headers["Retry-After"] || 1));
+    }
+    return r;
+  };
+  const toClose = advance(32);
+  if (!check(toClose, { "clock advanced to the close": (r) => r.status === 200 && r.json("billing.last_statement.cycle") >= 1 })) return;
+  statementsSeen.add(toClose.json("billing.last_statement.cycle"));
+  const minimum = toClose.json("billing.minimum_due_minor");
+  const payMinimum = __ITER % 3 !== 2;
+  if (payMinimum && minimum >= 100) {
+    const pay = http.post(`${BASE}/v1/accounts/${acc}/payments`, JSON.stringify({ amount_minor: minimum }), {
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${tok}`, "Idempotency-Key": uuid() },
+      tags: { name: "/v1/accounts/:id/payments" },
+    });
+    if (!check(pay, { "minimum payment created": (r) => r.status === 201 })) return;
+    const payId = pay.json("payment.id");
+    const path = "/v1/webhooks/bank/payments";
+    const body = JSON.stringify({ payment_id: payId, external_ref: `b4-${payId}`, amount_minor: minimum, currency: "USD", status: "settled" });
+    const ts = String(Math.floor(Date.now() / 1000));
+    const sig = crypto.hmac("sha256", BANK_SECRET, `${ts}.POST ${path}.${body}`, "hex");
+    const st = http.post(`${BASE}${path}`, body, { headers: { "Content-Type": "application/json", "X-Acme-Timestamp": ts, "X-Acme-Signature": sig }, tags: { name: path } });
+    if (!check(st, { "minimum payment settled": (r) => r.status === 200 })) return;
+  }
+  think();
+  if (advance(20).status !== 200) return;
+  const late = advance(20);
+  if (late.status !== 200) return;
+  const charges = http.get(`${BASE}/v1/accounts/${acc}/charges`, { headers: { Authorization: `Bearer ${tok}` }, tags: { name: "/v1/accounts/:id/charges" } });
+  if (charges.status !== 200) return;
+  const fees = charges.json("charges").filter((c) => c.kind === "fee").length;
+  if (!check(late, {
+    "billing stage is none or past_due": (r) => ["none", "past_due"].includes(r.json("billing.stage")),
+    "late fee only when the minimum was missed": () => (minimum > 0 && !payMinimum) === (fees === 1) && fees <= 1,
+  })) {
+    wrongBilling.add(1);
   }
 }

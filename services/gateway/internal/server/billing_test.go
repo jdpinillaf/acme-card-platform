@@ -13,6 +13,7 @@ import (
 
 	accountsv1 "github.com/acme/acme-card/gen/go/acme/accounts/v1"
 	billingv1 "github.com/acme/acme-card/gen/go/acme/billing/v1"
+	commonv1 "github.com/acme/acme-card/gen/go/acme/common/v1"
 	"github.com/acme/acme-card/pkg/auth"
 )
 
@@ -172,6 +173,18 @@ func TestAccountJSONHasBillingFields(t *testing.T) {
 	for _, want := range []string{`"account_time":"2027-03-18T00:00:00Z"`, `"activated_at":"2027-01-10T15:00:00Z"`, `"delinquency":"past_due"`} {
 		if !strings.Contains(w.Body.String(), want) {
 			t.Fatalf("missing %s in %s", want, w.Body.String())
+		}
+	}
+}
+
+// Every decline reason the accounts service can produce has a public name.
+func TestEveryDeclineReasonHasAName(t *testing.T) {
+	for v, name := range commonv1.DeclineReason_name {
+		if v == 0 {
+			continue
+		}
+		if declineReasons[commonv1.DeclineReason(v)] == "" {
+			t.Errorf("%s has no JSON name", name)
 		}
 	}
 }

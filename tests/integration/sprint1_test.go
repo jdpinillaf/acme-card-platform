@@ -23,6 +23,7 @@ import (
 	"google.golang.org/grpc"
 
 	accountsv1 "github.com/acme/acme-card/gen/go/acme/accounts/v1"
+	billingv1 "github.com/acme/acme-card/gen/go/acme/billing/v1"
 	ledgerv1 "github.com/acme/acme-card/gen/go/acme/ledger/v1"
 	"github.com/acme/acme-card/pkg/auth"
 	"github.com/acme/acme-card/pkg/db"
@@ -36,6 +37,8 @@ import (
 	accountsmig "github.com/acme/acme-card/services/accounts/migrations"
 	"github.com/acme/acme-card/services/audit/audittest"
 	auditmig "github.com/acme/acme-card/services/audit/migrations"
+	"github.com/acme/acme-card/services/billing/billingtest"
+	billingmig "github.com/acme/acme-card/services/billing/migrations"
 	"github.com/acme/acme-card/services/gateway/gatewaytest"
 	gatewaymig "github.com/acme/acme-card/services/gateway/migrations"
 	"github.com/acme/acme-card/services/ledger/ledgertest"
@@ -49,8 +52,9 @@ var (
 )
 
 type stack struct {
-	url                              string
-	accounts, ledger, gateway, audit *pgxpool.Pool
+	url                                       string
+	accounts, ledger, gateway, audit, billing *pgxpool.Pool
+	statements                                billingtest.Store
 }
 
 func startStack(t *testing.T) *stack {
@@ -76,11 +80,12 @@ func startStack(t *testing.T) *stack {
 		ledger:   connect("ledger", ledgermig.FS),
 		gateway:  connect("gateway", gatewaymig.FS),
 		audit:    connect("audit", auditmig.FS),
+		billing:  connect("billing", billingmig.FS),
 	}
 
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
 	pub := events.NewSNSPublisher(aws.SNS, aws.TopicARN)
-	for _, p := range []*pgxpool.Pool{s.accounts, s.ledger, s.gateway} {
+	for _, p := range []*pgxpool.Pool{s.accounts, s.ledger, s.gateway, s.billing} {
 		go outbox.NewRelay(p, pub, 100).Run(ctx, 100*time.Millisecond, quiet)
 	}
 	go audittest.NewConsumer(aws.SQS, aws.QueueURL, s.audit).Run(ctx)
@@ -103,8 +108,14 @@ func startStack(t *testing.T) *stack {
 		accountsv1.RegisterAccountsServiceServer(g, accountstest.NewServer(s.accounts, ledgerv1.NewLedgerServiceClient(ledgerConn)))
 	})
 
+	billingSrv, store := billingtest.NewServer(s.billing, ledgerv1.NewLedgerServiceClient(ledgerConn), accountsv1.NewAccountsServiceClient(accountsConn))
+	s.statements = store
+	billingConn := serve(func(g *grpc.Server) { billingv1.RegisterBillingServiceServer(g, billingSrv) })
+
 	srv := httptest.NewServer(gatewaytest.NewHandler(gatewaytest.Deps{
 		Accounts:         accountsv1.NewAccountsServiceClient(accountsConn),
+		Billing:          billingv1.NewBillingServiceClient(billingConn),
+		DevClock:         true,
 		JWTSecret:        jwtSecret,
 		BankSecret:       bankSecret,
 		NetworkSecret:    networkSecret,
