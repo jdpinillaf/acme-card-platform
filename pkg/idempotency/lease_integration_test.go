@@ -50,9 +50,11 @@ func TestExpiredLeaseIsTakenOver(t *testing.T) {
 	s := newStore(t).WithLease(200 * time.Millisecond).WithWaitTimeout(100 * time.Millisecond)
 	ctx := context.Background()
 	kh, rh := KeyHash("sub", "k-lease"), RequestHash("POST", "/x", nil)
-	if claim, _, err := s.Acquire(ctx, kh, rh); err != nil || claim == nil {
+	claim, _, err := s.Acquire(ctx, kh, rh)
+	if err != nil || claim == nil {
 		t.Fatalf("first acquire: %v", err)
 	}
+	t.Cleanup(func() { _ = claim.Abort(ctx) }) // never runs before the test body: simulates a crash
 	// Owner never completes nor aborts (crash). A duplicate within the lease gets in-progress.
 	if _, _, err := s.Acquire(ctx, kh, rh); err != ErrInProgress {
 		t.Fatalf("within lease: want ErrInProgress, got %v", err)
@@ -79,6 +81,7 @@ func TestStaleOwnerCannotCompleteAfterTakeover(t *testing.T) {
 	if err != nil || stale == nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = stale.Abort(ctx) })
 	time.Sleep(300 * time.Millisecond)
 	fresh, _, err := s.Acquire(ctx, kh, rh)
 	if err != nil || fresh == nil {

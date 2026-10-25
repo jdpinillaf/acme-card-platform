@@ -55,6 +55,13 @@ The bank is never exposed beyond the confirmed collateral. Purchases draw first 
 - **I-3 Return window.** Returns are accepted within 5 days (120 h) of `settled_at`. Later returns get 409 `return_window_expired`.
 - **I-4 Restriction.** `payment_returned` is a system restriction, separate from the customer's freeze. The customer cannot lift it. It lifts automatically once `Σ active holds + receivable ≤ limit` again, normally after a later payment settles. In the decline order it goes right after `currency_not_supported` and before `card_frozen`.
 
+## 4b. Builder's calls after design review
+- **C-1 Lifting the restriction.**
+  - Settling a payment re-checks exposure in the same transaction and lifts the restriction at once when exposure is back within the limit.
+  - Every other path that lowers exposure is covered by a re-evaluation sweep that runs each minute in the accounts worker loop: releases, expiries, reversals, refunds and deposits that raise the limit. Lifting a little later than the event is acceptable there.
+  - The invariant checks "restricted only while over the limit" with a 5-minute grace period.
+- **C-2 Payments the bank never answers.** A payment with no answer expires after 7 days (`pending → expired`) and stops counting toward the cap. There is no customer cancel endpoint in this sprint.
+
 ## 5. Constraints
 
 Same as Sprints 1–2:
@@ -102,7 +109,7 @@ Same as Sprints 1–2:
   - create a payment;
   - list payments with Settle, Fail and Return buttons;
   - show debt, credit balance and restriction.
-- See open question Q-2 about "avisarle de todas las acciones".
+- See open question Q-B about "avisarle de todas las acciones".
 
 ## 7. Test gates
 - **Same payment, many times.** The same `Idempotency-Key` ×50 creates one payment. The same bank webhook ×50 settles once (one journal entry).
@@ -116,6 +123,10 @@ Same as Sprints 1–2:
 - **Reconciler.** Lost-response tests for `settling` and `returning` payments.
 - **Invariants.** `verify.sql` gains: payments ↔ ledger journals in both directions; returns ↔ return journals; signed exposure ≤ limit; restricted accounts actually over the limit, or lifted.
 - **Load.** The k6 flow gains pay → settle.
+
+## 7b. Open questions for the user
+- **Q-A** Returns after credit was restored can push exposure above the collateral (see review question 1).
+- **Q-B** What "avisarle de todas las acciones" means: a simulator activity feed, or customer notifications (Sprint 7)?
 
 ## 8. Left to the builder
 - Table and column names.
