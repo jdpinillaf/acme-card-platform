@@ -18,6 +18,8 @@ import (
 	accmig "github.com/acme/acme-card/services/accounts/migrations"
 	"github.com/acme/acme-card/services/audit/internal/store"
 	auditmig "github.com/acme/acme-card/services/audit/migrations"
+	billmig "github.com/acme/acme-card/services/billing/migrations"
+	ledmig "github.com/acme/acme-card/services/ledger/migrations"
 )
 
 type fixture struct {
@@ -36,6 +38,12 @@ func setup(t *testing.T) *fixture {
 	t.Helper()
 	dsn := testutil.StartPostgres(t)
 	if err := db.Migrate(dsn, "accounts", accmig.FS, "."); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Migrate(dsn, "ledger", ledmig.FS, "."); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Migrate(dsn, "billing", billmig.FS, "."); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Migrate(dsn, "audit", auditmig.FS, "."); err != nil {

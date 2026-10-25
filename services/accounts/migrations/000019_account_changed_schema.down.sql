@@ -1,0 +1,1 @@
+-- 000018 defines the previous (search_path-relative) body; nothing to undo beyond it.

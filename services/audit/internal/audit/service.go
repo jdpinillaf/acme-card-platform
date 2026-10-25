@@ -54,5 +54,10 @@ type Service struct {
 
 // NewService builds the service; key signs checkpoints and archive manifests.
 func NewService(pool *pgxpool.Pool, objects ObjectStore, key ed25519.PrivateKey, cfg Config) *Service {
-	return &Service{pool: pool, store: store.New(pool), objects: objects, key: key, cfg: cfg.withDefaults(), now: func() time.Time { return time.Now().UTC() }}
+	s := &Service{pool: pool, store: store.New(pool), objects: objects, key: key, cfg: cfg.withDefaults(), now: func() time.Time { return time.Now().UTC() }}
+	s.dailyJobs = append(s.dailyJobs, func(ctx context.Context) error {
+		_, err := s.RunReconciliation(ctx, &auditv1.RunReconciliationRequest{})
+		return err
+	})
+	return s
 }

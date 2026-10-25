@@ -17,8 +17,10 @@ import (
 	"github.com/acme/acme-card/pkg/awsx"
 	"github.com/acme/acme-card/pkg/config"
 	"github.com/acme/acme-card/pkg/db"
+	"github.com/acme/acme-card/pkg/events"
 	"github.com/acme/acme-card/pkg/grpcx"
 	"github.com/acme/acme-card/pkg/logging"
+	"github.com/acme/acme-card/pkg/outbox"
 	"github.com/acme/acme-card/services/audit/internal/audit"
 	"github.com/acme/acme-card/services/audit/internal/store"
 	"github.com/acme/acme-card/services/audit/migrations"
@@ -64,8 +66,9 @@ func main() {
 		os.Exit(1)
 	}
 	svc := audit.NewService(pool, audit.NewS3Store(clients.S3, cfg.AuditBucket), ed25519.PrivateKey(rawKey),
-		audit.Config{ProducerSchemas: []string{"accounts", "ledger", "billing", "gateway"}})
+		audit.Config{ProducerSchemas: []string{"accounts", "ledger", "billing", "gateway", "audit"}})
 	go svc.RunDaily(ctx, time.Hour, log)
+	go outbox.NewRelay(pool, events.NewSNSPublisher(clients.SNS, cfg.SNSTopicARN), 100, "audit").Run(ctx, 250*time.Millisecond, log)
 	go store.NewConsumer(clients.SQS, cfg.AuditSQSQueueURL, st, log).Run(ctx)
 	log.Info("audit api listening", "addr", cfg.GRPCAddr)
 	if err := grpcx.Serve(ctx, cfg.GRPCAddr, func(s *grpc.Server) { auditv1.RegisterAuditServiceServer(s, svc) }); err != nil {
