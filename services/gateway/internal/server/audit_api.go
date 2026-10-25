@@ -132,7 +132,8 @@ func (s *server) auditVerify(w http.ResponseWriter, r *http.Request) {
 	}
 	s.queried(r, map[string]any{"chain_valid": res.ChainValid})
 	httpx.WriteJSON(w, 200, map[string]any{"chain_valid": res.ChainValid, "first_bad_chain_seq": res.FirstBadChainSeq, "checked": res.Checked,
-		"checkpoints_valid": res.CheckpointsValid, "checkpoints": res.Checkpoints, "gaps": gaps, "stuck_outbox": stuck, "detail": res.Detail})
+		"checkpoints_valid": res.CheckpointsValid, "checkpoints": res.Checkpoints, "gaps": gaps, "stuck_outbox": stuck, "detail": res.Detail,
+		"incremental": res.Incremental, "full_through_chain_seq": res.FullThroughChainSeq, "full_verified_at": ts(res.FullVerifiedAt)})
 }
 
 func (s *server) auditCheckpoint(w http.ResponseWriter, r *http.Request) {
@@ -234,11 +235,11 @@ func (s *server) auditGetExport(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) auditSnapshots(w http.ResponseWriter, r *http.Request) {
-	res, err := s.Accounts.SnapshotAccounts(r.Context(), &accountsv1.SnapshotAccountsRequest{})
+	res, err := s.Accounts.SnapshotAccounts(r.Context(), &accountsv1.SnapshotAccountsRequest{Background: true})
 	if err != nil {
 		writeGRPCError(w, r, err)
 		return
 	}
-	s.queried(r, map[string]any{"snapshots": res.Count})
-	httpx.WriteJSON(w, 201, map[string]any{"count": res.Count})
+	s.queried(r, map[string]any{"snapshots": res.Count, "background": res.Background})
+	httpx.WriteJSON(w, http.StatusAccepted, map[string]any{"count": res.Count, "background": res.Background})
 }

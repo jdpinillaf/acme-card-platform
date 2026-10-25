@@ -76,7 +76,7 @@ func main() {
 			fail(err)
 		}
 	case "verify-chain":
-		r, err := svc.Verify(ctx, &auditv1.VerifyRequest{})
+		r, err := svc.Verify(ctx, &auditv1.VerifyRequest{Full: true})
 		if err != nil {
 			fail(err)
 		}

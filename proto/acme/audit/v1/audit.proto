@@ -59,6 +59,9 @@ message QueryEventsResponse {
 
 message VerifyRequest {
   acme.common.v1.RequestMeta meta = 1;
+  // full walks the whole chain and records the result; otherwise the chain is verified from the
+  // last recorded full run (whose anchor hash is re-checked).
+  bool full = 2;
 }
 message Gap {
   string source = 1;
@@ -79,6 +82,9 @@ message VerifyReport {
   repeated Gap gaps = 6;
   repeated StuckOutbox stuck_outbox = 7;
   string detail = 8;
+  bool incremental = 9;
+  int64 full_through_chain_seq = 10;
+  google.protobuf.Timestamp full_verified_at = 11;
 }
 
 message CreateCheckpointRequest {

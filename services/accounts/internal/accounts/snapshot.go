@@ -7,9 +7,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	accountsv1 "github.com/acme/acme-card/gen/go/acme/accounts/v1"
 	commonv1 "github.com/acme/acme-card/gen/go/acme/common/v1"
@@ -84,30 +87,83 @@ func (s *Service) snapshotOne(ctx context.Context, accountID string) error {
 }
 
 // SnapshotAccounts emits snapshot.account now for the given accounts, or every non-cancelled
-// account when none is given.
+// account when none is given. Background runs the all-accounts snapshot detached from the
+// caller (a large book takes longer than an API request may), one run at a time.
 func (s *Service) SnapshotAccounts(ctx context.Context, req *accountsv1.SnapshotAccountsRequest) (*accountsv1.SnapshotAccountsResponse, error) {
+	if req.Background && len(req.AccountIds) > 0 {
+		return nil, status.Error(codes.InvalidArgument, "background snapshots cover every account")
+	}
 	ids := req.AccountIds
 	if len(ids) == 0 {
-		rows, err := s.pool.Query(ctx, `SELECT id::text FROM accounts WHERE state <> 'cancelled' ORDER BY id`)
-		if err != nil {
+		var err error
+		if ids, err = s.snapshotIDs(ctx); err != nil {
 			return nil, internal(err)
 		}
-		for rows.Next() {
-			var id string
-			if err := rows.Scan(&id); err == nil {
-				ids = append(ids, id)
-			}
-		}
-		rows.Close()
 	}
-	n := 0
-	for _, id := range ids {
-		if err := s.snapshotOne(ctx, id); err != nil {
+	if !req.Background {
+		if err := s.snapshotAll(ctx, ids); err != nil {
 			return nil, err
 		}
-		n++
+		return &accountsv1.SnapshotAccountsResponse{Count: int32(len(ids))}, nil
 	}
-	return &accountsv1.SnapshotAccountsResponse{Count: int32(n)}, nil
+	if !s.snapshotting.CompareAndSwap(false, true) {
+		return nil, status.Error(codes.FailedPrecondition, "a background snapshot is already running")
+	}
+	go func() {
+		defer s.snapshotting.Store(false)
+		if err := s.snapshotAll(context.WithoutCancel(ctx), ids); err != nil {
+			slog.Error("background account snapshot failed", "err", err)
+		}
+	}()
+	return &accountsv1.SnapshotAccountsResponse{Count: int32(len(ids)), Background: true}, nil
+}
+
+func (s *Service) snapshotIDs(ctx context.Context) ([]string, error) {
+	rows, err := s.pool.Query(ctx, `SELECT id::text FROM accounts WHERE state <> 'cancelled' ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[string])
+}
+
+// snapshotAll snapshots ids with a few workers; the first error stops the run.
+func (s *Service) snapshotAll(ctx context.Context, ids []string) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	work := make(chan string)
+	errs := make(chan error, 1)
+	var wg sync.WaitGroup
+	for w := 0; w < 8; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for id := range work {
+				if err := s.snapshotOne(ctx, id); err != nil {
+					select {
+					case errs <- err:
+					default:
+					}
+					cancel()
+				}
+			}
+		}()
+	}
+feed:
+	for _, id := range ids {
+		select {
+		case work <- id:
+		case <-ctx.Done():
+			break feed
+		}
+	}
+	close(work)
+	wg.Wait()
+	select {
+	case err := <-errs:
+		return err
+	default:
+		return nil
+	}
 }
 
 // SnapshotDaily snapshots every account once per UTC day (the first caller of the day wins).

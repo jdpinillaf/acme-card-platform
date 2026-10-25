@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -44,6 +45,8 @@ type Service struct {
 	// returnWindow is how long a settled payment can still be returned (ADR-018); the close saga
 	// holds the payout until every window has passed.
 	returnWindow time.Duration
+	// snapshotting guards the single background "snapshot now" run (Sprint 6).
+	snapshotting atomic.Bool
 }
 
 // Option configures the Service.

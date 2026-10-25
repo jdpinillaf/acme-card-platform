@@ -55,9 +55,9 @@ type fakeSnapAccounts struct {
 	snapped bool
 }
 
-func (f *fakeSnapAccounts) SnapshotAccounts(context.Context, *accountsv1.SnapshotAccountsRequest, ...grpc.CallOption) (*accountsv1.SnapshotAccountsResponse, error) {
-	f.snapped = true
-	return &accountsv1.SnapshotAccountsResponse{Count: 4}, nil
+func (f *fakeSnapAccounts) SnapshotAccounts(_ context.Context, r *accountsv1.SnapshotAccountsRequest, _ ...grpc.CallOption) (*accountsv1.SnapshotAccountsResponse, error) {
+	f.snapped = r.Background // the API never snapshots synchronously: a large book outlasts a request
+	return &accountsv1.SnapshotAccountsResponse{Count: 4, Background: r.Background}, nil
 }
 
 func auditorToken(t *testing.T) string {
@@ -110,7 +110,7 @@ func TestAuditAPIRoutesAndMetaAudit(t *testing.T) {
 		{"GET", "/v1/audit/replay/" + accID, "", `"differences":[]`},
 		{"POST", "/v1/audit/exports", `{"filter":{"account_id":"` + accID + `"}}`, `"count":3`},
 		{"GET", "/v1/audit/exports/x1", "", `{"id":"e1"}`},
-		{"POST", "/v1/audit/snapshots", "", `"count":4`},
+		{"POST", "/v1/audit/snapshots", "", `"background":true`},
 	} {
 		w := do(h, c.method, c.path, c.body, hdr)
 		if w.Code/100 != 2 || !strings.Contains(w.Body.String(), c.want) {

@@ -5,8 +5,13 @@ package accounts
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	accountsv1 "github.com/acme/acme-card/gen/go/acme/accounts/v1"
 )
@@ -103,6 +108,37 @@ func TestSnapshotAccounts(t *testing.T) {
 	want, _ := SnapshotHash(after.Account, after.Balances)
 	if after.Hash != want || len(after.Hash) != 64 {
 		t.Fatalf("hash %s want %s", after.Hash, want)
+	}
+}
+
+func TestSnapshotAccountsBackground(t *testing.T) {
+	f, _, _ := closeFixture(t)
+	ctx := context.Background()
+	var ids []string
+	for i := 0; i < 3; i++ {
+		ids = append(ids, f.withDebt(t, fmt.Sprintf("cust-bg%d", i), 1000, 100).Id)
+	}
+	r, err := f.svc.SnapshotAccounts(ctx, &accountsv1.SnapshotAccountsRequest{Background: true})
+	if err != nil || !r.Background || r.Count != 3 {
+		t.Fatalf("background snapshot: %v %+v", err, r)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var n int
+		if err := f.pool.QueryRow(ctx, `SELECT count(DISTINCT payload->>'aggregate_id') FROM outbox
+			WHERE payload->>'type'='snapshot.account' AND payload->>'aggregate_id' = ANY($1)`, ids).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n == 3 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("background snapshot emitted %d/3", n)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if _, err := f.svc.SnapshotAccounts(ctx, &accountsv1.SnapshotAccountsRequest{Background: true, AccountIds: ids}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("background with ids: %v", err)
 	}
 }
 

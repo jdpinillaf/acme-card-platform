@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -18,18 +19,33 @@ import (
 )
 
 // Verify recomputes the chain, checks every signed checkpoint, lists per-source gaps and stuck
-// producer outboxes.
-func (s *Service) Verify(ctx context.Context, _ *auditv1.VerifyRequest) (*auditv1.VerifyReport, error) {
+// producer outboxes. A full run walks the whole chain and is recorded; otherwise the walk starts
+// after the last recorded full run, whose anchor hash must still be in place (a re-hash of
+// anything before it changes that hash).
+func (s *Service) Verify(ctx context.Context, req *auditv1.VerifyRequest) (*auditv1.VerifyReport, error) {
 	r := &auditv1.VerifyReport{}
 	from, prev, err := s.chainStart(ctx)
 	if err != nil {
 		return nil, internal(err)
 	}
-	bad, checked, err := s.store.VerifyFrom(ctx, from, 0, prev)
-	if err != nil && bad == 0 {
-		return nil, internal(err)
+	var bad, checked int64
+	if !req.GetFull() {
+		if bad, from, prev, err = s.resumeFromFullRun(ctx, r, from, prev); err != nil {
+			return nil, internal(err)
+		}
+	}
+	if bad == 0 {
+		bad, checked, err = s.store.VerifyFrom(ctx, from, 0, prev)
+		if err != nil && bad == 0 {
+			return nil, internal(err)
+		}
 	}
 	r.FirstBadChainSeq, r.Checked, r.ChainValid = bad, checked, bad == 0
+	if req.GetFull() && r.ChainValid {
+		if err := s.recordFullRun(ctx, from, checked, prev); err != nil {
+			return nil, internal(err)
+		}
+	}
 	if r.Gaps, err = s.gaps(ctx); err != nil {
 		return nil, internal(err)
 	}
@@ -42,6 +58,52 @@ func (s *Service) Verify(ctx context.Context, _ *auditv1.VerifyRequest) (*auditv
 	}
 	r.Checkpoints, r.CheckpointsValid, r.Detail = int32(n), okCP, detail
 	return r, nil
+}
+
+// resumeFromFullRun moves the start of an incremental walk to just after the last recorded full
+// run. It returns a non-zero bad chain_seq when that run's anchor row changed or disappeared.
+func (s *Service) resumeFromFullRun(ctx context.Context, r *auditv1.VerifyReport, from int64, prev string) (int64, int64, string, error) {
+	var through int64
+	var hash string
+	var ranAt time.Time
+	err := s.pool.QueryRow(ctx, `SELECT through_chain_seq, through_hash, ran_at FROM audit_verifications
+		ORDER BY through_chain_seq DESC, ran_at DESC LIMIT 1`).Scan(&through, &hash, &ranAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, from, prev, nil // never fully verified: walk everything
+	}
+	if err != nil {
+		return 0, 0, "", err
+	}
+	r.Incremental, r.FullThroughChainSeq, r.FullVerifiedAt = true, through, timestamppb.New(ranAt)
+	if through < from { // the anchor was purged with an archived range
+		return 0, from, prev, nil
+	}
+	var stored string
+	err = s.pool.QueryRow(ctx, `SELECT hash FROM audit_events WHERE chain_seq=$1`, through).Scan(&stored)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && stored != hash) {
+		r.Detail = fmt.Sprintf("chain at %d differs from the last full verification", through)
+		return through, 0, "", nil
+	}
+	if err != nil {
+		return 0, 0, "", err
+	}
+	return 0, through + 1, hash, nil
+}
+
+// recordFullRun stores the anchor of a valid full walk.
+func (s *Service) recordFullRun(ctx context.Context, from, checked int64, prev string) error {
+	through, hash := from-1, prev
+	if checked > 0 {
+		through = from + checked - 1
+		if err := s.pool.QueryRow(ctx, `SELECT hash FROM audit_events WHERE chain_seq=$1`, through).Scan(&hash); err != nil {
+			return err
+		}
+	}
+	if through < 1 {
+		return nil
+	}
+	_, err := s.pool.Exec(ctx, `INSERT INTO audit_verifications (through_chain_seq, through_hash, checked) VALUES ($1, $2, $3)`, through, hash, checked)
+	return err
 }
 
 // chainStart is where verification begins: chain_seq 1, or right after the last purged range

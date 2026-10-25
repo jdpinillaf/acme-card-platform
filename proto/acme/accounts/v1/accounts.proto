@@ -64,9 +64,13 @@ service AccountsService {
 
 message SnapshotAccountsRequest {
   repeated string account_ids = 1;
+  // background snapshots every account asynchronously (the API's "snapshot now"); count is the
+  // number queued. Only one background run at a time.
+  bool background = 2;
 }
 message SnapshotAccountsResponse {
   int32 count = 1;
+  bool background = 2;
 }
 
 message Destination {

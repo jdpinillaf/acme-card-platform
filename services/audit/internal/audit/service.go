@@ -6,6 +6,7 @@ package audit
 import (
 	"context"
 	"crypto/ed25519"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -56,6 +57,12 @@ type Service struct {
 func NewService(pool *pgxpool.Pool, objects ObjectStore, key ed25519.PrivateKey, cfg Config) *Service {
 	s := &Service{pool: pool, store: store.New(pool), objects: objects, key: key, cfg: cfg.withDefaults(), now: func() time.Time { return time.Now().UTC() }}
 	s.dailyJobs = append(s.dailyJobs, func(ctx context.Context) error {
+		r, err := s.Verify(ctx, &auditv1.VerifyRequest{Full: true})
+		if err == nil && !r.ChainValid {
+			err = fmt.Errorf("audit chain broken at chain_seq %d", r.FirstBadChainSeq)
+		}
+		return err
+	}, func(ctx context.Context) error {
 		_, err := s.RunReconciliation(ctx, &auditv1.RunReconciliationRequest{})
 		return err
 	})

@@ -157,3 +157,36 @@ func TestQueryEventsFilters(t *testing.T) {
 		t.Fatal("actor filter")
 	}
 }
+
+func TestVerifyIncrementalAfterFullRun(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	f.record(t, "accounts", 1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+	full, err := f.svc.Verify(ctx, &auditv1.VerifyRequest{Full: true})
+	if err != nil || !full.ChainValid || full.Checked != 10 || full.Incremental {
+		t.Fatalf("full: %+v %v", full, err)
+	}
+	f.record(t, "accounts", 11, 12, 13, 14, 15)
+	r, err := f.svc.Verify(ctx, &auditv1.VerifyRequest{})
+	if err != nil || !r.ChainValid || !r.Incremental || r.Checked != 5 || r.FullThroughChainSeq != 10 || r.FullVerifiedAt == nil {
+		t.Fatalf("incremental: %+v %v", r, err)
+	}
+	// tampering after the full run's anchor is caught incrementally
+	f.tamper(t, `UPDATE audit_events SET after='{"n":0}' WHERE chain_seq=12`)
+	if r, _ = f.svc.Verify(ctx, &auditv1.VerifyRequest{}); r.ChainValid || r.FirstBadChainSeq != 12 {
+		t.Fatalf("tamper after anchor: %+v", r)
+	}
+	f.tamper(t, `UPDATE audit_events SET after='{"n":12}' WHERE chain_seq=12`)
+	// tampering before it and re-hashing everything moves the anchor: caught too
+	f.tamper(t, `UPDATE audit_events SET after='{"n":0}' WHERE chain_seq=3`)
+	if err := f.rehash(t); err != nil {
+		t.Fatal(err)
+	}
+	if r, _ = f.svc.Verify(ctx, &auditv1.VerifyRequest{}); r.ChainValid || r.FirstBadChainSeq != 10 {
+		t.Fatalf("rehash before anchor: %+v", r)
+	}
+	// a full run always walks everything (and is the only kind that records)
+	if r, _ = f.svc.Verify(ctx, &auditv1.VerifyRequest{Full: true}); r.Incremental || r.Checked != 15 {
+		t.Fatalf("second full: %+v", r)
+	}
+}
