@@ -69,23 +69,41 @@ type accountRow struct {
 	Collateral    int64     `json:"collateral_minor"`
 	CreditLimit   int64     `json:"credit_limit_minor"`
 	PurchaseLimit int64     `json:"purchase_limit_minor"`
+	Restricted    *string   `json:"restricted_reason,omitempty"`
+	Epoch         int64     `json:"-"`
 	CreatedAt     time.Time `json:"-"`
 	UpdatedAt     time.Time `json:"-"`
 }
 
-const accountCols = `id::text, customer_id, currency, state, frozen, collateral_minor, credit_limit_minor, purchase_limit_minor, created_at, updated_at`
+const accountCols = `id::text, customer_id, currency, state, frozen, collateral_minor, credit_limit_minor, purchase_limit_minor, created_at, updated_at, restricted_reason, exposure_epoch`
+
+func (a accountRow) restriction() string {
+	if a.Restricted == nil {
+		return ""
+	}
+	return *a.Restricted
+}
 
 func scanAccount(row pgx.Row) (accountRow, error) {
 	var a accountRow
-	err := row.Scan(&a.ID, &a.CustomerID, &a.Currency, &a.State, &a.Frozen, &a.Collateral, &a.CreditLimit, &a.PurchaseLimit, &a.CreatedAt, &a.UpdatedAt)
+	err := row.Scan(&a.ID, &a.CustomerID, &a.Currency, &a.State, &a.Frozen, &a.Collateral, &a.CreditLimit, &a.PurchaseLimit, &a.CreatedAt, &a.UpdatedAt, &a.Restricted, &a.Epoch)
 	return a, err
 }
 
-func (a accountRow) proto(available int64) *accountsv1.Account {
+// ledgerView is what accounts shows from the ledger: available credit and the signed receivable.
+type ledgerView struct {
+	Available  int64
+	Receivable int64
+	Holds      int64
+}
+
+func (a accountRow) proto(v ledgerView) *accountsv1.Account {
+	available := v.Available
 	return &accountsv1.Account{
 		Id: a.ID, CustomerId: a.CustomerID, Currency: a.Currency, State: stateProto(a.State), Frozen: a.Frozen,
 		CreditLimitMinor: a.CreditLimit, AvailableCreditMinor: available, CollateralMinor: a.Collateral,
 		PurchaseLimitMinor: a.PurchaseLimit, CreatedAt: timestamppb.New(a.CreatedAt), UpdatedAt: timestamppb.New(a.UpdatedAt),
+		OutstandingMinor: max(v.Receivable, 0), CreditBalanceMinor: max(-v.Receivable, 0), RestrictedReason: a.restriction(),
 	}
 }
 
@@ -134,7 +152,7 @@ func (s *Service) CreateAccount(ctx context.Context, req *accountsv1.CreateAccou
 	if _, err := s.ledger.OpenLedger(ctx, &ledgerv1.OpenLedgerRequest{AccountId: id, Currency: req.Currency}); err != nil {
 		return nil, err
 	}
-	return &accountsv1.CreateAccountResponse{Account: acc.proto(0)}, nil
+	return &accountsv1.CreateAccountResponse{Account: acc.proto(ledgerView{})}, nil
 }
 
 // GetAccount returns the account; available credit is derived from the ledger.
@@ -249,11 +267,14 @@ func (s *Service) SettleDeposit(ctx context.Context, req *accountsv1.SettleDepos
 		return nil, grpcx.Error(codes.InvalidArgument, "invalid_status", "status must be settled or failed")
 	}
 
-	// Step 1: reserve (or finish a FAILED notice outright).
+	// Step 1: reserve (or finish a FAILED notice outright). The ledger is never called while the
+	// deposit and account rows are locked; the response (which needs the ledger's available
+	// credit) is built after each transaction commits.
 	var (
-		dep  depositRow
-		acc  accountRow
-		resp *accountsv1.SettleDepositResponse
+		dep      depositRow
+		acc      accountRow
+		done     bool // the deposit reached its final state in this transaction (or already had)
+		replayed bool
 	)
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		var err error
@@ -265,8 +286,8 @@ func (s *Service) SettleDeposit(ctx context.Context, req *accountsv1.SettleDepos
 		}
 		switch dep.Status {
 		case "settled", "failed":
-			resp, err = s.replayOrConflict(ctx, dep, acc, req)
-			return err
+			done, replayed = true, true
+			return replayConflict(dep, req)
 		case "settling":
 			if req.Status == accountsv1.DepositStatus_DEPOSIT_STATUS_SETTLED && dep.ExternalRef != nil && *dep.ExternalRef == req.ExternalRef {
 				return nil // resume the saga
@@ -289,15 +310,8 @@ func (s *Service) SettleDeposit(ctx context.Context, req *accountsv1.SettleDepos
 			dep.Status, dep.ExternalRef = "failed", &req.ExternalRef
 			ev := event("collateral.deposit_failed", "deposit", dep.ID, req.Meta)
 			ev.After = snapshot(map[string]any{"account_id": acc.ID, "external_ref": req.ExternalRef, "status": "failed"})
-			if err := outbox.Enqueue(ctx, tx, ev); err != nil {
-				return err
-			}
-			avail, err := s.available(ctx, acc)
-			if err != nil {
-				return err
-			}
-			resp = &accountsv1.SettleDepositResponse{Deposit: dep.proto(), Account: acc.proto(avail)}
-			return nil
+			done = true
+			return outbox.Enqueue(ctx, tx, ev)
 		}
 		_, err = tx.Exec(ctx, `UPDATE deposits SET status='settling', external_ref=$2, settling_at=$3 WHERE id=$1`, dep.ID, req.ExternalRef, s.clock.Now())
 		return err
@@ -305,8 +319,8 @@ func (s *Service) SettleDeposit(ctx context.Context, req *accountsv1.SettleDepos
 	if err != nil {
 		return nil, mapSettleErr(err)
 	}
-	if resp != nil {
-		return resp, nil
+	if done {
+		return s.settleResponse(ctx, dep, acc, replayed)
 	}
 
 	// Past the reservation the saga must finish even if the caller goes away.
@@ -338,8 +352,8 @@ func (s *Service) SettleDeposit(ctx context.Context, req *accountsv1.SettleDepos
 			return err
 		}
 		if dep.Status == "settled" { // a concurrent resumer finished first
-			resp, err = s.replayOrConflict(ctx, dep, acc, req)
-			return err
+			replayed = true
+			return replayConflict(dep, req)
 		}
 		if dep.Status != "settling" {
 			return status.Errorf(codes.Internal, "deposit %s in unexpected state %s after ledger post", dep.ID, dep.Status)
@@ -370,20 +384,21 @@ func (s *Service) SettleDeposit(ctx context.Context, req *accountsv1.SettleDepos
 			activated.Before, activated.After = snapshot(before), snapshot(acc)
 			evs = append(evs, activated)
 		}
-		if err := outbox.Enqueue(ctx, tx, evs...); err != nil {
-			return err
-		}
-		avail, err := s.available(ctx, acc)
-		if err != nil {
-			return err
-		}
-		resp = &accountsv1.SettleDepositResponse{Deposit: dep.proto(), Account: acc.proto(avail)}
-		return nil
+		return outbox.Enqueue(ctx, tx, evs...)
 	})
 	if err != nil {
 		return nil, mapSettleErr(err)
 	}
-	return resp, nil
+	return s.settleResponse(ctx, dep, acc, replayed)
+}
+
+// settleResponse builds the webhook answer; it reads the ledger, so it runs outside any lock.
+func (s *Service) settleResponse(ctx context.Context, dep depositRow, acc accountRow, replayed bool) (*accountsv1.SettleDepositResponse, error) {
+	avail, err := s.available(ctx, acc)
+	if err != nil {
+		return nil, err
+	}
+	return &accountsv1.SettleDepositResponse{Deposit: dep.proto(), Account: acc.proto(avail), Replayed: replayed}, nil
 }
 
 // sagaTimeout bounds the post-reservation steps of a saga, which run detached from the caller.
@@ -403,20 +418,17 @@ func mapSettleErr(err error) error {
 	return internal(err)
 }
 
-// replayOrConflict answers a webhook for a deposit that already reached a terminal state.
-func (s *Service) replayOrConflict(ctx context.Context, dep depositRow, acc accountRow, req *accountsv1.SettleDepositRequest) (*accountsv1.SettleDepositResponse, error) {
+// replayConflict decides whether a webhook for a deposit already in a terminal state is a replay
+// (nil) or a conflicting notice (error).
+func replayConflict(dep depositRow, req *accountsv1.SettleDepositRequest) error {
 	same := dep.ExternalRef != nil && *dep.ExternalRef == req.ExternalRef && depositStatusProto(dep.Status) == req.Status
-	if !same {
-		if dep.Status == "failed" {
-			return nil, grpcx.Error(codes.FailedPrecondition, "deposit_failed", "deposit already failed")
-		}
-		return nil, grpcx.Error(codes.AlreadyExists, "deposit_already_settled", "deposit already settled with a different external_ref")
+	if same {
+		return nil
 	}
-	avail, err := s.available(ctx, acc)
-	if err != nil {
-		return nil, err
+	if dep.Status == "failed" {
+		return grpcx.Error(codes.FailedPrecondition, "deposit_failed", "deposit already failed")
 	}
-	return &accountsv1.SettleDepositResponse{Deposit: dep.proto(), Account: acc.proto(avail), Replayed: true}, nil
+	return grpcx.Error(codes.AlreadyExists, "deposit_already_settled", "deposit already settled with a different external_ref")
 }
 
 type querier interface {
@@ -438,17 +450,17 @@ func (s *Service) load(ctx context.Context, q querier, id string, lock bool) (ac
 	return acc, err
 }
 
-// available comes from the ledger (strict-limit rule, net of active holds), never above the
-// account's credit limit.
-func (s *Service) available(ctx context.Context, acc accountRow) (int64, error) {
+// available returns the ledger view: available credit under the signed rule (ADR-018; may exceed the
+// credit limit when there is a credit balance) and the signed receivable.
+func (s *Service) available(ctx context.Context, acc accountRow) (ledgerView, error) {
 	b, err := s.ledger.GetBalances(ctx, &ledgerv1.GetBalancesRequest{AccountId: acc.ID})
 	if status.Code(err) == codes.NotFound {
-		return 0, nil
+		return ledgerView{}, nil
 	}
 	if err != nil {
-		return 0, err
+		return ledgerView{}, err
 	}
-	return min(b.AvailableMinor, acc.CreditLimit), nil
+	return ledgerView{Available: b.AvailableMinor, Receivable: b.ReceivableMinor, Holds: b.HoldsMinor}, nil
 }
 
 func stateProto(s State) accountsv1.AccountState {

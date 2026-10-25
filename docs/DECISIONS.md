@@ -112,3 +112,50 @@ Append-only. One entry per decision. Format: context → decision → consequenc
 **Deferred.**
 - `GetBalances` reads balances and holds in two statements, so available credit can be briefly overstated for display.
 - Replays return the current state rather than a stored original response.
+
+## ADR-017 — Security/optimization audit fixes (2026-10-25)
+**Context.** An audit of the running stack (68 black-box probes, fault injection, SQL invariants) confirmed four defects:
+- H1: the gateway stored and replayed 5xx/504 responses for the key TTL, so a retry after a transient outage could never succeed with the same key.
+- H2: a reserved capture/reversal/refund the ledger refused permanently (e.g. hold expired by the ledger safety net) stayed `pending_op` forever: follow-ups answered `operation_in_progress` and the reconciler retried every minute.
+- H3: `ResolvePending` released the hold before failing the authorization; a late duplicate finalizing in between could leave an approved authorization with no hold.
+- H4: an idempotency claim kept its transaction (and a pool connection) open for the whole request; 60 slow requests starved the gateway pool, including routes that only needed the rate limiter.
+
+**Decision.**
+- Idempotency claims are committed `in_progress` rows with a `lease_until` and an `owner` (migration `gateway/000003`). No transaction stays open while the handler runs. Duplicates poll the row (holding a goroutine, not a connection) up to the wait timeout, then answer 409 `request_in_progress`. A row whose lease expired is taken over by the next identical request; `Complete`/`Abort` are guarded by `owner`, so a stale owner cannot overwrite a takeover. This supersedes the row-lock design of ADR-004.
+- 5xx responses are not stored: the claim is aborted and the retry runs the handler again. Downstream operations are idempotent on their own anchors (deposit key hash, `external_ref`, `network_ref`, journal references), so a retry after a timeout whose effect did land resolves to that effect. 2xx and 4xx are stored and replayed as before. ADR-004's "always stored" is withdrawn for 5xx.
+- A ledger error with code `FailedPrecondition`, `InvalidArgument`, `OutOfRange`, `NotFound` or `AlreadyExists` is terminal for a reserved operation: the authorization becomes `failed` with its pending op cleared (event `authorization.failed`); a refund becomes `failed` (migration `accounts/000008`, event `refund.failed`) and stops counting toward the cap. The caller still receives the ledger's reason.
+- `ResolvePending` fails stale pending authorizations first and releases holds second. `hold_released_at` records the release so a crash between the two steps is retried on the next pass.
+- Query optimizations: the rate limiter is one statement (`INSERT … ON CONFLICT DO UPDATE … WHERE`, exact under concurrency); `GetBalances` reads balances and holds in one statement (closes the ADR-016 deferral); settlement never calls the ledger while holding deposit/account locks; `Authorize` no longer pre-loads the account nor re-reads the row it just inserted (an unknown card surfaces as the foreign-key violation, mapped to `card_not_found`).
+
+**Consequences.** A request whose handler outlives the lease (30 s, three times the gateway timeout) loses its claim and its result is discarded (`ErrClaimLost` logged). Concurrent duplicates cost one cheap primary-key read every 25 ms while they wait.
+
+## ADR-018 — Repayments, spendable credit balance, accepted return risk (2026-10-25)
+**Context.** Sprint 3 adds customer repayments. In the Sprint 3 discovery the user redefined the credit balance.
+
+**Decision.**
+- **Spendable credit balance (supersedes the ADR-014 strict limit).** A credit balance (negative receivable) is spent before the credit line: 700 in favor plus a 500 purchase leaves 200 in favor and nothing owed. The ledger rule is signed: `Σ active holds + receivable + amount ≤ limit`; `available = max(0, limit − receivable − holds)` may exceed the credit limit. A credit balance is never paid out in cash.
+- **Payments copy the collateral-deposit flow.**
+  - The customer creates an intent: minimum 100 minor units, account currency, capped at `max(receivable,0) − Σ open payments`.
+  - The bank settles or fails it through a webhook bound to method and path, and settlement runs as reserve → ledger → finalize.
+  - Credit is restored only on settlement, and intents with no answer expire after 7 days.
+- **Returns: accepted risk.**
+  - Within 5 days of settlement a return re-raises the debt, which may exceed the collateral; the bank accepts that exposure.
+  - The card is then restricted (`payment_returned`, a system restriction the customer cannot lift, evaluated after `currency_not_supported`). The restriction lifts right after a payment settles, or within a minute via the sweep, once exposure is back within the limit.
+  - Purchases can never push exposure over the limit.
+
+**Implementation rulings.**
+- The payments migration is `000009`, because `000008` belongs to the audit session.
+- The restriction is re-evaluated after the finalize commit, never with a ledger call inside accounts locks.
+- The idempotency invariant follows the audit session's lease design.
+- The k6 flow retries lease-based `409 request_in_progress`.
+
+**Sprint 3 final review fixes (2026-10-25).**
+- **Fail-safe restriction.** A payment return restricts the card inside its own finalize transaction and bumps `accounts.exposure_epoch`. A lift happens after commit, only if exposure is within the limit and the epoch is unchanged.
+- **Late settlements are applied.** A bank settlement arriving after the intent expired is still applied, because the money already moved.
+- **Small debts can be paid off.** The payment minimum is `min(100, outstanding)`.
+- **Payment reconciliation never aborts the pass.**
+- **422 on reference reuse.** `external_ref_reused` and `return_ref_reused` answer 422.
+
+**Deferred minors.**
+- The payment cap can race a settlement in a millisecond window; an overpayment becomes a spendable credit balance.
+- The simulator's bank-payments proxy returns 500 on malformed input.

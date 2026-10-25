@@ -369,3 +369,26 @@ func (f *fixture) ledgerMatchesAccountsOrSettling(t *testing.T, depID string) {
 		t.Fatalf("deposit status=%s want settling", st)
 	}
 }
+
+func TestAccountShowsOutstandingAndCreditBalance(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	acc := f.activeAccount(t, "cust-bal", 1000)
+	_, _ = f.ledgerClient.PlaceHold(ctx, &ledgerv1.PlaceHoldRequest{AccountId: acc.Id, Reference: "h-bal", AmountMinor: 300, Currency: "USD"})
+	if _, err := f.ledgerClient.CaptureHold(ctx, &ledgerv1.CaptureHoldRequest{HoldReference: "h-bal", JournalReference: "cap-bal", AmountMinor: 300}); err != nil {
+		t.Fatal(err)
+	}
+	g, _ := f.svc.GetAccount(ctx, &accountsv1.GetAccountRequest{AccountId: acc.Id})
+	if g.Account.OutstandingMinor != 300 || g.Account.CreditBalanceMinor != 0 || g.Account.AvailableCreditMinor != 700 {
+		t.Fatalf("after spend: %+v", g.Account)
+	}
+	for ref, amt := range map[string]int64{"rf-a": 300, "rf-b": 100} {
+		if _, err := f.ledgerClient.PostRefund(ctx, &ledgerv1.PostRefundRequest{AccountId: acc.Id, Reference: ref, AmountMinor: amt}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g, _ = f.svc.GetAccount(ctx, &accountsv1.GetAccountRequest{AccountId: acc.Id})
+	if g.Account.OutstandingMinor != 0 || g.Account.CreditBalanceMinor != 100 || g.Account.AvailableCreditMinor != 1100 {
+		t.Fatalf("after refunds: %+v", g.Account)
+	}
+}

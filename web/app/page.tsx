@@ -7,8 +7,10 @@ type LogEntry = { id: number; at: string; label: string; method: string; path: s
 type Account = {
   id: string; customer_id: string; currency: string; state: string; frozen: boolean;
   credit_limit_minor: number; available_credit_minor: number; collateral_minor: number;
+  outstanding_minor: number; credit_balance_minor: number; restricted_reason?: string;
 };
 type Deposit = { id: string; amount_minor: number; currency: string; status: string; external_ref?: string };
+type Payment = { id: string; amount_minor: number; currency: string; status: string; external_ref?: string; return_ref?: string };
 type Tx = {
   id: string; network_ref: string; amount_minor: number; currency: string; status: string; decline_reason?: string;
   captured_amount_minor: number; refunded_amount_minor: number; merchant: { id: string; name: string; mcc: string };
@@ -36,6 +38,8 @@ export default function Simulator() {
   const [buy, setBuy] = useState({ amount: 12000, currency: "USD", merchantId: "m-001", merchantName: "Corner Bookstore", mcc: "5942" });
   const [rowAmount, setRowAmount] = useState<Record<string, number>>({});
   const [purchaseLimit, setPurchaseLimit] = useState(0);
+  const [payments, setPayments] = useState<Payment[]>([]);
+  const [payAmount, setPayAmount] = useState(1000);
 
   const push = (e: Omit<LogEntry, "id" | "at">) =>
     setLog((l) => [{ ...e, id: ++seq, at: new Date().toLocaleTimeString() }, ...l].slice(0, 200));
@@ -139,6 +143,36 @@ export default function Simulator() {
     });
   }
 
+  async function refreshPayments(acc = account) {
+    if (!acc) return;
+    const [r] = await gateway("list payments", "GET", `/v1/accounts/${acc.id}/payments?page_size=50`);
+    if (r.status === 200) setPayments(r.body.payments);
+  }
+
+  async function createPayment() {
+    if (!account) return;
+    const results = await gateway("create payment", "POST", `/v1/accounts/${account.id}/payments`, { amount_minor: payAmount }, { times: repeat });
+    const ok = results.find((r) => r.status === 201);
+    if (ok) setAccount(ok.body.account);
+    await refreshPayments();
+  }
+
+  async function bankPayment(op: "settle" | "fail" | "return", p: Payment) {
+    setBusy(true);
+    try {
+      const ref = op === "return" ? `ret-${p.id.slice(-8)}` : `bank-${p.id.slice(-8)}`;
+      const res = await fetch("/api/bank/payments", { method: "POST", body: JSON.stringify({ op, payment: p, ref, repeat, tamper }) });
+      const results = (await res.json()) as CallResult[];
+      const path = op === "return" ? `/v1/webhooks/bank/payments/${p.id}/return` : "/v1/webhooks/bank/payments";
+      push({ label: `bank payment ${op}${tamper ? " (tampered)" : ""}`, method: "POST", path, results });
+      const ok = results.find((r) => r.status === 200);
+      if (ok) setAccount(ok.body.account);
+    } finally {
+      setBusy(false);
+    }
+    await refreshPayments();
+  }
+
   async function control(label: string, method: string, path: string, body?: object) {
     if (!account) return;
     const [r] = await gateway(label, method, path, body);
@@ -160,7 +194,7 @@ export default function Simulator() {
     <main>
       <header>
         <h1>acme-card · flow simulator</h1>
-        <span className="muted">open account → deposit collateral → bank settles → card active → authorize · capture · reverse · refund</span>
+        <span className="muted">open account → collateral → card active → authorize · capture · reverse · refund → pay · settle · fail · return</span>
       </header>
 
       <div className="grid">
@@ -182,8 +216,8 @@ export default function Simulator() {
                   {["USD", "COP", "EUR", "MXN"].map((c) => <option key={c}>{c}</option>)}
                 </select>
               </label>
-              <button className="primary" disabled={busy} onClick={createAccount}>Create account</button>
-              <button disabled={!account || busy} onClick={() => refresh()}>Refresh</button>
+              <button data-action="create-account" className="primary" disabled={busy} onClick={createAccount}>Create account</button>
+              <button data-action="refresh-account" disabled={!account || busy} onClick={() => refresh()}>Refresh</button>
             </div>
             {account && (
               <>
@@ -196,15 +230,21 @@ export default function Simulator() {
                   <div className="stat"><span className="muted">Credit limit</span><b>{fmt(account.credit_limit_minor, account.currency)}</b></div>
                   <div className="stat"><span className="muted">Available</span><b>{fmt(account.available_credit_minor, account.currency)}</b></div>
                 </div>
+                <div className="stats">
+                  <div className="stat"><span className="muted">Outstanding</span><b>{fmt(account.outstanding_minor ?? 0, account.currency)}</b></div>
+                  <div className="stat"><span className="muted">Credit balance</span><b>{fmt(account.credit_balance_minor ?? 0, account.currency)}</b></div>
+                  <div className="stat"><span className="muted">Restriction</span><b>{account.restricted_reason ?? "none"}</b></div>
+                </div>
                 <div className="row">
                   {account.frozen
-                    ? <button disabled={busy} onClick={() => control("unfreeze card", "POST", `/v1/accounts/${account.id}/unfreeze`)}>Unfreeze card</button>
-                    : <button disabled={busy} onClick={() => control("freeze card", "POST", `/v1/accounts/${account.id}/freeze`)}>Freeze card</button>}
+                    ? <button data-action="unfreeze-card" disabled={busy} onClick={() => control("unfreeze card", "POST", `/v1/accounts/${account.id}/unfreeze`)}>Unfreeze card</button>
+                    : <button data-action="freeze-card" disabled={busy} onClick={() => control("freeze card", "POST", `/v1/accounts/${account.id}/freeze`)}>Freeze card</button>}
                   {account.frozen && <span className="badge s-failed">frozen</span>}
+                  {account.restricted_reason && <span className="badge s-failed">restricted: {account.restricted_reason}</span>}
                   <label className="inline">Purchase limit (minor, 0 = none)
                     <input type="number" min={0} value={purchaseLimit} onChange={(e) => setPurchaseLimit(Number(e.target.value))} />
                   </label>
-                  <button disabled={busy} onClick={() => control("set purchase limit", "PUT", `/v1/accounts/${account.id}/limits`, { purchase_limit_minor: purchaseLimit })}>Set limit</button>
+                  <button data-action="set-purchase-limit" disabled={busy} onClick={() => control("set purchase limit", "PUT", `/v1/accounts/${account.id}/limits`, { purchase_limit_minor: purchaseLimit })}>Set limit</button>
                 </div>
               </>
             )}
@@ -214,7 +254,7 @@ export default function Simulator() {
             <h2>3 · Collateral deposits</h2>
             <div className="row">
               <label>Amount (minor units)<input type="number" min={1} value={amount} onChange={(e) => setAmount(Number(e.target.value))} /></label>
-              <button className="primary" disabled={!account || busy} onClick={createDeposit}>Create deposit intent</button>
+              <button data-action="create-deposit" className="primary" disabled={!account || busy} onClick={createDeposit}>Create deposit intent</button>
             </div>
             <div className="row">
               <label className="inline">Concurrent sends <input type="number" min={1} max={100} value={repeat} onChange={(e) => setRepeat(Number(e.target.value))} /></label>
@@ -231,8 +271,8 @@ export default function Simulator() {
                       <td>{fmt(d.amount_minor, d.currency)}</td>
                       <td><span className={`badge s-${d.status}`}>{d.status}</span></td>
                       <td className="row">
-                        <button disabled={busy} onClick={() => bank(d, "settled")}>Settle</button>
-                        <button disabled={busy} onClick={() => bank(d, "failed")}>Fail</button>
+                        <button data-action="bank-settle-deposit" disabled={busy} onClick={() => bank(d, "settled")}>Settle</button>
+                        <button data-action="bank-fail-deposit" disabled={busy} onClick={() => bank(d, "failed")}>Fail</button>
                       </td>
                     </tr>
                   ))}
@@ -268,8 +308,8 @@ export default function Simulator() {
               <label>MCC<input style={{ width: 70 }} maxLength={4} value={buy.mcc} onChange={(e) => setBuy({ ...buy, mcc: e.target.value })} /></label>
             </div>
             <div className="row">
-              <button className="primary" disabled={!account || busy} onClick={authorize}>Authorize purchase</button>
-              <button disabled={!account || busy} onClick={() => refreshTx()}>Refresh transactions</button>
+              <button data-action="network-authorize" className="primary" disabled={!account || busy} onClick={authorize}>Authorize purchase</button>
+              <button data-action="refresh-transactions" disabled={!account || busy} onClick={() => refreshTx()}>Refresh transactions</button>
               <span className="muted">Uses "Concurrent sends" and "bad signature" from panel 3.</span>
             </div>
             {txs.length > 0 && (
@@ -291,10 +331,40 @@ export default function Simulator() {
                             onChange={(e) => setRowAmount({ ...rowAmount, [t.id]: Number(e.target.value) })} />
                         </div>
                         <div className="row">
-                          <button disabled={busy || t.status !== "approved"} onClick={() => network("capture", "capture", { network_ref: `c-${t.id}`, amount_minor: rowAmount[t.id] ?? t.amount_minor }, t.id)}>Capture</button>
-                          <button disabled={busy || t.status !== "approved"} onClick={() => network("reversal", "reversal", { network_ref: `v-${t.id}` }, t.id)}>Reverse</button>
-                          <button disabled={busy || t.status !== "captured"} onClick={() => network("refund", "refunds", { network_ref: `r-${crypto.randomUUID()}`, amount_minor: rowAmount[t.id] ?? t.captured_amount_minor }, t.id)}>Refund</button>
+                          <button data-action="network-capture" disabled={busy || t.status !== "approved"} onClick={() => network("capture", "capture", { network_ref: `c-${t.id}`, amount_minor: rowAmount[t.id] ?? t.amount_minor }, t.id)}>Capture</button>
+                          <button data-action="network-reverse" disabled={busy || t.status !== "approved"} onClick={() => network("reversal", "reversal", { network_ref: `v-${t.id}` }, t.id)}>Reverse</button>
+                          <button data-action="network-refund" disabled={busy || t.status !== "captured"} onClick={() => network("refund", "refunds", { network_ref: `r-${crypto.randomUUID()}`, amount_minor: rowAmount[t.id] ?? t.captured_amount_minor }, t.id)}>Refund</button>
                         </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </section>
+          <section className="panel">
+            <h2>6 · Payments</h2>
+            <div className="row">
+              <label>Amount (minor, min 100)<input type="number" min={100} value={payAmount} onChange={(e) => setPayAmount(Number(e.target.value))} /></label>
+              <button data-action="create-payment" className="primary" disabled={!account || busy} onClick={createPayment}>Create payment</button>
+              <button data-action="refresh-payments" disabled={!account || busy} onClick={() => refreshPayments()}>Refresh payments</button>
+            </div>
+            <div className="muted" style={{ marginBottom: 8 }}>
+              The bank answers below. Credit is restored only on Settle; Fail changes nothing; Return (within 5 days) raises the debt and restricts the card if it goes over the limit.
+            </div>
+            {payments.length > 0 && (
+              <table>
+                <thead><tr><th>Payment</th><th>Amount</th><th>Status</th><th>Bank</th></tr></thead>
+                <tbody>
+                  {payments.map((p) => (
+                    <tr key={p.id}>
+                      <td className="mono">{p.id.slice(-12)}</td>
+                      <td>{fmt(p.amount_minor, p.currency)}</td>
+                      <td><span className={`badge s-${p.status === "settled" ? "settled" : p.status === "pending" ? "pending" : "failed"}`}>{p.status}</span></td>
+                      <td className="row">
+                        <button data-action="bank-settle-payment" disabled={busy || p.status !== "pending"} onClick={() => bankPayment("settle", p)}>Settle</button>
+                        <button data-action="bank-fail-payment" disabled={busy || p.status !== "pending"} onClick={() => bankPayment("fail", p)}>Fail</button>
+                        <button data-action="bank-return-payment" disabled={busy || p.status !== "settled"} onClick={() => bankPayment("return", p)}>Return</button>
                       </td>
                     </tr>
                   ))}

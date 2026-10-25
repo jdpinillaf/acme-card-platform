@@ -49,3 +49,11 @@ func (c inproc) ReleaseHold(ctx context.Context, r *ledgerv1.ReleaseHoldRequest,
 func (c inproc) PostRefund(ctx context.Context, r *ledgerv1.PostRefundRequest, _ ...grpc.CallOption) (*ledgerv1.PostJournalResponse, error) {
 	return c.s.PostRefund(ctx, r)
 }
+
+func (c inproc) PostPayment(ctx context.Context, r *ledgerv1.PostPaymentRequest, _ ...grpc.CallOption) (*ledgerv1.PostJournalResponse, error) {
+	return c.s.PostPayment(ctx, r)
+}
+
+func (c inproc) PostPaymentReturn(ctx context.Context, r *ledgerv1.PostPaymentReturnRequest, _ ...grpc.CallOption) (*ledgerv1.PostJournalResponse, error) {
+	return c.s.PostPaymentReturn(ctx, r)
+}

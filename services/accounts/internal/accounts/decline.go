@@ -7,6 +7,7 @@ const (
 	DeclineAccountClosed          DeclineReason = "account_closed"
 	DeclineCollateralNotConfirmed DeclineReason = "collateral_not_confirmed"
 	DeclineCurrencyNotSupported   DeclineReason = "currency_not_supported"
+	DeclinePaymentReturned        DeclineReason = "payment_returned"
 	DeclineCardFrozen             DeclineReason = "card_frozen"
 	DeclineVelocity               DeclineReason = "velocity_limit_exceeded"
 	DeclinePurchaseLimit          DeclineReason = "purchase_limit_exceeded"
@@ -17,6 +18,7 @@ const (
 type DeclineInput struct {
 	State           State
 	Frozen          bool
+	Restricted      bool // system restriction after a returned payment (ADR-018)
 	AccountCurrency string
 	Currency        string
 	VelocityOK      bool
@@ -34,6 +36,8 @@ func EvaluateDecline(in DeclineInput) DeclineReason {
 		return DeclineCollateralNotConfirmed
 	case in.Currency != in.AccountCurrency:
 		return DeclineCurrencyNotSupported
+	case in.Restricted:
+		return DeclinePaymentReturned
 	case in.Frozen:
 		return DeclineCardFrozen
 	case !in.VelocityOK:

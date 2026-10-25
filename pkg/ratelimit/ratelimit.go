@@ -1,7 +1,8 @@
 // Package ratelimit implements a Postgres-backed sliding-window-counter limiter.
 //
 // estimate = hits(current window) + hits(previous window) × (1 − elapsed/window).
-// The increment is conditional and atomic, so concurrent requests never exceed the limit.
+// The increment is conditional and atomic (a single statement), so concurrent requests never
+// exceed the limit and a check costs one round trip.
 package ratelimit
 
 import (
@@ -46,28 +47,32 @@ func (l *Limiter) Allow(ctx context.Context, bucket string, now time.Time) (ok b
 
 // AllowTx is Allow inside the caller's transaction (the hit commits or rolls back with it).
 // Use it when the caller already holds a pooled connection, to avoid needing a second one.
+//
+// One statement: the previous window is read, then the current window row is inserted or
+// incremented only while the weighted estimate stays within the limit. ON CONFLICT DO UPDATE
+// locks the current row and re-evaluates the condition against its latest value, so concurrent
+// hits are exact.
 func (l *Limiter) AllowTx(ctx context.Context, tx pgx.Tx, bucket string, now time.Time) (ok bool, retryAfter time.Duration, err error) {
 	now = now.UTC()
 	cur := now.Truncate(l.window)
 	prev := cur.Add(-l.window)
 	weight := 1 - float64(now.Sub(cur))/float64(l.window)
 
-	// Ensure the row exists, then lock it: serializes concurrent hits on the same bucket.
-	if _, err := tx.Exec(ctx, `INSERT INTO rate_limit_windows (bucket, window_start) VALUES ($1,$2) ON CONFLICT DO NOTHING`, bucket, cur); err != nil {
+	if err := tx.QueryRow(ctx, `
+		WITH prev AS (
+		    SELECT coalesce((SELECT hits FROM rate_limit_windows WHERE bucket = $1 AND window_start = $3), 0)::float8 AS hits
+		), hit AS (
+		    INSERT INTO rate_limit_windows (bucket, window_start, hits)
+		    SELECT $1, $2, 1 FROM prev WHERE prev.hits * $4 + 1 <= $5
+		    ON CONFLICT (bucket, window_start) DO UPDATE SET hits = rate_limit_windows.hits + 1
+		    WHERE (SELECT hits FROM prev) * $4 + rate_limit_windows.hits + 1 <= $5
+		    RETURNING 1
+		)
+		SELECT EXISTS (SELECT 1 FROM hit)`, bucket, cur, prev, weight, float64(l.limit)).Scan(&ok); err != nil {
 		return false, 0, fmt.Errorf("ratelimit: %w", err)
 	}
-	var curHits, prevHits int
-	if err := tx.QueryRow(ctx, `SELECT hits FROM rate_limit_windows WHERE bucket=$1 AND window_start=$2 FOR UPDATE`, bucket, cur).Scan(&curHits); err != nil {
-		return false, 0, fmt.Errorf("ratelimit: %w", err)
-	}
-	if err := tx.QueryRow(ctx, `SELECT coalesce((SELECT hits FROM rate_limit_windows WHERE bucket=$1 AND window_start=$2), 0)`, bucket, prev).Scan(&prevHits); err != nil {
-		return false, 0, fmt.Errorf("ratelimit: %w", err)
-	}
-	if float64(prevHits)*weight+float64(curHits)+1 > float64(l.limit) {
+	if !ok {
 		return false, cur.Add(l.window).Sub(now), nil
-	}
-	if _, err := tx.Exec(ctx, `UPDATE rate_limit_windows SET hits = hits + 1 WHERE bucket=$1 AND window_start=$2`, bucket, cur); err != nil {
-		return false, 0, fmt.Errorf("ratelimit: %w", err)
 	}
 	return true, 0, nil
 }
