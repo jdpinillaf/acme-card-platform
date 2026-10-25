@@ -96,3 +96,11 @@ Skeleton + Sprint 1 implemented with TDD: money, config, db, idempotency, auth, 
 ### Prompt 5 (user)
 
 > Continua
+
+---
+
+## 2026-10-25 — Session 1 (cont.): Sprint 2 discovery
+
+### Prompt 6 (user)
+
+> Okay dale, entonces vamos a hablar del sprint 2. Dame las preguntas que son necesarias para completar todo eso. Si necesitas algo de contexto con respecto a la app, vamos a trabajar punto por punto: autorizaciones, capturas, refunds y razones de rechazo.
