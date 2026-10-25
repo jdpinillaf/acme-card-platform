@@ -52,3 +52,17 @@ Append-only. One entry per decision. Format: context → decision → consequenc
 - Local host ports: lb 8088, web 3010, because other local projects use 8080 and 3000.
 - Load gate: 1000 VUs with think time and p95 < 1.5 s. `STRESS=1` measures saturation without a latency gate.
 - In AWS, services build the DSN from `DB_HOST` + the RDS-managed secret, with `sslmode=verify-full`.
+
+## ADR-013 — Final review fixes and deferred items (2026-10-25)
+**Fixed:**
+- Idempotency claims finish detached from request cancellation, so a client disconnect can no longer cause a double effect. Deposits also dedupe on the key hash.
+- Settlement runs reserve → ledger → finalize, so the ledger and accounts cannot diverge.
+- `X-Forwarded-For` is trusted only from configured proxies.
+- Rejected webhooks no longer write per-request audit rows.
+- Duplicate waiters are bounded: 409 `request_in_progress`. The readiness probe has its own pool.
+- The simulator requires `SIMULATOR_ENABLED=1` and is bound to loopback.
+- KMS key policies cover Logs and SNS. Schemas are created on startup. The RDS CA bundle ships in the image.
+
+**Deferred (pre-deploy hardening, required before any real AWS use):**
+- Per-service DB roles with least privilege. Today every service gets the RDS master secret, so the append-only triggers could be disabled by that role. Audit should use a role without UPDATE/DELETE/ALTER.
+- One IAM task role per service instead of one shared role.

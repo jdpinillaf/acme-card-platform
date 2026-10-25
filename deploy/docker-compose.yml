@@ -25,7 +25,7 @@ services:
       POSTGRES_USER: acme
       POSTGRES_PASSWORD: acme
       POSTGRES_DB: acmecard
-    ports: ["127.0.0.1:5432:5432"]
+    ports: ["127.0.0.1:${POSTGRES_PORT:-55432}:5432"]
     volumes:
       - ./postgres-init.sql:/docker-entrypoint-initdb.d/01-schemas.sql:ro
       - pgdata:/var/lib/postgresql/data
@@ -100,6 +100,7 @@ services:
       JWT_HS256_SECRET: ${JWT_HS256_SECRET}
       BANK_WEBHOOK_SECRET: ${BANK_WEBHOOK_SECRET}
       STRESS: ${STRESS:-0}
+      SHORT: ${SHORT:-0}
     volumes:
       - ../tests/load:/scripts:ro
     depends_on: [lb]

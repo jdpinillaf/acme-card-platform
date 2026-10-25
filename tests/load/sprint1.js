@@ -24,12 +24,14 @@ export const options = {
     customers: {
       executor: "ramping-vus",
       startVUs: 0,
-      stages: [
-        { duration: "20s", target: 250 },
-        { duration: "20s", target: 1000 },
-        { duration: "60s", target: 1000 },
-        { duration: "10s", target: 0 },
-      ],
+      stages: __ENV.SHORT === "1"
+        ? [{ duration: "10s", target: 1000 }, { duration: "30s", target: 1000 }, { duration: "5s", target: 0 }]
+        : [
+            { duration: "20s", target: 250 },
+            { duration: "20s", target: 1000 },
+            { duration: "60s", target: 1000 },
+            { duration: "10s", target: 0 },
+          ],
       gracefulRampDown: "10s",
     },
   },
@@ -38,6 +40,11 @@ export const options = {
     http_req_duration: STRESS ? ["p(95)<10000"] : ["p(95)<1500"],
     wrong_final_state: ["count==0"],
     checks: ["rate>0.99"],
+    // Per-endpoint breakdown (reporting only).
+    "http_req_duration{name:/v1/accounts}": ["p(95)<100000"],
+    "http_req_duration{name:/v1/accounts/:id/collateral/deposits}": ["p(95)<100000"],
+    "http_req_duration{name:/v1/webhooks/bank/deposits}": ["p(95)<100000"],
+    "http_req_duration{name:/v1/accounts/:id}": ["p(95)<100000"],
   },
 };
 
