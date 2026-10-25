@@ -41,6 +41,10 @@ func notActive(a authRow) error {
 		return grpcx.Error(codes.FailedPrecondition, "already_reversed", "authorization already reversed")
 	case "expired":
 		return grpcx.Error(codes.FailedPrecondition, "authorization_expired", "authorization expired")
+	case "pending":
+		return grpcx.Error(codes.FailedPrecondition, "operation_in_progress", "authorization is still being processed")
+	case "failed":
+		return grpcx.Error(codes.FailedPrecondition, "authorization_failed", "authorization failed")
 	default:
 		return grpcx.Error(codes.FailedPrecondition, "authorization_declined", "authorization was declined")
 	}
@@ -60,98 +64,152 @@ func (s *Service) emitAuth(ctx context.Context, tx pgx.Tx, typ string, before, a
 	return outbox.Enqueue(ctx, tx, ev)
 }
 
-// Capture posts the purchase (amount ≤ authorized, exactly once) and frees the rest of the hold.
-func (s *Service) Capture(ctx context.Context, req *accountsv1.CaptureRequest) (*accountsv1.AuthorizationResponse, error) {
-	if req.NetworkRef == "" {
-		return nil, grpcx.Error(codes.InvalidArgument, "invalid_network_ref", "network_ref is required")
-	}
-	var resp *accountsv1.AuthorizationResponse
-	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		a, err := lockAuth(ctx, tx, req.AuthorizationId)
-		if err != nil {
+// opReq is a reserved capture or reversal.
+type opReq struct {
+	op     string // "capture" | "reversal"
+	ref    string
+	amount int64
+}
+
+// reserveOp claims the network_ref and marks the operation pending in one short transaction, so
+// a reused ref fails on the unique constraint before the ledger is touched. It returns the row,
+// whether the op is already final (replay), and whether it must be (re)driven against the ledger.
+func (s *Service) reserveOp(ctx context.Context, authID string, o opReq) (a authRow, final, resumed bool, err error) {
+	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		var err error
+		if a, err = lockAuth(ctx, tx, authID); err != nil {
 			return err
 		}
-		if a.CaptureRef != nil && *a.CaptureRef == req.NetworkRef {
-			if a.Captured != req.AmountMinor {
-				return grpcx.Error(codes.AlreadyExists, "network_ref_reuse", "capture network_ref reused with a different amount")
+		claimed := a.CaptureRef
+		if o.op == "reversal" {
+			claimed = a.ReversalRef
+		}
+		if claimed != nil && *claimed == o.ref {
+			if o.op == "capture" {
+				got := a.Captured
+				if a.PendingOp != nil {
+					got = *a.PendingAmount
+				}
+				if got != o.amount {
+					return grpcx.Error(codes.AlreadyExists, "network_ref_reuse", "capture network_ref reused with a different amount")
+				}
 			}
-			resp = &accountsv1.AuthorizationResponse{Authorization: a.proto(), Replayed: true}
+			final = a.PendingOp == nil // finished earlier: replay; else resume
+			resumed = !final
 			return nil
+		}
+		if a.PendingOp != nil {
+			return grpcx.Error(codes.FailedPrecondition, "operation_in_progress", "another "+*a.PendingOp+" is in progress for this authorization")
 		}
 		if a.Status != "approved" {
 			return notActive(a)
 		}
-		if !s.clock.Now().Before(*a.ExpiresAt) {
-			return grpcx.Error(codes.FailedPrecondition, "authorization_expired", "authorization expired")
-		}
-		acc, err := s.load(ctx, tx, a.AccountID, false)
-		if err != nil {
+		now := s.clock.Now()
+		if o.op == "capture" {
+			if !now.Before(*a.ExpiresAt) {
+				return grpcx.Error(codes.FailedPrecondition, "authorization_expired", "authorization expired")
+			}
+			acc, err := s.load(ctx, tx, a.AccountID, false)
+			if err != nil {
+				return err
+			}
+			if acc.State == StateClosed {
+				return grpcx.Error(codes.FailedPrecondition, "account_closed", "account is closed")
+			}
+			if o.amount <= 0 || o.amount > a.Amount {
+				return grpcx.Error(codes.InvalidArgument, "invalid_capture_amount", "capture must be positive and at most the authorized amount")
+			}
+			a, err = scanAuth(tx.QueryRow(ctx, `UPDATE authorizations SET capture_network_ref=$2, pending_op='capture', pending_op_amount=$3, pending_op_at=$4
+				WHERE id=$1 RETURNING `+authCols, a.ID, o.ref, o.amount, now))
 			return err
 		}
-		if acc.State == StateClosed {
-			return grpcx.Error(codes.FailedPrecondition, "account_closed", "account is closed")
+		if now.Sub(a.CreatedAt) > ReversalWindow {
+			return grpcx.Error(codes.FailedPrecondition, "reversal_window_expired", "reversals are only allowed within 3 days")
 		}
-		if req.AmountMinor <= 0 || req.AmountMinor > a.Amount {
-			return grpcx.Error(codes.InvalidArgument, "invalid_capture_amount", "capture must be positive and at most the authorized amount")
-		}
-		if _, err := s.ledger.CaptureHold(ctx, &ledgerv1.CaptureHoldRequest{
-			HoldReference: "auth:" + a.NetworkRef, JournalReference: "capture:" + a.ID, AmountMinor: req.AmountMinor, Meta: req.Meta}); err != nil {
-			return err
-		}
-		after, err := scanAuth(tx.QueryRow(ctx, `UPDATE authorizations SET status='captured', captured_minor=$2, capture_network_ref=$3, captured_at=$4
-			WHERE id=$1 RETURNING `+authCols, a.ID, req.AmountMinor, req.NetworkRef, s.clock.Now()))
-		if err != nil {
-			return err
-		}
-		resp = &accountsv1.AuthorizationResponse{Authorization: after.proto()}
-		return s.emitAuth(ctx, tx, "authorization.captured", a, after, req.Meta)
+		a, err = scanAuth(tx.QueryRow(ctx, `UPDATE authorizations SET reversal_network_ref=$2, pending_op='reversal', pending_op_at=$3
+			WHERE id=$1 RETURNING `+authCols, a.ID, o.ref, now))
+		return err
 	})
+	return a, final, resumed, err
+}
+
+// finishOp drives the reserved op against the ledger (idempotent) and finalizes the row.
+func (s *Service) finishOp(ctx context.Context, a authRow, o opReq, meta *commonv1.RequestMeta, replayed bool) (*accountsv1.AuthorizationResponse, error) {
+	var err error
+	if o.op == "capture" {
+		_, err = s.ledger.CaptureHold(ctx, &ledgerv1.CaptureHoldRequest{
+			HoldReference: "auth:" + a.NetworkRef, JournalReference: "capture:" + a.ID, AmountMinor: o.amount, Meta: meta})
+	} else {
+		_, err = s.ledger.ReleaseHold(ctx, &ledgerv1.ReleaseHoldRequest{
+			HoldReference: "auth:" + a.NetworkRef, Reason: ledgerv1.HoldRelease_HOLD_RELEASE_RELEASED, Meta: meta})
+	}
+	if err != nil {
+		return nil, err // stays pending: retry with the same ref, or ResolvePending, resumes it
+	}
+	var resp *accountsv1.AuthorizationResponse
+	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		cur, err := lockAuth(ctx, tx, a.ID)
+		if err != nil {
+			return err
+		}
+		if cur.PendingOp == nil || *cur.PendingOp != o.op { // finished concurrently
+			resp = &accountsv1.AuthorizationResponse{Authorization: cur.proto(), Replayed: true}
+			return nil
+		}
+		typ := "authorization.captured"
+		var after authRow
+		if o.op == "capture" {
+			after, err = scanAuth(tx.QueryRow(ctx, `UPDATE authorizations SET status='captured', captured_minor=pending_op_amount, captured_at=$2,
+				pending_op=NULL, pending_op_amount=NULL, pending_op_at=NULL WHERE id=$1 RETURNING `+authCols, a.ID, s.clock.Now()))
+		} else {
+			typ = "authorization.reversed"
+			after, err = scanAuth(tx.QueryRow(ctx, `UPDATE authorizations SET status='reversed', reversed_at=$2,
+				pending_op=NULL, pending_op_amount=NULL, pending_op_at=NULL WHERE id=$1 RETURNING `+authCols, a.ID, s.clock.Now()))
+		}
+		if err != nil {
+			return err
+		}
+		resp = &accountsv1.AuthorizationResponse{Authorization: after.proto(), Replayed: replayed}
+		return s.emitAuth(ctx, tx, typ, cur, after, meta)
+	})
+	if err != nil {
+		return nil, internal(err)
+	}
+	return resp, nil
+}
+
+func (s *Service) runOp(ctx context.Context, authID string, o opReq, meta *commonv1.RequestMeta) (*accountsv1.AuthorizationResponse, error) {
+	if o.ref == "" {
+		return nil, grpcx.Error(codes.InvalidArgument, "invalid_network_ref", "network_ref is required")
+	}
+	a, final, resumed, err := s.reserveOp(ctx, authID, o)
 	if err != nil {
 		return nil, mapNetErr(err)
 	}
-	return resp, nil
+	if final {
+		return &accountsv1.AuthorizationResponse{Authorization: a.proto(), Replayed: true}, nil
+	}
+	return s.finishOp(ctx, a, o, meta, resumed)
+}
+
+// Capture posts the purchase (amount ≤ authorized, exactly once) and frees the rest of the hold.
+func (s *Service) Capture(ctx context.Context, req *accountsv1.CaptureRequest) (*accountsv1.AuthorizationResponse, error) {
+	return s.runOp(ctx, req.AuthorizationId, opReq{op: "capture", ref: req.NetworkRef, amount: req.AmountMinor}, req.Meta)
 }
 
 // Reverse voids an uncaptured authorization within ReversalWindow and releases its hold.
 func (s *Service) Reverse(ctx context.Context, req *accountsv1.ReverseRequest) (*accountsv1.AuthorizationResponse, error) {
-	if req.NetworkRef == "" {
-		return nil, grpcx.Error(codes.InvalidArgument, "invalid_network_ref", "network_ref is required")
-	}
-	var resp *accountsv1.AuthorizationResponse
-	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		a, err := lockAuth(ctx, tx, req.AuthorizationId)
-		if err != nil {
-			return err
-		}
-		if a.ReversalRef != nil && *a.ReversalRef == req.NetworkRef {
-			resp = &accountsv1.AuthorizationResponse{Authorization: a.proto(), Replayed: true}
-			return nil
-		}
-		if a.Status != "approved" {
-			return notActive(a)
-		}
-		if s.clock.Now().Sub(a.CreatedAt) > ReversalWindow {
-			return grpcx.Error(codes.FailedPrecondition, "reversal_window_expired", "reversals are only allowed within 3 days")
-		}
-		if _, err := s.ledger.ReleaseHold(ctx, &ledgerv1.ReleaseHoldRequest{
-			HoldReference: "auth:" + a.NetworkRef, Reason: ledgerv1.HoldRelease_HOLD_RELEASE_RELEASED, Meta: req.Meta}); err != nil {
-			return err
-		}
-		after, err := scanAuth(tx.QueryRow(ctx, `UPDATE authorizations SET status='reversed', reversal_network_ref=$2, reversed_at=$3
-			WHERE id=$1 RETURNING `+authCols, a.ID, req.NetworkRef, s.clock.Now()))
-		if err != nil {
-			return err
-		}
-		resp = &accountsv1.AuthorizationResponse{Authorization: after.proto()}
-		return s.emitAuth(ctx, tx, "authorization.reversed", a, after, req.Meta)
-	})
-	if err != nil {
-		return nil, mapNetErr(err)
-	}
-	return resp, nil
+	return s.runOp(ctx, req.AuthorizationId, opReq{op: "reversal", ref: req.NetworkRef}, req.Meta)
 }
 
-// Refund credits a captured purchase; partial refunds are allowed while Σ refunds ≤ captured.
+type refundRow struct {
+	id, authID, status string
+	amount             int64
+	createdAt          time.Time
+}
+
+// Refund credits a captured purchase; partial refunds are allowed while Σ refunds (posted and
+// pending) ≤ captured. Reserve (pending row) → ledger PostRefund("refund:<ref>") → finalize.
 // Accepted on closed accounts (it reduces exposure).
 func (s *Service) Refund(ctx context.Context, req *accountsv1.RefundRequest) (*accountsv1.RefundResponse, error) {
 	if req.NetworkRef == "" {
@@ -160,24 +218,23 @@ func (s *Service) Refund(ctx context.Context, req *accountsv1.RefundRequest) (*a
 	if req.AmountMinor <= 0 {
 		return nil, grpcx.Error(codes.InvalidArgument, "invalid_amount", "amount_minor must be positive")
 	}
-	var resp *accountsv1.RefundResponse
+	var (
+		a     authRow
+		r     refundRow
+		final bool
+	)
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		a, err := lockAuth(ctx, tx, req.AuthorizationId)
-		if err != nil {
+		var err error
+		if a, err = lockAuth(ctx, tx, req.AuthorizationId); err != nil {
 			return err
 		}
-		var (
-			existingID, existingAuth string
-			existingAmt              int64
-			existingAt               time.Time
-		)
-		err = tx.QueryRow(ctx, `SELECT id::text, authorization_id::text, amount_minor, created_at FROM refunds WHERE network_ref=$1`, req.NetworkRef).
-			Scan(&existingID, &existingAuth, &existingAmt, &existingAt)
+		err = tx.QueryRow(ctx, `SELECT id::text, authorization_id::text, status, amount_minor, created_at FROM refunds WHERE network_ref=$1`, req.NetworkRef).
+			Scan(&r.id, &r.authID, &r.status, &r.amount, &r.createdAt)
 		if err == nil {
-			if existingAuth != a.ID || existingAmt != req.AmountMinor {
+			if r.authID != a.ID || r.amount != req.AmountMinor {
 				return grpcx.Error(codes.AlreadyExists, "network_ref_reuse", "refund network_ref reused with a different request")
 			}
-			resp = &accountsv1.RefundResponse{Refund: refundProto(existingID, a, req.NetworkRef, existingAmt, existingAt), Authorization: a.proto(), Replayed: true}
+			final = r.status == "posted"
 			return nil
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
@@ -186,33 +243,57 @@ func (s *Service) Refund(ctx context.Context, req *accountsv1.RefundRequest) (*a
 		if a.Status != "captured" {
 			return grpcx.Error(codes.FailedPrecondition, "not_captured", "only captured purchases can be refunded")
 		}
-		if a.Refunded+req.AmountMinor > a.Captured {
+		var pending int64
+		if err := tx.QueryRow(ctx, `SELECT coalesce(sum(amount_minor),0) FROM refunds WHERE authorization_id=$1 AND status='pending'`, a.ID).Scan(&pending); err != nil {
+			return err
+		}
+		if a.Refunded+pending+req.AmountMinor > a.Captured {
 			return grpcx.Error(codes.FailedPrecondition, "refund_exceeds_captured", "refunds cannot exceed the captured amount")
 		}
-		id, now := uuid.Must(uuid.NewV7()).String(), s.clock.Now()
-		if _, err := tx.Exec(ctx, `INSERT INTO refunds (id, authorization_id, network_ref, amount_minor, created_at) VALUES ($1,$2,$3,$4,$5)`,
-			id, a.ID, req.NetworkRef, req.AmountMinor, now); err != nil {
-			return err
-		}
-		if _, err := s.ledger.PostRefund(ctx, &ledgerv1.PostRefundRequest{
-			AccountId: a.AccountID, Reference: "refund:" + req.NetworkRef, AmountMinor: req.AmountMinor, Meta: req.Meta}); err != nil {
-			return err
-		}
-		after, err := scanAuth(tx.QueryRow(ctx, `UPDATE authorizations SET refunded_minor = refunded_minor + $2 WHERE id=$1 RETURNING `+authCols, a.ID, req.AmountMinor))
-		if err != nil {
-			return err
-		}
-		ev := event("refund.posted", "refund", id, req.Meta)
-		ev.Before = snapshot(a)
-		ev.After = snapshot(map[string]any{"authorization": after, "refund_id": id, "amount_minor": req.AmountMinor, "network_ref": req.NetworkRef})
-		if err := outbox.Enqueue(ctx, tx, ev); err != nil {
-			return err
-		}
-		resp = &accountsv1.RefundResponse{Refund: refundProto(id, a, req.NetworkRef, req.AmountMinor, now), Authorization: after.proto()}
-		return nil
+		r = refundRow{id: uuid.Must(uuid.NewV7()).String(), authID: a.ID, status: "pending", amount: req.AmountMinor, createdAt: s.clock.Now()}
+		_, err = tx.Exec(ctx, `INSERT INTO refunds (id, authorization_id, network_ref, amount_minor, created_at, status) VALUES ($1,$2,$3,$4,$5,'pending')`,
+			r.id, a.ID, req.NetworkRef, r.amount, r.createdAt)
+		return err
 	})
 	if err != nil {
 		return nil, mapNetErr(err)
+	}
+	if final {
+		return &accountsv1.RefundResponse{Refund: refundProto(r.id, a, req.NetworkRef, r.amount, r.createdAt), Authorization: a.proto(), Replayed: true}, nil
+	}
+	if _, err := s.ledger.PostRefund(ctx, &ledgerv1.PostRefundRequest{
+		AccountId: a.AccountID, Reference: "refund:" + req.NetworkRef, AmountMinor: r.amount, Meta: req.Meta}); err != nil {
+		return nil, err // refund stays pending and keeps counting toward the cap; resumed later
+	}
+	var resp *accountsv1.RefundResponse
+	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		cur, err := lockAuth(ctx, tx, a.ID)
+		if err != nil {
+			return err
+		}
+		var st string
+		if err := tx.QueryRow(ctx, `SELECT status FROM refunds WHERE id=$1 FOR UPDATE`, r.id).Scan(&st); err != nil {
+			return err
+		}
+		if st == "posted" {
+			resp = &accountsv1.RefundResponse{Refund: refundProto(r.id, cur, req.NetworkRef, r.amount, r.createdAt), Authorization: cur.proto(), Replayed: true}
+			return nil
+		}
+		if _, err := tx.Exec(ctx, `UPDATE refunds SET status='posted' WHERE id=$1`, r.id); err != nil {
+			return err
+		}
+		after, err := scanAuth(tx.QueryRow(ctx, `UPDATE authorizations SET refunded_minor = refunded_minor + $2 WHERE id=$1 RETURNING `+authCols, a.ID, r.amount))
+		if err != nil {
+			return err
+		}
+		ev := event("refund.posted", "refund", r.id, req.Meta)
+		ev.Before = snapshot(cur)
+		ev.After = snapshot(map[string]any{"authorization": after, "refund_id": r.id, "amount_minor": r.amount, "network_ref": req.NetworkRef})
+		resp = &accountsv1.RefundResponse{Refund: refundProto(r.id, after, req.NetworkRef, r.amount, r.createdAt), Authorization: after.proto()}
+		return outbox.Enqueue(ctx, tx, ev)
+	})
+	if err != nil {
+		return nil, internal(err)
 	}
 	return resp, nil
 }

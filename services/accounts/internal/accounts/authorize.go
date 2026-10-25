@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -44,6 +45,8 @@ var authStatusProto = map[string]accountsv1.AuthorizationStatus{
 	"captured": accountsv1.AuthorizationStatus_AUTHORIZATION_STATUS_CAPTURED,
 	"reversed": accountsv1.AuthorizationStatus_AUTHORIZATION_STATUS_REVERSED,
 	"expired":  accountsv1.AuthorizationStatus_AUTHORIZATION_STATUS_EXPIRED,
+	"pending":  accountsv1.AuthorizationStatus_AUTHORIZATION_STATUS_PENDING,
+	"failed":   accountsv1.AuthorizationStatus_AUTHORIZATION_STATUS_FAILED,
 }
 
 type authRow struct {
@@ -66,17 +69,20 @@ type authRow struct {
 	ExpiresAt     *time.Time `json:"expires_at,omitempty"`
 	CapturedAt    *time.Time `json:"captured_at,omitempty"`
 	ReversedAt    *time.Time `json:"reversed_at,omitempty"`
+	PendingOp     *string    `json:"pending_op,omitempty"`
+	PendingAmount *int64     `json:"pending_op_amount,omitempty"`
+	PendingAt     *time.Time `json:"pending_op_at,omitempty"`
 }
 
 const authCols = `id::text, account_id::text, network_ref, request_hash, amount_minor, currency, merchant_id, merchant_name, mcc,
 	status, decline_reason, captured_minor, refunded_minor, capture_network_ref, reversal_network_ref,
-	created_at, expires_at, captured_at, reversed_at`
+	created_at, expires_at, captured_at, reversed_at, pending_op, pending_op_amount, pending_op_at`
 
 func scanAuth(row pgx.Row) (authRow, error) {
 	var a authRow
 	err := row.Scan(&a.ID, &a.AccountID, &a.NetworkRef, &a.RequestHash, &a.Amount, &a.Currency, &a.MerchantID, &a.MerchantName, &a.MCC,
 		&a.Status, &a.DeclineReason, &a.Captured, &a.Refunded, &a.CaptureRef, &a.ReversalRef,
-		&a.CreatedAt, &a.ExpiresAt, &a.CapturedAt, &a.ReversedAt)
+		&a.CreatedAt, &a.ExpiresAt, &a.CapturedAt, &a.ReversedAt, &a.PendingOp, &a.PendingAmount, &a.PendingAt)
 	return a, err
 }
 
@@ -124,31 +130,41 @@ func validateAuthorize(req *accountsv1.AuthorizeRequest) error {
 	return nil
 }
 
-// Authorize evaluates a card network authorization. The authorization row is inserted first and
-// its transaction stays open until the decision is final, so duplicates of the same network_ref
-// wait and then replay. The ledger hold reference is deterministic ("auth:<network_ref>"), so a
-// retry after a crash re-uses the same hold.
+// PendingTimeout is how long a reserved operation may stay unfinished before the reconciler acts.
+const PendingTimeout = 2 * time.Minute
+
+// Authorize evaluates a card network authorization in three steps:
+//
+//  1. reserve (short tx): insert-first on network_ref, count velocity, read the account FOR SHARE,
+//     evaluate policy. A policy decline is final here. Otherwise the row commits as 'pending'.
+//  2. ledger PlaceHold("auth:<network_ref>") — outside any accounts lock.
+//  3. finalize (short tx): pending → approved | declined(insufficient_credit).
+//
+// A duplicate that finds the row 'pending' resumes steps 2–3 (the ledger call is idempotent). A
+// row left pending by a lost response is failed by ResolvePending and its hold released.
 func (s *Service) Authorize(ctx context.Context, req *accountsv1.AuthorizeRequest) (*accountsv1.AuthorizationResponse, error) {
 	if err := validateAuthorize(req); err != nil {
 		return nil, err
 	}
-	acc, err := s.load(ctx, s.pool, req.CardId, false)
-	if grpcx.Reason(err) == "account_not_found" {
+	if _, err := s.load(ctx, s.pool, req.CardId, false); grpcx.Reason(err) == "account_not_found" {
 		return nil, grpcx.Error(codes.NotFound, "card_not_found", "card not found")
-	}
-	if err != nil {
+	} else if err != nil {
 		return nil, err
 	}
 	reqHash := hashParts(req.CardId, req.AmountMinor, req.Currency, req.Merchant.Id, req.Merchant.Name, req.Merchant.Mcc)
 	now := s.clock.Now()
 
-	var resp *accountsv1.AuthorizationResponse
-	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	var (
+		row      authRow
+		final    *accountsv1.AuthorizationResponse
+		replayed bool
+	)
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		id := uuid.Must(uuid.NewV7()).String()
 		tag, err := tx.Exec(ctx, `
 			INSERT INTO authorizations (id, account_id, network_ref, request_hash, amount_minor, currency, merchant_id, merchant_name, mcc, status, created_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'approved',$10) ON CONFLICT (network_ref) DO NOTHING`,
-			id, acc.ID, req.NetworkRef, reqHash, req.AmountMinor, req.Currency, req.Merchant.Id, req.Merchant.Name, req.Merchant.Mcc, now)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending',$10) ON CONFLICT (network_ref) DO NOTHING`,
+			id, req.CardId, req.NetworkRef, reqHash, req.AmountMinor, req.Currency, req.Merchant.Id, req.Merchant.Name, req.Merchant.Mcc, now)
 		if err != nil {
 			return err
 		}
@@ -160,51 +176,98 @@ func (s *Service) Authorize(ctx context.Context, req *accountsv1.AuthorizeReques
 			if existing.RequestHash != reqHash {
 				return grpcx.Error(codes.AlreadyExists, "network_ref_reuse", "network_ref already used for a different authorization")
 			}
-			resp = &accountsv1.AuthorizationResponse{Authorization: existing.proto(), Replayed: true}
+			replayed = true
+			if existing.Status != "pending" {
+				final = &accountsv1.AuthorizationResponse{Authorization: existing.proto(), Replayed: true}
+			}
+			row = existing
 			return nil
 		}
 
 		// Every attempt that reaches here counts toward velocity, whatever the outcome.
-		velocityOK, _, err := s.velocity.AllowTx(ctx, tx, "card:"+acc.ID, now)
+		velocityOK, _, err := s.velocity.AllowTx(ctx, tx, "card:"+req.CardId, now)
+		if err != nil {
+			return err
+		}
+		// Read the account inside the tx so a freeze/limit committed before us is honored.
+		acc, err := scanAccount(tx.QueryRow(ctx, `SELECT `+accountCols+` FROM accounts WHERE id=$1 FOR SHARE`, req.CardId))
 		if err != nil {
 			return err
 		}
 		reason := EvaluateDecline(DeclineInput{State: acc.State, Frozen: acc.Frozen, AccountCurrency: acc.Currency, Currency: req.Currency,
 			VelocityOK: velocityOK, PurchaseLimit: acc.PurchaseLimit, Amount: req.AmountMinor})
 		if reason == "" {
-			hold, err := s.ledger.PlaceHold(ctx, &ledgerv1.PlaceHoldRequest{
-				AccountId: acc.ID, Reference: "auth:" + req.NetworkRef, AmountMinor: req.AmountMinor, Currency: req.Currency, Meta: req.Meta})
-			if err != nil {
-				return err
-			}
-			if !hold.Approved {
-				reason = DeclineInsufficientCredit
-			}
+			row, err = scanAuth(tx.QueryRow(ctx, `SELECT `+authCols+` FROM authorizations WHERE id=$1`, id))
+			return err
 		}
-
-		var a authRow
-		if reason != "" {
-			a, err = scanAuth(tx.QueryRow(ctx, `UPDATE authorizations SET status='declined', decline_reason=$2 WHERE id=$1 RETURNING `+authCols, id, string(reason)))
-		} else {
-			a, err = scanAuth(tx.QueryRow(ctx, `UPDATE authorizations SET expires_at=$2 WHERE id=$1 RETURNING `+authCols, id, now.Add(HoldTTL)))
-		}
+		declined, err := scanAuth(tx.QueryRow(ctx, `UPDATE authorizations SET status='declined', decline_reason=$2 WHERE id=$1 RETURNING `+authCols, id, string(reason)))
 		if err != nil {
 			return err
 		}
-		typ := "authorization.approved"
-		if reason != "" {
-			typ = "authorization.declined"
-		}
-		ev := event(typ, "authorization", a.ID, req.Meta)
-		ev.After = snapshot(a)
-		if err := outbox.Enqueue(ctx, tx, ev); err != nil {
-			return err
-		}
-		resp = &accountsv1.AuthorizationResponse{Authorization: a.proto()}
-		return nil
+		ev := event("authorization.declined", "authorization", declined.ID, req.Meta)
+		ev.After = snapshot(declined)
+		final = &accountsv1.AuthorizationResponse{Authorization: declined.proto()}
+		return outbox.Enqueue(ctx, tx, ev)
 	})
 	if err != nil {
 		return nil, internal(err)
 	}
+	if final != nil {
+		return final, nil
+	}
+	return s.finishAuthorization(ctx, row, replayed, req.Meta)
+}
+
+// finishAuthorization places the hold and finalizes a pending authorization.
+func (s *Service) finishAuthorization(ctx context.Context, a authRow, replayed bool, meta *commonv1.RequestMeta) (*accountsv1.AuthorizationResponse, error) {
+	hold, err := s.ledger.PlaceHold(ctx, &ledgerv1.PlaceHoldRequest{
+		AccountId: a.AccountID, Reference: "auth:" + a.NetworkRef, AmountMinor: a.Amount, Currency: a.Currency, Meta: meta})
+	if err != nil {
+		return nil, err // row stays pending: a retry resumes, or ResolvePending fails it
+	}
+	var (
+		resp    *accountsv1.AuthorizationResponse
+		release bool
+	)
+	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		cur, err := lockAuth(ctx, tx, a.ID)
+		if err != nil {
+			return err
+		}
+		if cur.Status != "pending" { // finalized concurrently (or failed by the reconciler)
+			release = hold.Approved && cur.Status != "approved" && cur.Status != "captured"
+			resp = &accountsv1.AuthorizationResponse{Authorization: cur.proto(), Replayed: true}
+			return nil
+		}
+		var after authRow
+		typ := "authorization.approved"
+		if hold.Approved {
+			after, err = scanAuth(tx.QueryRow(ctx, `UPDATE authorizations SET status='approved', expires_at=$2 WHERE id=$1 RETURNING `+authCols, a.ID, cur.CreatedAt.Add(HoldTTL)))
+		} else {
+			typ = "authorization.declined"
+			after, err = scanAuth(tx.QueryRow(ctx, `UPDATE authorizations SET status='declined', decline_reason=$2 WHERE id=$1 RETURNING `+authCols, a.ID, string(DeclineInsufficientCredit)))
+		}
+		if err != nil {
+			return err
+		}
+		ev := event(typ, "authorization", after.ID, meta)
+		ev.After = snapshot(after)
+		resp = &accountsv1.AuthorizationResponse{Authorization: after.proto(), Replayed: replayed}
+		return outbox.Enqueue(ctx, tx, ev)
+	})
+	if err != nil {
+		return nil, internal(err)
+	}
+	if release {
+		s.releaseQuietly(ctx, a.NetworkRef)
+	}
 	return resp, nil
+}
+
+// releaseQuietly releases "auth:<ref>" if it is still active; absent or terminal holds are fine.
+func (s *Service) releaseQuietly(ctx context.Context, networkRef string) {
+	_, err := s.ledger.ReleaseHold(ctx, &ledgerv1.ReleaseHoldRequest{HoldReference: "auth:" + networkRef, Reason: ledgerv1.HoldRelease_HOLD_RELEASE_RELEASED})
+	if err != nil && grpcx.Reason(err) != "hold_not_found" && grpcx.Reason(err) != "hold_not_active" {
+		slog.WarnContext(ctx, "release of superseded hold failed; ledger sweeper will expire it", "network_ref", networkRef, "err", err)
+	}
 }

@@ -31,6 +31,10 @@ enum AuthorizationStatus {
   AUTHORIZATION_STATUS_CAPTURED = 3;
   AUTHORIZATION_STATUS_REVERSED = 4;
   AUTHORIZATION_STATUS_EXPIRED = 5;
+  // Reserved; the ledger hold is being placed. Resolved within seconds or by the reconciler.
+  AUTHORIZATION_STATUS_PENDING = 6;
+  // The network never received an answer (lost response); any hold was released.
+  AUTHORIZATION_STATUS_FAILED = 7;
 }
 
 message Merchant {
