@@ -20,6 +20,7 @@ x-service-env: &service-env
 services:
   postgres:
     image: postgres:16-alpine
+    command: ["postgres", "-c", "max_connections=300", "-c", "shared_buffers=256MB"]
     environment:
       POSTGRES_USER: acme
       POSTGRES_PASSWORD: acme
@@ -97,6 +98,7 @@ services:
       BASE_URL: http://lb:8080
       JWT_HS256_SECRET: ${JWT_HS256_SECRET}
       BANK_WEBHOOK_SECRET: ${BANK_WEBHOOK_SECRET}
+      STRESS: ${STRESS:-0}
     volumes:
       - ../tests/load:/scripts:ro
     depends_on: [lb]

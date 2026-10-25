@@ -3,7 +3,7 @@ GOBIN ?= $(shell go env GOPATH)/bin
 export PATH := $(GOBIN):$(PATH)
 COMPOSE := docker compose -f deploy/docker-compose.yml --env-file .env.dev
 
-.PHONY: all proto build test test-integration load lint up down logs devtoken banksim tf-validate migrate-check
+.PHONY: all proto build test test-integration load load-verify lint web-test up down logs devtoken banksim tf-validate migrate-check
 
 all: proto build test
 
@@ -20,7 +20,11 @@ test-integration:
 	go test -race -count=1 -tags=integration -timeout=10m ./tests/integration/...
 
 load:
-	$(COMPOSE) run --rm k6 run /scripts/sprint1.js
+	$(COMPOSE) --profile load run --rm k6 run /scripts/sprint1.js
+	$(MAKE) load-verify
+
+load-verify:
+	$(COMPOSE) exec -T postgres psql -U acme -d acmecard -f - < tests/load/verify.sql
 
 lint:
 	golangci-lint run ./...
@@ -43,3 +47,6 @@ banksim:
 tf-validate:
 	cd infra/terraform/envs/dev && terraform init -backend=false -input=false >/dev/null && terraform validate
 	cd infra/terraform/envs/prod && terraform init -backend=false -input=false >/dev/null && terraform validate
+
+web-test:
+	cd web && npm test && npm run typecheck
