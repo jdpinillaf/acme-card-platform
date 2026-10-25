@@ -3,6 +3,7 @@
 import { useCallback, useState } from "react";
 import { daysToDuePlus, daysToNextClose, formatMinor } from "@/lib/billing.ts";
 import { maskAccount } from "@/lib/payouts.ts";
+import { auditEventsQuery, type AuditFilter } from "@/lib/audit.ts";
 
 type CallResult = { status: number; replayed: boolean; ms: number; body: any };
 type LogEntry = { id: number; at: string; label: string; method: string; path: string; key?: string; results: CallResult[] };
@@ -25,6 +26,10 @@ type Summary = {
   past_due_minor: number; dpd: number; grace: boolean; stage: string; currency: string;
 };
 type Charge = { id: string; kind: string; cycle: number; amount_minor: number; waived_minor: number; effective_at?: string; status: string };
+type AuditEvent = {
+  id: string; event_type: string; aggregate_type: string; aggregate_id: string; actor?: string; occurred_at: string;
+  source?: string; source_seq?: number; chain_seq: number; hash: string; redacted: boolean; after?: unknown;
+};
 type Deposit = { id: string; amount_minor: number; currency: string; status: string; external_ref?: string };
 type Payment = { id: string; amount_minor: number; currency: string; status: string; external_ref?: string; return_ref?: string };
 type Tx = {
@@ -67,6 +72,12 @@ export default function Simulator() {
   const [destination, setDestination] = useState({ bank_code: "BANK001", account_number: "000123456789", holder_name: "Jane Doe" });
   const [closeReason, setCloseReason] = useState("customer request");
   const [payouts, setPayouts] = useState<Payout[]>([]);
+  const [auditorToken, setAuditorToken] = useState("");
+  const [auditFilter, setAuditFilter] = useState<AuditFilter>({ page_size: 50 });
+  const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
+  const [auditNext, setAuditNext] = useState("");
+  const [auditStatus, setAuditStatus] = useState<{ label: string; ok: boolean; detail: string } | null>(null);
+  const [auditExport, setAuditExport] = useState<{ id: string; count: number; sha256: string } | null>(null);
 
   const push = (e: Omit<LogEntry, "id" | "at">) =>
     setLog((l) => [{ ...e, id: ++seq, at: new Date().toLocaleTimeString() }, ...l].slice(0, 200));
@@ -261,6 +272,94 @@ export default function Simulator() {
     setSupportToken(tok);
     push({ label: "mint support token", method: "LOCAL", path: "/api/token", results: [{ status: res.status, replayed: false, ms: 0, body: { sub: "agent-sim", role: "support" } }] });
     return tok;
+  }
+
+  async function ensureAuditorToken() {
+    if (auditorToken) return auditorToken;
+    const res = await fetch("/api/token", { method: "POST", body: JSON.stringify({ sub: "auditor-sim", accounts: [], role: "auditor" }) });
+    const tok = (await res.json()).token as string;
+    setAuditorToken(tok);
+    push({ label: "mint auditor token", method: "LOCAL", path: "/api/token", results: [{ status: res.status, replayed: false, ms: 0, body: { sub: "auditor-sim", role: "auditor" } }] });
+    return tok;
+  }
+
+  async function auditCall(label: string, method: string, path: string, body?: object) {
+    const tok = await ensureAuditorToken();
+    const [r] = await gateway(label, method, path, body, { tok });
+    if (r.status >= 400 || r.status === 0)
+      setAuditStatus({ label, ok: false, detail: `${r.status} ${r.body?.error?.message ?? r.body?.title ?? "request failed"}` });
+    return r;
+  }
+
+  async function auditSearch(pageToken = "") {
+    let q: string;
+    try {
+      q = auditEventsQuery(auditFilter);
+    } catch (e) {
+      setAuditStatus({ label: "search", ok: false, detail: String(e) });
+      return;
+    }
+    if (pageToken) q += `${q ? "&" : "?"}page_token=${encodeURIComponent(pageToken)}`;
+    const r = await auditCall("audit search", "GET", `/v1/audit/events${q}`);
+    if (r.status !== 200) return;
+    setAuditEvents((prev) => (pageToken ? [...prev, ...r.body.events] : r.body.events));
+    setAuditNext(r.body.next_page_token ?? "");
+    setAuditStatus({ label: "search", ok: true, detail: `${r.body.events.length} events${r.body.next_page_token ? " (more available)" : ""}` });
+  }
+
+  async function auditVerify() {
+    const r = await auditCall("verify chain", "GET", "/v1/audit/verify");
+    if (r.status !== 200) return;
+    const b = r.body;
+    const ok = b.chain_valid && b.checkpoints_valid && b.gaps.length === 0 && b.stuck_outbox.length === 0;
+    setAuditStatus({ label: "verify", ok, detail: ok ? `chain intact · ${b.checked} events${b.incremental ? ` since full run through #${b.full_through_chain_seq} (${new Date(b.full_verified_at).toLocaleString()})` : " (full walk)"} · ${b.checkpoints} checkpoints`
+      : `chain ${b.chain_valid ? "ok" : `broken at ${b.first_bad_chain_seq}`} · checkpoints ${b.checkpoints_valid ? "ok" : b.detail} · ${b.gaps.length} gaps · ${b.stuck_outbox.length} stuck outboxes` });
+  }
+
+  async function auditCheckpoint() {
+    const r = await auditCall("create checkpoint", "POST", "/v1/audit/checkpoints", {});
+    if (r.status === 201) setAuditStatus({ label: "checkpoint", ok: true, detail: `anchored chain_seq ${r.body.chain_seq} · ${r.body.s3_key}` });
+  }
+
+  async function auditReconcile(run: boolean) {
+    const r = await auditCall(run ? "run reconciliation" : "last reconciliation", run ? "POST" : "GET", "/v1/audit/reconciliation", run ? {} : undefined);
+    if (r.status === 200 || r.status === 201)
+      setAuditStatus({ label: "reconciliation", ok: r.body.total_violations === 0, detail: `${r.body.total_violations} violations · ${r.body.checks.length} checks · ${r.body.ran_at}` });
+  }
+
+  async function auditSnapshot() {
+    const r = await auditCall("snapshot accounts", "POST", "/v1/audit/snapshots", {});
+    if (r.status === 202) setAuditStatus({ label: "snapshot", ok: true, detail: `${r.body.count} account snapshots queued (written in the background)` });
+  }
+
+  async function auditReplay() {
+    const id = auditFilter.account_id?.trim() || account?.id;
+    if (!id) return;
+    const r = await auditCall("replay account", "GET", `/v1/audit/replay/${encodeURIComponent(id)}`);
+    if (r.status === 200)
+      setAuditStatus({ label: "replay", ok: r.body.differences.length === 0, detail: r.body.differences.length === 0 ? `trail matches live state (${id})`
+        : r.body.differences.map((d: { field: string; audit: string; live: string }) => `${d.field}: audit ${d.audit} ≠ live ${d.live}`).join(" · ") });
+  }
+
+  async function auditCreateExport() {
+    const f: Record<string, string> = {};
+    for (const k of ["account_id", "event_type", "actor"] as const) if (auditFilter[k]?.trim()) f[k] = auditFilter[k]!.trim();
+    for (const k of ["from", "to"] as const) if (auditFilter[k]) f[k] = new Date(auditFilter[k]!).toISOString();
+    const r = await auditCall("create export", "POST", "/v1/audit/exports", { filter: f });
+    if (r.status === 201) setAuditExport({ id: r.body.id, count: r.body.count, sha256: r.body.sha256 });
+  }
+
+  async function auditDownload() {
+    if (!auditExport) return;
+    const r = await auditCall("download export", "GET", `/v1/audit/exports/${auditExport.id}`);
+    if (r.status !== 200) return;
+    const text = typeof r.body === "string" ? r.body : JSON.stringify(r.body) + "\n";
+    const url = URL.createObjectURL(new Blob([text], { type: "application/x-ndjson" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `audit-export-${auditExport.id}.ndjson`;
+    a.click();
+    URL.revokeObjectURL(url);
   }
 
   async function refreshPayouts(acc = account) {
@@ -634,6 +733,56 @@ export default function Simulator() {
                 </tbody>
               </table>
             )}
+          </section>
+          <section className="panel">
+            <h2>9 · Audit</h2>
+            <div className="muted" style={{ marginBottom: 8 }}>
+              Acts as an auditor (read-only role). Every search, verification and export here is itself recorded in the trail. Payloads are already redacted: no account numbers, ciphertexts or tokens.
+            </div>
+            <div className="row">
+              <label>Account<input value={auditFilter.account_id ?? ""} placeholder={account?.id ?? "account id"} onChange={(e) => setAuditFilter({ ...auditFilter, account_id: e.target.value })} /></label>
+              <label>Event type<input value={auditFilter.event_type ?? ""} placeholder="account.changed" onChange={(e) => setAuditFilter({ ...auditFilter, event_type: e.target.value })} /></label>
+              <label>Actor<input value={auditFilter.actor ?? ""} placeholder={sub} onChange={(e) => setAuditFilter({ ...auditFilter, actor: e.target.value })} /></label>
+              <label>From<input type="datetime-local" value={auditFilter.from ?? ""} onChange={(e) => setAuditFilter({ ...auditFilter, from: e.target.value })} /></label>
+              <label>To<input type="datetime-local" value={auditFilter.to ?? ""} onChange={(e) => setAuditFilter({ ...auditFilter, to: e.target.value })} /></label>
+            </div>
+            <div className="row">
+              <button data-action="audit-search" className="primary" disabled={busy} onClick={() => auditSearch()}>Search</button>
+              <button data-action="audit-verify" disabled={busy} onClick={auditVerify}>Verify chain</button>
+              <button data-action="audit-checkpoint" disabled={busy} onClick={auditCheckpoint}>Create checkpoint</button>
+              <button data-action="audit-run-reconciliation" disabled={busy} onClick={() => auditReconcile(true)}>Run reconciliation</button>
+              <button data-action="audit-last-reconciliation" disabled={busy} onClick={() => auditReconcile(false)}>Last reconciliation</button>
+              <button data-action="audit-snapshot" disabled={busy} onClick={auditSnapshot}>Snapshot now</button>
+              <button data-action="audit-replay" disabled={busy || !(auditFilter.account_id?.trim() || account)} onClick={auditReplay}>Replay account</button>
+              <button data-action="audit-export" disabled={busy} onClick={auditCreateExport}>Export</button>
+              <button data-action="audit-download-export" disabled={busy || !auditExport} onClick={auditDownload}>Download export</button>
+            </div>
+            {auditStatus && (
+              <div className="row">
+                <span className={`badge s-${auditStatus.ok ? "settled" : "failed"}`}>{auditStatus.label}</span>
+                <span className="mono">{auditStatus.detail}</span>
+              </div>
+            )}
+            {auditExport && <div className="row mono muted">export {auditExport.id.slice(0, 8)} · {auditExport.count} events · sha256 {auditExport.sha256.slice(0, 16)}…</div>}
+            {auditEvents.length > 0 && (
+              <table>
+                <thead><tr><th>#</th><th>When</th><th>Event</th><th>Aggregate</th><th>Actor</th><th>Source</th><th>Hash</th></tr></thead>
+                <tbody>
+                  {auditEvents.map((e) => (
+                    <tr key={e.id} title={JSON.stringify(e.after ?? {})}>
+                      <td className="mono">{e.chain_seq}</td>
+                      <td className="mono">{new Date(e.occurred_at).toLocaleString()}</td>
+                      <td>{e.event_type}{e.redacted && <span className="badge s-pending" style={{ marginLeft: 6 }}>redacted</span>}</td>
+                      <td className="mono">{e.aggregate_type}:{e.aggregate_id.slice(-12)}</td>
+                      <td className="mono">{e.actor ?? ""}</td>
+                      <td className="mono">{e.source ? `${e.source}#${e.source_seq}` : ""}</td>
+                      <td className="mono muted">{e.hash.slice(0, 10)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            {auditNext && <div className="row"><button disabled={busy} onClick={() => auditSearch(auditNext)}>Load more</button></div>}
           </section>
         </div>
 
