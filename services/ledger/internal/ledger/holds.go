@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -105,6 +107,7 @@ func (s *Service) PlaceHold(ctx context.Context, req *ledgerv1.PlaceHoldRequest)
 type holdRow struct {
 	id, accountID, status string
 	amount                int64
+	captured              *int64
 	captureRef            *string
 }
 
@@ -120,8 +123,8 @@ func lockHold(ctx context.Context, tx pgx.Tx, reference string) (holdRow, error)
 	if _, err := lockAccount(ctx, tx, h.accountID); err != nil {
 		return h, err
 	}
-	err := tx.QueryRow(ctx, `SELECT id::text, status, amount_minor, capture_reference FROM holds WHERE reference=$1 FOR UPDATE`, reference).
-		Scan(&h.id, &h.status, &h.amount, &h.captureRef)
+	err := tx.QueryRow(ctx, `SELECT id::text, status, amount_minor, captured_minor, capture_reference FROM holds WHERE reference=$1 FOR UPDATE`, reference).
+		Scan(&h.id, &h.status, &h.amount, &h.captured, &h.captureRef)
 	return h, err
 }
 
@@ -137,6 +140,9 @@ func (s *Service) CaptureHold(ctx context.Context, req *ledgerv1.CaptureHoldRequ
 			return err
 		}
 		if h.status == "captured" && h.captureRef != nil && *h.captureRef == req.JournalReference {
+			if h.captured == nil || *h.captured != req.AmountMinor {
+				return grpcx.Error(codes.AlreadyExists, "capture_reference_reuse", "capture replayed with a different amount")
+			}
 			var id string
 			if err := tx.QueryRow(ctx, `SELECT id::text FROM journal_entries WHERE reference=$1`, req.JournalReference).Scan(&id); err != nil {
 				return err
@@ -242,4 +248,53 @@ func (s *Service) PostRefund(ctx context.Context, req *ledgerv1.PostRefundReques
 		return nil, toStatus(err)
 	}
 	return resp, nil
+}
+
+// ExpireStaleHolds is the ledger's safety net: it expires active holds older than maxAge whatever
+// their owner believes (e.g. a hold whose authorization row was never committed). Accounts
+// normally releases holds at 7 days; maxAge should be larger than that.
+func (s *Service) ExpireStaleHolds(ctx context.Context, maxAge time.Duration, batch int) (int, error) {
+	rows, err := s.pool.Query(ctx, `SELECT reference FROM holds WHERE status='active' AND created_at < now() - $1::interval ORDER BY created_at LIMIT $2`, maxAge, batch)
+	if err != nil {
+		return 0, err
+	}
+	var refs []string
+	for rows.Next() {
+		var r string
+		if err := rows.Scan(&r); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		refs = append(refs, r)
+	}
+	rows.Close()
+	n := 0
+	for _, ref := range refs {
+		_, err := s.ReleaseHold(ctx, &ledgerv1.ReleaseHoldRequest{HoldReference: ref, Reason: ledgerv1.HoldRelease_HOLD_RELEASE_EXPIRED,
+			Meta: &commonv1.RequestMeta{Actor: "ledger.stale_hold_sweeper"}})
+		if err == nil {
+			n++
+		} else if grpcx.Reason(err) != "hold_not_active" {
+			return n, err
+		}
+	}
+	return n, nil
+}
+
+// RunStaleHoldSweeper runs ExpireStaleHolds every interval until ctx is cancelled.
+func (s *Service) RunStaleHoldSweeper(ctx context.Context, every, maxAge time.Duration, log *slog.Logger) {
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		if n, err := s.ExpireStaleHolds(ctx, maxAge, 500); err != nil && ctx.Err() == nil {
+			log.Error("stale hold sweep failed", "err", err)
+		} else if n > 0 {
+			log.Warn("stale holds expired by ledger safety net", "count", n)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
 }

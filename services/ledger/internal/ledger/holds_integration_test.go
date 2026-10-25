@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -241,5 +242,35 @@ func TestHoldOperationsAreEvented(t *testing.T) {
 		if n != want {
 			t.Errorf("%s=%d want %d", typ, n, want)
 		}
+	}
+}
+
+func TestCaptureReplayRequiresSameAmount(t *testing.T) {
+	s := newService(t)
+	acc := funded(t, s, 1000)
+	_, _ = hold(s, acc, "ha", 300)
+	if _, err := capture(s, "ha", "cap-a", 200); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(s, "ha", "cap-a", 300); status.Code(err) != codes.AlreadyExists {
+		t.Fatalf("replay with different amount must be AlreadyExists, got %v", err)
+	}
+}
+
+func TestExpireStaleHoldsReleasesOrphans(t *testing.T) {
+	s := newService(t)
+	ctx := context.Background()
+	acc := funded(t, s, 1000)
+	_, _ = hold(s, acc, "old", 300)
+	_, _ = hold(s, acc, "new", 200)
+	if _, err := s.pool.Exec(ctx, `UPDATE holds SET created_at = now() - interval '9 days' WHERE reference='old'`); err != nil {
+		t.Fatal(err)
+	}
+	n, err := s.ExpireStaleHolds(ctx, 8*24*time.Hour, 100)
+	if err != nil || n != 1 {
+		t.Fatalf("expired=%d err=%v want 1", n, err)
+	}
+	if a, h := avail(t, s, acc); a != 800 || h != 200 {
+		t.Fatalf("available=%d holds=%d", a, h)
 	}
 }
