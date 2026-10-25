@@ -215,7 +215,7 @@ func (s *Service) SettlePayout(ctx context.Context, req *accountsv1.SettlePayout
 			return nil // resume
 		}
 		if req.Currency != p.Currency || req.AmountMinor != p.Collateral+p.Credit {
-			return grpcx.Error(codes.InvalidArgument, "amount_mismatch", "amount or currency differs from the payout")
+			return grpcx.Error(codes.InvalidArgument, "payout_amount_mismatch", "amount or currency differs from the payout")
 		}
 		if req.DestinationLast4 != p.Last4 {
 			return grpcx.Error(codes.InvalidArgument, "destination_mismatch", "destination does not match the payout")

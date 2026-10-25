@@ -125,7 +125,7 @@ func TestPayoutWebhookChecks(t *testing.T) {
 	if _, err := f.svc.SettlePayout(ctx, &accountsv1.SettlePayoutRequest{AttemptId: p.AttemptId, AmountMinor: 1000, Currency: "USD", DestinationLast4: "0000", Status: payoutSettled}); grpcx.Reason(err) != "destination_mismatch" {
 		t.Fatalf("last4: %v", err)
 	}
-	if _, err := f.svc.SettlePayout(ctx, &accountsv1.SettlePayoutRequest{AttemptId: p.AttemptId, AmountMinor: 999, Currency: "USD", DestinationLast4: "6789", Status: payoutSettled}); grpcx.Reason(err) != "amount_mismatch" {
+	if _, err := f.svc.SettlePayout(ctx, &accountsv1.SettlePayoutRequest{AttemptId: p.AttemptId, AmountMinor: 999, Currency: "USD", DestinationLast4: "6789", Status: payoutSettled}); grpcx.Reason(err) != "payout_amount_mismatch" {
 		t.Fatalf("amount: %v", err)
 	}
 	if _, err := f.svc.SettlePayout(ctx, &accountsv1.SettlePayoutRequest{AttemptId: "0190f6c4-0000-7000-8000-000000000000", AmountMinor: 1000, Currency: "USD", DestinationLast4: "6789", Status: payoutSettled}); grpcx.Reason(err) != "payout_not_found" {

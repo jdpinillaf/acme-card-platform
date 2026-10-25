@@ -110,5 +110,5 @@ The close completes after in-flight work, the final statement's due date (debt i
 ## Docs
 - `docs/DECISIONS.md` — architecture decisions (ADRs)
 - `docs/SPRINTS.md` — sprint plan
-- `docs/TESTING.md` — test gates (Sprint 3–5 results in `docs/testing/sprint3.md`, `sprint4.md`, `sprint5.md`) and latest results
+- `docs/TESTING.md` — test gates (Sprint 3–5 results in `docs/testing/sprint3.md`, `sprint4.md`, `sprint5.md`; customer journey in `docs/testing/journey.md`) and latest results
 - `PROMPTS.md` — verbatim prompt log

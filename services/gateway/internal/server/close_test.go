@@ -143,9 +143,13 @@ func TestBankPayoutInstructionAndWebhook(t *testing.T) {
 }
 
 func TestPayoutMismatchIs422(t *testing.T) {
-	for _, reason := range []string{"destination_mismatch", "amount_mismatch"} {
+	for _, reason := range []string{"destination_mismatch", "payout_amount_mismatch"} {
 		if !semantic422[reason] {
 			t.Errorf("%s must map to 422", reason)
 		}
+	}
+	// Deposits and payments keep their Sprint 1–3 contract: a body that disagrees with the intent is 400.
+	if semantic422["amount_mismatch"] {
+		t.Error("amount_mismatch on deposit and payment webhooks stays 400")
 	}
 }

@@ -37,6 +37,11 @@ func WithReturnWindow(d time.Duration) Option {
 	return func(o *[]accounts.Option) { *o = append(*o, accounts.WithReturnWindow(d)) }
 }
 
+// WithVelocity overrides the per-card authorization velocity limit (default 10 per minute).
+func WithVelocity(limit int, window time.Duration) Option {
+	return func(o *[]accounts.Option) { *o = append(*o, accounts.WithVelocity(limit, window)) }
+}
+
 // NewServer returns the accounts gRPC implementation on pool (accounts schema).
 func NewServer(pool *pgxpool.Pool, ledger ledgerv1.LedgerServiceClient, opts ...Option) accountsv1.AccountsServiceServer {
 	var os []accounts.Option

@@ -57,19 +57,26 @@ type stack struct {
 	statements                                billingtest.Store
 }
 
-// stackConfig tunes the in-process stack; the zero value is the default stack.
-type stackConfig struct {
-	RateLimitPerMinute int                   // 0 → 100,000
-	Accounts           []accountstest.Option // extra accounts-service options
-}
-
 // destinationKey is the integration stack's payout-destination key (dev only).
 var destinationKey = bytes.Repeat([]byte{42}, 32)
 
-func startStack(t *testing.T) *stack { return startStackWith(t, stackConfig{}) }
+// stackConfig holds the test-only knobs of the stack. Zero values mean the defaults used by the
+// sprint suites.
+type stackConfig struct {
+	RateLimitPerMinute int                   // gateway rate limit per subject; 0 = 100,000
+	Accounts           []accountstest.Option // accounts service options (e.g. velocity)
+}
+
+func startStack(t *testing.T) *stack {
+	t.Helper()
+	return startStackWith(t, stackConfig{})
+}
 
 func startStackWith(t *testing.T, cfg stackConfig) *stack {
 	t.Helper()
+	if cfg.RateLimitPerMinute == 0 {
+		cfg.RateLimitPerMinute = 100_000
+	}
 	dsn := testutil.StartPostgres(t)
 	aws := testutil.StartLocalStack(t)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -148,7 +155,7 @@ func startStackWith(t *testing.T, cfg stackConfig) *stack {
 		Rejections:       gatewaytest.NewRejectionLog(s.gateway),
 		RequestTimeout:   10 * time.Second,
 		Idempotency:      idempotency.NewStore(s.gateway, 24*time.Hour),
-		Limiter:          gatewaytest.NewLimiter(s.gateway, rateLimit(cfg)),
+		Limiter:          gatewaytest.NewLimiter(s.gateway, cfg.RateLimitPerMinute),
 		AuditSink:        s.gateway,
 		Ready:            []func(context.Context) error{s.gateway.Ping},
 	}))
@@ -371,11 +378,4 @@ func TestSprint1EndToEnd(t *testing.T) {
 			t.Fatal("audit DELETE must fail")
 		}
 	})
-}
-
-func rateLimit(cfg stackConfig) int {
-	if cfg.RateLimitPerMinute == 0 {
-		return 100_000
-	}
-	return cfg.RateLimitPerMinute
 }

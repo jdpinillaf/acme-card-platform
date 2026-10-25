@@ -459,7 +459,7 @@ func (s *server) audit(next http.Handler) http.Handler {
 // ADR-004) or the payout they settle (ADR-020).
 var semantic422 = map[string]bool{
 	"network_ref_reuse": true, "external_ref_reused": true, "return_ref_reused": true, "idempotency_key_reuse": true,
-	"destination_mismatch": true, "amount_mismatch": true,
+	"destination_mismatch": true, "payout_amount_mismatch": true,
 }
 
 func writeGRPCError(w http.ResponseWriter, r *http.Request, err error) {
