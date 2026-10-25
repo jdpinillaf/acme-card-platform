@@ -125,3 +125,11 @@ Sprint 2 implemented on branch `sprint-2` from `docs/superpowers/plans/2026-10-2
 ### Prompt 10 (user)
 
 > Si, aprobado (Sprint 2 design) — Sprint 2 implemented on branch `sprint-2`, final review fixes in ADR-016.
+
+---
+
+## 2026-10-25 — Sprint 3 discovery
+
+### Prompt 11 (user)
+
+> Vamos a planear sprint 3 ahora
