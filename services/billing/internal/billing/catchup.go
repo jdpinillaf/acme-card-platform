@@ -195,6 +195,17 @@ func (r *run) execute(ctx context.Context) error {
 	return nil
 }
 
+// owedAt is the receivable from entries effective before t.
+func (r *run) owedAt(t time.Time) int64 {
+	var owed int64
+	for _, e := range r.entries {
+		if e.EffectiveAt.Before(t) {
+			owed += e.Delta
+		}
+	}
+	return owed
+}
+
 // nextBoundary is the first 00:00 UTC strictly after t.
 func nextBoundary(t time.Time) time.Time {
 	t = t.UTC()
@@ -206,7 +217,7 @@ func (r *run) delinquencyAt(ctx context.Context, t time.Time) error {
 	if r.chargedOff {
 		return nil
 	}
-	d := engine.Delinquency(r.facts, r.credits, t)
+	d := engine.CapToOwed(engine.Delinquency(r.facts, r.credits, t), r.owedAt(t))
 	for _, m := range d.Missed {
 		cycle := m.Cycle
 		f := r.facts[cycle-1]
@@ -266,7 +277,7 @@ func (r *run) close(ctx context.Context, n int, prevClose, closeAt time.Time, fi
 		}
 		facts := r.facts
 		// A day is past due when DPD ≥ 1 at its start; the due date itself is not (spec B-6).
-		pastDue := func(d time.Time) bool { return engine.Delinquency(facts, r.credits, d).DPD >= 1 }
+		pastDue := func(d time.Time) bool { return engine.CapToOwed(engine.Delinquency(facts, r.credits, d), r.owedAt(d)).DPD >= 1 }
 		if interest := engine.Interest(engine.Replay(es, prevClose, closeAt).Days, r.s.cfg.APRBps, grace, pastDue); interest > 0 {
 			posted, err := r.s.postCharge(ctx, acc, "interest", n, interestRef, interest, closeAt.Add(-time.Second))
 			if err != nil {

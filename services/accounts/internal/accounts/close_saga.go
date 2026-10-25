@@ -127,6 +127,10 @@ func (s *Service) CloseAccount(ctx context.Context, req *accountsv1.CloseAccount
 	if err != nil {
 		return nil, internal(err)
 	}
+	// Run what can already run (often straight to the final statement); the sweep does the rest.
+	if r, err := s.AdvanceClose(ctx, &accountsv1.AdvanceCloseRequest{AccountId: acc.ID}); err == nil {
+		return r, nil
+	}
 	return s.accountResponse(ctx, acc)
 }
 

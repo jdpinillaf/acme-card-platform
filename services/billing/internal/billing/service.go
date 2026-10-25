@@ -230,7 +230,7 @@ func (s *Service) GetSummary(ctx context.Context, req *billingv1.GetSummaryReque
 	}
 	sum.Grace = engine.Grace(facts, credits)
 	if acc.Delinquency != "charged_off" {
-		d := engine.Delinquency(facts, credits, now)
+		d := engine.CapToOwed(engine.Delinquency(facts, credits, now), acc.OutstandingMinor)
 		sum.PastDueMinor, sum.Dpd = d.PastDue, int32(d.DPD)
 	}
 	return sum, nil

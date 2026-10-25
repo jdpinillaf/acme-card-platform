@@ -174,6 +174,11 @@ func (s *server) advanceClock(w http.ResponseWriter, r *http.Request) {
 		writeGRPCError(w, r, err)
 		return
 	}
+	if acc.Account.State == accountsv1.AccountState_ACCOUNT_STATE_CLOSING { // a due date may have passed
+		if adv, err := s.Accounts.AdvanceClose(r.Context(), &accountsv1.AdvanceCloseRequest{AccountId: id}); err == nil {
+			acc = adv
+		}
+	}
 	sum, err := s.Billing.GetSummary(r.Context(), &billingv1.GetSummaryRequest{AccountId: id})
 	if err != nil {
 		writeGRPCError(w, r, err)

@@ -134,3 +134,14 @@ func sortedFacts(stmts []StatementFacts) []StatementFacts {
 	sort.Slice(out, func(i, j int) bool { return out[i].Cycle < out[j].Cycle })
 	return out
 }
+
+// CapToOwed limits the past-due amount to what is owed now (receivable, ≤ 0 meaning nothing):
+// with nothing owed the account is not past due, whatever cleared the debt. Owed late fees
+// (Missed) are unaffected.
+func CapToOwed(r DelinquencyResult, owed int64) DelinquencyResult {
+	r.PastDue = min(r.PastDue, max(owed, 0))
+	if r.PastDue == 0 {
+		r.DPD = 0
+	}
+	return r
+}

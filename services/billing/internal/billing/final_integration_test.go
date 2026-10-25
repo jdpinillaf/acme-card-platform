@@ -9,6 +9,7 @@ import (
 
 	accountsv1 "github.com/acme/acme-card/gen/go/acme/accounts/v1"
 	billingv1 "github.com/acme/acme-card/gen/go/acme/billing/v1"
+	ledgerv1 "github.com/acme/acme-card/gen/go/acme/ledger/v1"
 	"github.com/acme/acme-card/services/billing/internal/engine"
 )
 
@@ -78,5 +79,26 @@ func TestCatchUpContinuesWhileClosing(t *testing.T) {
 	}
 	if n := len(f.charges(t, acc.Id, "fee")); n != 1 {
 		t.Fatalf("late fee before the final statement: %d", n)
+	}
+}
+
+// The past-due amount shown can never exceed what is owed now: debt cleared by collateral (close
+// or charge-off) or any other credit leaves nothing past due.
+func TestSummaryPastDueCappedAtOutstanding(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	acc := f.activeAccount(t, 200000)
+	f.purchase(t, acc.Id, 12000)
+	f.advanceTo(t, acc.Id, engine.OnTimeCutoff(engine.DueDate(f.closeN(t, acc, 1))).Add(2*dayDur))
+	if s, _ := f.svc.GetSummary(ctx, &billingv1.GetSummaryRequest{AccountId: acc.Id}); s.PastDueMinor != 2500 {
+		t.Fatalf("fixture past due: %+v", s)
+	}
+	if _, err := f.ledger.PostCollateralApplication(ctx, &ledgerv1.PostCollateralApplicationRequest{AccountId: acc.Id, Reference: "closeout:test:1",
+		AmountMinor: f.ledgerReceivableBefore(t, acc.Id, time.Now().Add(1000*dayDur))}); err != nil {
+		t.Fatal(err)
+	}
+	s, err := f.svc.GetSummary(ctx, &billingv1.GetSummaryRequest{AccountId: acc.Id})
+	if err != nil || s.PastDueMinor != 0 || s.Dpd != 0 {
+		t.Fatalf("summary after the debt was cleared: %v %+v", err, s)
 	}
 }
