@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useState } from "react";
+import { daysToDuePlus, daysToNextClose, formatMinor } from "@/lib/billing.ts";
 
 type CallResult = { status: number; replayed: boolean; ms: number; body: any };
 type LogEntry = { id: number; at: string; label: string; method: string; path: string; key?: string; results: CallResult[] };
@@ -8,7 +9,19 @@ type Account = {
   id: string; customer_id: string; currency: string; state: string; frozen: boolean;
   credit_limit_minor: number; available_credit_minor: number; collateral_minor: number;
   outstanding_minor: number; credit_balance_minor: number; restricted_reason?: string;
+  account_time?: string; activated_at?: string; delinquency?: string;
 };
+type Statement = {
+  id: string; cycle: number; currency: string; period_start: string; period_end: string; due_date?: string;
+  previous_balance_minor: number; purchases_minor: number; refunds_minor: number; payments_minor: number; returns_minor: number;
+  interest_minor: number; fees_minor: number; waivers_minor: number; collateral_applied_minor: number;
+  new_balance_minor: number; minimum_due_minor: number; sha256: string;
+};
+type Summary = {
+  account_time: string; cycle_start?: string; cycle_end?: string; minimum_due_minor: number; due_date?: string;
+  past_due_minor: number; dpd: number; grace: boolean; stage: string; currency: string;
+};
+type Charge = { id: string; kind: string; cycle: number; amount_minor: number; waived_minor: number; effective_at?: string; status: string };
 type Deposit = { id: string; amount_minor: number; currency: string; status: string; external_ref?: string };
 type Payment = { id: string; amount_minor: number; currency: string; status: string; external_ref?: string; return_ref?: string };
 type Tx = {
@@ -40,6 +53,14 @@ export default function Simulator() {
   const [purchaseLimit, setPurchaseLimit] = useState(0);
   const [payments, setPayments] = useState<Payment[]>([]);
   const [payAmount, setPayAmount] = useState(1000);
+  const [summary, setSummary] = useState<Summary | null>(null);
+  const [statements, setStatements] = useState<Statement[]>([]);
+  const [doc, setDoc] = useState<{ statement: Statement; document: unknown } | null>(null);
+  const [charges, setCharges] = useState<Charge[]>([]);
+  const [advanceDays, setAdvanceDays] = useState(30);
+  const [dueOffset, setDueOffset] = useState(1);
+  const [waive, setWaive] = useState<{ amount: number; reason: string }>({ amount: 2500, reason: "goodwill" });
+  const [supportToken, setSupportToken] = useState("");
 
   const push = (e: Omit<LogEntry, "id" | "at">) =>
     setLog((l) => [{ ...e, id: ++seq, at: new Date().toLocaleTimeString() }, ...l].slice(0, 200));
@@ -173,6 +194,60 @@ export default function Simulator() {
     await refreshPayments();
   }
 
+  async function refreshBilling(acc = account) {
+    if (!acc) return;
+    const [r] = await gateway("billing summary", "GET", `/v1/accounts/${acc.id}/billing`);
+    if (r.status === 200) setSummary(r.body);
+  }
+
+  async function refreshStatements(acc = account) {
+    if (!acc) return;
+    const [r] = await gateway("list statements", "GET", `/v1/accounts/${acc.id}/statements`);
+    if (r.status === 200) setStatements(r.body.statements);
+  }
+
+  async function viewStatement(st: Statement) {
+    if (!account) return;
+    const [r] = await gateway(`statement ${st.cycle}`, "GET", `/v1/accounts/${account.id}/statements/${st.id}`);
+    if (r.status === 200) setDoc(r.body);
+  }
+
+  async function refreshCharges(acc = account) {
+    if (!acc) return;
+    const [r] = await gateway("list charges", "GET", `/v1/accounts/${acc.id}/charges`);
+    if (r.status === 200) setCharges(r.body.charges);
+  }
+
+  async function refreshAllBilling() {
+    await refresh();
+    await Promise.all([refreshBilling(), refreshStatements(), refreshCharges()]);
+  }
+
+  async function advance(days: number | null, label: string) {
+    if (!account || !days) return;
+    const results = await gateway(`advance clock ${label} (+${days}d)`, "POST", `/v1/dev/accounts/${account.id}/clock/advance`, { days }, { times: repeat });
+    const ok = results.find((r) => r.status === 200);
+    if (ok) {
+      setAccount(ok.body.account);
+      setSummary(ok.body.billing);
+    }
+    await Promise.all([refreshStatements(), refreshCharges(), refreshTx(), refreshPayments()]);
+  }
+
+  async function waiveCharge(c: Charge) {
+    if (!account) return;
+    let tok = supportToken;
+    if (!tok) {
+      const res = await fetch("/api/token", { method: "POST", body: JSON.stringify({ sub: "agent-sim", accounts: [], role: "support" }) });
+      tok = (await res.json()).token;
+      setSupportToken(tok);
+      push({ label: "mint support token", method: "LOCAL", path: "/api/token", results: [{ status: res.status, replayed: false, ms: 0, body: { sub: "agent-sim", role: "support" } }] });
+    }
+    await gateway(`waive ${c.kind} (support)`, "POST", `/v1/support/accounts/${account.id}/charges/${c.id}/waivers`,
+      { amount_minor: waive.amount, reason: waive.reason }, { tok, times: repeat });
+    await refreshAllBilling();
+  }
+
   async function control(label: string, method: string, path: string, body?: object) {
     if (!account) return;
     const [r] = await gateway(label, method, path, body);
@@ -194,7 +269,7 @@ export default function Simulator() {
     <main>
       <header>
         <h1>acme-card · flow simulator</h1>
-        <span className="muted">open account → collateral → card active → authorize · capture · reverse · refund → pay · settle · fail · return</span>
+        <span className="muted">open account → collateral → card active → authorize · capture · reverse · refund → pay · settle · fail · return → advance clock · statements · waive</span>
       </header>
 
       <div className="grid">
@@ -234,6 +309,11 @@ export default function Simulator() {
                   <div className="stat"><span className="muted">Outstanding</span><b>{fmt(account.outstanding_minor ?? 0, account.currency)}</b></div>
                   <div className="stat"><span className="muted">Credit balance</span><b>{fmt(account.credit_balance_minor ?? 0, account.currency)}</b></div>
                   <div className="stat"><span className="muted">Restriction</span><b>{account.restricted_reason ?? "none"}</b></div>
+                </div>
+                <div className="stats">
+                  <div className="stat"><span className="muted">Account time</span><b>{account.account_time?.slice(0, 16).replace("T", " ") ?? "—"}</b></div>
+                  <div className="stat"><span className="muted">Delinquency</span><b>{account.delinquency ?? "none"}</b></div>
+                  <div className="stat"><span className="muted">Activated</span><b>{account.activated_at?.slice(0, 10) ?? "—"}</b></div>
                 </div>
                 <div className="row">
                   {account.frozen
@@ -370,6 +450,81 @@ export default function Simulator() {
                   ))}
                 </tbody>
               </table>
+            )}
+          </section>
+          <section className="panel">
+            <h2>7 · Billing (statements, interest, late fees)</h2>
+            <div className="muted" style={{ marginBottom: 8 }}>
+              Dev clock: moves this account's time forward and runs billing (closes, 22.80% APR interest, $25 late fee, block at 15 days past due, collateral applied at 60).
+            </div>
+            <div className="row">
+              <label className="inline">Days <input type="number" min={1} max={400} value={advanceDays} onChange={(e) => setAdvanceDays(Number(e.target.value))} /></label>
+              <button data-action="advance-clock" className="primary" disabled={!account || busy} onClick={() => advance(advanceDays, "custom")}>Advance</button>
+              <button data-action="advance-clock" disabled={!account || busy} onClick={() => advance(1, "1 day")}>+1 day</button>
+              <button data-action="advance-clock" disabled={!account || busy || !summary?.cycle_end} onClick={() => summary && advance(daysToNextClose(summary), "to next close")}>To next close</button>
+              <label className="inline">Due + <input type="number" min={1} max={120} value={dueOffset} onChange={(e) => setDueOffset(Number(e.target.value))} /> days</label>
+              <button data-action="advance-clock" disabled={!account || busy || !summary?.due_date} onClick={() => summary && advance(daysToDuePlus(summary, dueOffset), `to due + ${dueOffset}`)}>Go</button>
+            </div>
+            <div className="row">
+              <button data-action="refresh-billing" disabled={!account || busy} onClick={() => refreshBilling()}>Refresh summary</button>
+              <button data-action="refresh-statements" disabled={!account || busy} onClick={() => refreshStatements()}>Refresh statements</button>
+              <button data-action="refresh-charges" disabled={!account || busy} onClick={() => refreshCharges()}>Refresh charges</button>
+            </div>
+            {summary && (
+              <div className="stats">
+                <div className="stat"><span className="muted">Minimum due</span><b>{formatMinor(summary.minimum_due_minor, summary.currency)}</b></div>
+                <div className="stat"><span className="muted">Due date</span><b>{summary.due_date?.slice(0, 10) ?? "—"}</b></div>
+                <div className="stat"><span className="muted">Past due · DPD</span><b>{formatMinor(summary.past_due_minor, summary.currency)} · {summary.dpd}</b></div>
+                <div className="stat"><span className="muted">Stage · grace</span><b>{summary.stage} · {summary.grace ? "yes" : "no"}</b></div>
+              </div>
+            )}
+            {statements.length > 0 && (
+              <table>
+                <thead><tr><th>#</th><th>Period</th><th>New balance</th><th>Interest / fees</th><th>Minimum</th><th>Due</th><th></th></tr></thead>
+                <tbody>
+                  {statements.map((st) => (
+                    <tr key={st.id}>
+                      <td>{st.cycle}</td>
+                      <td className="mono">{st.period_start.slice(0, 10)} → {st.period_end.slice(0, 10)}</td>
+                      <td>{formatMinor(st.new_balance_minor, st.currency)}</td>
+                      <td>{formatMinor(st.interest_minor, st.currency)} / {formatMinor(st.fees_minor, st.currency)}</td>
+                      <td>{formatMinor(st.minimum_due_minor, st.currency)}</td>
+                      <td className="mono">{st.due_date?.slice(0, 10) ?? "balance only"}</td>
+                      <td><button data-action="view-statement" disabled={busy} onClick={() => viewStatement(st)}>View</button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            {doc && (
+              <details open>
+                <summary>Statement {doc.statement.cycle} document (S3, sha256 {doc.statement.sha256.slice(0, 12)}…)</summary>
+                <pre>{JSON.stringify(doc.document, null, 2)}</pre>
+              </details>
+            )}
+            {charges.length > 0 && (
+              <>
+                <div className="row">
+                  <label className="inline">Waive amount <input type="number" min={1} value={waive.amount} onChange={(e) => setWaive({ ...waive, amount: Number(e.target.value) })} /></label>
+                  <label className="inline">Reason <input value={waive.reason} maxLength={200} onChange={(e) => setWaive({ ...waive, reason: e.target.value })} /></label>
+                  <span className="muted">Waivers use a support-role token.</span>
+                </div>
+                <table>
+                  <thead><tr><th>Charge</th><th>Cycle</th><th>Amount</th><th>Waived</th><th>Status</th><th>Support</th></tr></thead>
+                  <tbody>
+                    {charges.map((c) => (
+                      <tr key={c.id}>
+                        <td>{c.kind}</td>
+                        <td>{c.cycle}</td>
+                        <td>{formatMinor(c.amount_minor, account?.currency ?? "")}</td>
+                        <td>{formatMinor(c.waived_minor, account?.currency ?? "")}</td>
+                        <td><span className={`badge s-${c.status === "posted" ? "settled" : c.status === "pending" ? "pending" : "failed"}`}>{c.status}</span></td>
+                        <td><button data-action="waive-charge" disabled={busy || c.status !== "posted" || c.waived_minor >= c.amount_minor} onClick={() => waiveCharge(c)}>Waive</button></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </>
             )}
           </section>
         </div>

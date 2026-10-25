@@ -26,3 +26,10 @@ test("JWT is HS256 with sub, authorized_accounts and exp", () => {
 test("JWT rejects short secrets", () => {
   assert.throws(() => signJwt("short", "s", [], 60));
 });
+
+test("JWT carries an optional role claim (support) and omits it for customers", () => {
+  const secret = "0123456789abcdef0123456789abcdef";
+  const claims = (t: string) => JSON.parse(Buffer.from(t.split(".")[1], "base64url").toString());
+  assert.equal(claims(signJwt(secret, "agent-1", [], 60, 1700000000, "support")).role, "support");
+  assert.equal("role" in claims(signJwt(secret, "cust-1", ["a"], 60, 1700000000)), false);
+});
