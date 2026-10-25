@@ -116,7 +116,7 @@ func TestLoadBillingDefaultsAndDevClock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.BillingAPRBps != 2280 || c.StatementsBucket != "acme-card-statements-dev" || c.BillingFixedAmounts == "" || c.DevClockEnabled {
+	if c.ReturnWindow != 120*time.Hour || c.BillingAPRBps != 2280 || c.StatementsBucket != "acme-card-statements-dev" || c.BillingFixedAmounts == "" || c.DevClockEnabled {
 		t.Fatalf("billing defaults: %+v", c)
 	}
 	t.Setenv("DEV_CLOCK_ENABLED", "1")

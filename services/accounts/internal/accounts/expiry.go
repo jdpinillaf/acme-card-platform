@@ -89,6 +89,7 @@ func (s *Service) ResolvePending(ctx context.Context) error {
 			slog.ErrorContext(ctx, "payment reconciliation failed", "err", err)
 		}
 		s.resolveChargeOffs(ctx, cutoff)
+		s.resolvePayouts(ctx, cutoff)
 	}()
 
 	rows, err := s.pool.Query(ctx, `SELECT `+authCols+` FROM authorizations WHERE status='pending' AND created_at < $1 LIMIT 100`, cutoff)
@@ -239,6 +240,9 @@ func (s *Service) RunExpiry(ctx context.Context, every time.Duration, log *slog.
 		}
 		if _, err := s.ReevaluateRestrictions(ctx, 500); err != nil && ctx.Err() == nil {
 			log.Error("restriction re-evaluation failed", "err", err)
+		}
+		if err := s.AdvanceClosing(ctx, 200); err != nil && ctx.Err() == nil {
+			log.Error("close saga sweep failed", "err", err)
 		}
 		if err := s.velocity.Sweep(ctx, s.clock.Now()); err != nil && ctx.Err() == nil {
 			log.Error("velocity window sweep failed", "err", err)

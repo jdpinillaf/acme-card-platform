@@ -41,6 +41,7 @@ type StatementDoc struct {
 	Buckets                DocBuckets `json:"buckets"`
 	PendingPaymentsMinor   int64      `json:"pending_payments_minor"`
 	BalanceOnly            bool       `json:"balance_only"`
+	Final                  bool       `json:"final"`
 	Transactions           []DocLine  `json:"transactions"`
 }
 

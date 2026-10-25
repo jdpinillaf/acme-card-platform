@@ -19,26 +19,33 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	AccountsService_CreateAccount_FullMethodName    = "/acme.accounts.v1.AccountsService/CreateAccount"
-	AccountsService_GetAccount_FullMethodName       = "/acme.accounts.v1.AccountsService/GetAccount"
-	AccountsService_CreateDeposit_FullMethodName    = "/acme.accounts.v1.AccountsService/CreateDeposit"
-	AccountsService_SettleDeposit_FullMethodName    = "/acme.accounts.v1.AccountsService/SettleDeposit"
-	AccountsService_Authorize_FullMethodName        = "/acme.accounts.v1.AccountsService/Authorize"
-	AccountsService_Capture_FullMethodName          = "/acme.accounts.v1.AccountsService/Capture"
-	AccountsService_Reverse_FullMethodName          = "/acme.accounts.v1.AccountsService/Reverse"
-	AccountsService_Refund_FullMethodName           = "/acme.accounts.v1.AccountsService/Refund"
-	AccountsService_SetFrozen_FullMethodName        = "/acme.accounts.v1.AccountsService/SetFrozen"
-	AccountsService_SetPurchaseLimit_FullMethodName = "/acme.accounts.v1.AccountsService/SetPurchaseLimit"
-	AccountsService_ListTransactions_FullMethodName = "/acme.accounts.v1.AccountsService/ListTransactions"
-	AccountsService_CreatePayment_FullMethodName    = "/acme.accounts.v1.AccountsService/CreatePayment"
-	AccountsService_SettlePayment_FullMethodName    = "/acme.accounts.v1.AccountsService/SettlePayment"
-	AccountsService_ReturnPayment_FullMethodName    = "/acme.accounts.v1.AccountsService/ReturnPayment"
-	AccountsService_ListPayments_FullMethodName     = "/acme.accounts.v1.AccountsService/ListPayments"
-	AccountsService_AdvanceClock_FullMethodName     = "/acme.accounts.v1.AccountsService/AdvanceClock"
-	AccountsService_SetDelinquency_FullMethodName   = "/acme.accounts.v1.AccountsService/SetDelinquency"
-	AccountsService_ChargeOff_FullMethodName        = "/acme.accounts.v1.AccountsService/ChargeOff"
-	AccountsService_CheckExposure_FullMethodName    = "/acme.accounts.v1.AccountsService/CheckExposure"
-	AccountsService_ListAccountIDs_FullMethodName   = "/acme.accounts.v1.AccountsService/ListAccountIDs"
+	AccountsService_CreateAccount_FullMethodName        = "/acme.accounts.v1.AccountsService/CreateAccount"
+	AccountsService_GetAccount_FullMethodName           = "/acme.accounts.v1.AccountsService/GetAccount"
+	AccountsService_CreateDeposit_FullMethodName        = "/acme.accounts.v1.AccountsService/CreateDeposit"
+	AccountsService_SettleDeposit_FullMethodName        = "/acme.accounts.v1.AccountsService/SettleDeposit"
+	AccountsService_Authorize_FullMethodName            = "/acme.accounts.v1.AccountsService/Authorize"
+	AccountsService_Capture_FullMethodName              = "/acme.accounts.v1.AccountsService/Capture"
+	AccountsService_Reverse_FullMethodName              = "/acme.accounts.v1.AccountsService/Reverse"
+	AccountsService_Refund_FullMethodName               = "/acme.accounts.v1.AccountsService/Refund"
+	AccountsService_SetFrozen_FullMethodName            = "/acme.accounts.v1.AccountsService/SetFrozen"
+	AccountsService_SetPurchaseLimit_FullMethodName     = "/acme.accounts.v1.AccountsService/SetPurchaseLimit"
+	AccountsService_ListTransactions_FullMethodName     = "/acme.accounts.v1.AccountsService/ListTransactions"
+	AccountsService_CreatePayment_FullMethodName        = "/acme.accounts.v1.AccountsService/CreatePayment"
+	AccountsService_SettlePayment_FullMethodName        = "/acme.accounts.v1.AccountsService/SettlePayment"
+	AccountsService_ReturnPayment_FullMethodName        = "/acme.accounts.v1.AccountsService/ReturnPayment"
+	AccountsService_ListPayments_FullMethodName         = "/acme.accounts.v1.AccountsService/ListPayments"
+	AccountsService_AdvanceClock_FullMethodName         = "/acme.accounts.v1.AccountsService/AdvanceClock"
+	AccountsService_SetDelinquency_FullMethodName       = "/acme.accounts.v1.AccountsService/SetDelinquency"
+	AccountsService_ChargeOff_FullMethodName            = "/acme.accounts.v1.AccountsService/ChargeOff"
+	AccountsService_CheckExposure_FullMethodName        = "/acme.accounts.v1.AccountsService/CheckExposure"
+	AccountsService_ListAccountIDs_FullMethodName       = "/acme.accounts.v1.AccountsService/ListAccountIDs"
+	AccountsService_CloseAccount_FullMethodName         = "/acme.accounts.v1.AccountsService/CloseAccount"
+	AccountsService_CancelAccount_FullMethodName        = "/acme.accounts.v1.AccountsService/CancelAccount"
+	AccountsService_AdvanceClose_FullMethodName         = "/acme.accounts.v1.AccountsService/AdvanceClose"
+	AccountsService_ListPayouts_FullMethodName          = "/acme.accounts.v1.AccountsService/ListPayouts"
+	AccountsService_RetryPayout_FullMethodName          = "/acme.accounts.v1.AccountsService/RetryPayout"
+	AccountsService_SettlePayout_FullMethodName         = "/acme.accounts.v1.AccountsService/SettlePayout"
+	AccountsService_GetPayoutInstruction_FullMethodName = "/acme.accounts.v1.AccountsService/GetPayoutInstruction"
 )
 
 // AccountsServiceClient is the client API for AccountsService service.
@@ -77,6 +84,20 @@ type AccountsServiceClient interface {
 	CheckExposure(ctx context.Context, in *CheckExposureRequest, opts ...grpc.CallOption) (*GetAccountResponse, error)
 	// ListAccountIDs pages through active and charged-off accounts for the billing sweep.
 	ListAccountIDs(ctx context.Context, in *ListAccountIDsRequest, opts ...grpc.CallOption) (*ListAccountIDsResponse, error)
+	// Close and cancel (Sprint 5).
+	// CloseAccount blocks the card at once and starts the close saga. Idempotent per account.
+	CloseAccount(ctx context.Context, in *CloseAccountRequest, opts ...grpc.CallOption) (*GetAccountResponse, error)
+	// CancelAccount ends an account still waiting for collateral; pending deposits are voided.
+	CancelAccount(ctx context.Context, in *CancelAccountRequest, opts ...grpc.CallOption) (*GetAccountResponse, error)
+	// AdvanceClose runs the next close-saga step (sweep and tests).
+	AdvanceClose(ctx context.Context, in *AdvanceCloseRequest, opts ...grpc.CallOption) (*GetAccountResponse, error)
+	ListPayouts(ctx context.Context, in *ListPayoutsRequest, opts ...grpc.CallOption) (*ListPayoutsResponse, error)
+	// RetryPayout creates a new attempt for a failed payout (support).
+	RetryPayout(ctx context.Context, in *RetryPayoutRequest, opts ...grpc.CallOption) (*PayoutResponse, error)
+	// SettlePayout is driven by the bank webhook (settled | failed) for one attempt.
+	SettlePayout(ctx context.Context, in *SettlePayoutRequest, opts ...grpc.CallOption) (*PayoutResponse, error)
+	// GetPayoutInstruction returns the decrypted destination to the bank only.
+	GetPayoutInstruction(ctx context.Context, in *GetPayoutInstructionRequest, opts ...grpc.CallOption) (*PayoutInstruction, error)
 }
 
 type accountsServiceClient struct {
@@ -287,6 +308,76 @@ func (c *accountsServiceClient) ListAccountIDs(ctx context.Context, in *ListAcco
 	return out, nil
 }
 
+func (c *accountsServiceClient) CloseAccount(ctx context.Context, in *CloseAccountRequest, opts ...grpc.CallOption) (*GetAccountResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetAccountResponse)
+	err := c.cc.Invoke(ctx, AccountsService_CloseAccount_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *accountsServiceClient) CancelAccount(ctx context.Context, in *CancelAccountRequest, opts ...grpc.CallOption) (*GetAccountResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetAccountResponse)
+	err := c.cc.Invoke(ctx, AccountsService_CancelAccount_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *accountsServiceClient) AdvanceClose(ctx context.Context, in *AdvanceCloseRequest, opts ...grpc.CallOption) (*GetAccountResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetAccountResponse)
+	err := c.cc.Invoke(ctx, AccountsService_AdvanceClose_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *accountsServiceClient) ListPayouts(ctx context.Context, in *ListPayoutsRequest, opts ...grpc.CallOption) (*ListPayoutsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListPayoutsResponse)
+	err := c.cc.Invoke(ctx, AccountsService_ListPayouts_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *accountsServiceClient) RetryPayout(ctx context.Context, in *RetryPayoutRequest, opts ...grpc.CallOption) (*PayoutResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PayoutResponse)
+	err := c.cc.Invoke(ctx, AccountsService_RetryPayout_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *accountsServiceClient) SettlePayout(ctx context.Context, in *SettlePayoutRequest, opts ...grpc.CallOption) (*PayoutResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PayoutResponse)
+	err := c.cc.Invoke(ctx, AccountsService_SettlePayout_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *accountsServiceClient) GetPayoutInstruction(ctx context.Context, in *GetPayoutInstructionRequest, opts ...grpc.CallOption) (*PayoutInstruction, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PayoutInstruction)
+	err := c.cc.Invoke(ctx, AccountsService_GetPayoutInstruction_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AccountsServiceServer is the server API for AccountsService service.
 // All implementations must embed UnimplementedAccountsServiceServer
 // for forward compatibility.
@@ -323,6 +414,20 @@ type AccountsServiceServer interface {
 	CheckExposure(context.Context, *CheckExposureRequest) (*GetAccountResponse, error)
 	// ListAccountIDs pages through active and charged-off accounts for the billing sweep.
 	ListAccountIDs(context.Context, *ListAccountIDsRequest) (*ListAccountIDsResponse, error)
+	// Close and cancel (Sprint 5).
+	// CloseAccount blocks the card at once and starts the close saga. Idempotent per account.
+	CloseAccount(context.Context, *CloseAccountRequest) (*GetAccountResponse, error)
+	// CancelAccount ends an account still waiting for collateral; pending deposits are voided.
+	CancelAccount(context.Context, *CancelAccountRequest) (*GetAccountResponse, error)
+	// AdvanceClose runs the next close-saga step (sweep and tests).
+	AdvanceClose(context.Context, *AdvanceCloseRequest) (*GetAccountResponse, error)
+	ListPayouts(context.Context, *ListPayoutsRequest) (*ListPayoutsResponse, error)
+	// RetryPayout creates a new attempt for a failed payout (support).
+	RetryPayout(context.Context, *RetryPayoutRequest) (*PayoutResponse, error)
+	// SettlePayout is driven by the bank webhook (settled | failed) for one attempt.
+	SettlePayout(context.Context, *SettlePayoutRequest) (*PayoutResponse, error)
+	// GetPayoutInstruction returns the decrypted destination to the bank only.
+	GetPayoutInstruction(context.Context, *GetPayoutInstructionRequest) (*PayoutInstruction, error)
 	mustEmbedUnimplementedAccountsServiceServer()
 }
 
@@ -392,6 +497,27 @@ func (UnimplementedAccountsServiceServer) CheckExposure(context.Context, *CheckE
 }
 func (UnimplementedAccountsServiceServer) ListAccountIDs(context.Context, *ListAccountIDsRequest) (*ListAccountIDsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListAccountIDs not implemented")
+}
+func (UnimplementedAccountsServiceServer) CloseAccount(context.Context, *CloseAccountRequest) (*GetAccountResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CloseAccount not implemented")
+}
+func (UnimplementedAccountsServiceServer) CancelAccount(context.Context, *CancelAccountRequest) (*GetAccountResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CancelAccount not implemented")
+}
+func (UnimplementedAccountsServiceServer) AdvanceClose(context.Context, *AdvanceCloseRequest) (*GetAccountResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method AdvanceClose not implemented")
+}
+func (UnimplementedAccountsServiceServer) ListPayouts(context.Context, *ListPayoutsRequest) (*ListPayoutsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListPayouts not implemented")
+}
+func (UnimplementedAccountsServiceServer) RetryPayout(context.Context, *RetryPayoutRequest) (*PayoutResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RetryPayout not implemented")
+}
+func (UnimplementedAccountsServiceServer) SettlePayout(context.Context, *SettlePayoutRequest) (*PayoutResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SettlePayout not implemented")
+}
+func (UnimplementedAccountsServiceServer) GetPayoutInstruction(context.Context, *GetPayoutInstructionRequest) (*PayoutInstruction, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetPayoutInstruction not implemented")
 }
 func (UnimplementedAccountsServiceServer) mustEmbedUnimplementedAccountsServiceServer() {}
 func (UnimplementedAccountsServiceServer) testEmbeddedByValue()                         {}
@@ -774,6 +900,132 @@ func _AccountsService_ListAccountIDs_Handler(srv interface{}, ctx context.Contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AccountsService_CloseAccount_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CloseAccountRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AccountsServiceServer).CloseAccount(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AccountsService_CloseAccount_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AccountsServiceServer).CloseAccount(ctx, req.(*CloseAccountRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AccountsService_CancelAccount_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CancelAccountRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AccountsServiceServer).CancelAccount(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AccountsService_CancelAccount_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AccountsServiceServer).CancelAccount(ctx, req.(*CancelAccountRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AccountsService_AdvanceClose_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AdvanceCloseRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AccountsServiceServer).AdvanceClose(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AccountsService_AdvanceClose_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AccountsServiceServer).AdvanceClose(ctx, req.(*AdvanceCloseRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AccountsService_ListPayouts_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListPayoutsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AccountsServiceServer).ListPayouts(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AccountsService_ListPayouts_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AccountsServiceServer).ListPayouts(ctx, req.(*ListPayoutsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AccountsService_RetryPayout_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RetryPayoutRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AccountsServiceServer).RetryPayout(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AccountsService_RetryPayout_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AccountsServiceServer).RetryPayout(ctx, req.(*RetryPayoutRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AccountsService_SettlePayout_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SettlePayoutRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AccountsServiceServer).SettlePayout(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AccountsService_SettlePayout_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AccountsServiceServer).SettlePayout(ctx, req.(*SettlePayoutRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AccountsService_GetPayoutInstruction_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetPayoutInstructionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AccountsServiceServer).GetPayoutInstruction(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AccountsService_GetPayoutInstruction_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AccountsServiceServer).GetPayoutInstruction(ctx, req.(*GetPayoutInstructionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AccountsService_ServiceDesc is the grpc.ServiceDesc for AccountsService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -860,6 +1112,34 @@ var AccountsService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListAccountIDs",
 			Handler:    _AccountsService_ListAccountIDs_Handler,
+		},
+		{
+			MethodName: "CloseAccount",
+			Handler:    _AccountsService_CloseAccount_Handler,
+		},
+		{
+			MethodName: "CancelAccount",
+			Handler:    _AccountsService_CancelAccount_Handler,
+		},
+		{
+			MethodName: "AdvanceClose",
+			Handler:    _AccountsService_AdvanceClose_Handler,
+		},
+		{
+			MethodName: "ListPayouts",
+			Handler:    _AccountsService_ListPayouts_Handler,
+		},
+		{
+			MethodName: "RetryPayout",
+			Handler:    _AccountsService_RetryPayout_Handler,
+		},
+		{
+			MethodName: "SettlePayout",
+			Handler:    _AccountsService_SettlePayout_Handler,
+		},
+		{
+			MethodName: "GetPayoutInstruction",
+			Handler:    _AccountsService_GetPayoutInstruction_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

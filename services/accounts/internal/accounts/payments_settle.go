@@ -136,6 +136,7 @@ func (s *Service) SettlePayment(ctx context.Context, req *accountsv1.SettlePayme
 		return nil, internal(err)
 	}
 	s.liftQuietly(ctx, p.AccountID, req.Meta)
+	s.kickClose(ctx, p.AccountID)
 	return s.paymentResponse(ctx, p, replayed)
 }
 

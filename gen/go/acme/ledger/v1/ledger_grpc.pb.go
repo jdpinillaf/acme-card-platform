@@ -32,6 +32,7 @@ const (
 	LedgerService_PostCollateralApplication_FullMethodName = "/acme.ledger.v1.LedgerService/PostCollateralApplication"
 	LedgerService_SealPeriod_FullMethodName                = "/acme.ledger.v1.LedgerService/SealPeriod"
 	LedgerService_ListEntries_FullMethodName               = "/acme.ledger.v1.LedgerService/ListEntries"
+	LedgerService_PostPayout_FullMethodName                = "/acme.ledger.v1.LedgerService/PostPayout"
 )
 
 // LedgerServiceClient is the client API for LedgerService service.
@@ -67,6 +68,8 @@ type LedgerServiceClient interface {
 	SealPeriod(ctx context.Context, in *SealPeriodRequest, opts ...grpc.CallOption) (*SealPeriodResponse, error)
 	// ListEntries lists an account's journal entries by effective_at, ordered (effective_at, id).
 	ListEntries(ctx context.Context, in *ListEntriesRequest, opts ...grpc.CallOption) (*ListEntriesResponse, error)
+	// PostPayout releases collateral and credit balance to the customer once the bank confirms (Sprint 5).
+	PostPayout(ctx context.Context, in *PostPayoutRequest, opts ...grpc.CallOption) (*PostJournalResponse, error)
 }
 
 type ledgerServiceClient struct {
@@ -207,6 +210,16 @@ func (c *ledgerServiceClient) ListEntries(ctx context.Context, in *ListEntriesRe
 	return out, nil
 }
 
+func (c *ledgerServiceClient) PostPayout(ctx context.Context, in *PostPayoutRequest, opts ...grpc.CallOption) (*PostJournalResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PostJournalResponse)
+	err := c.cc.Invoke(ctx, LedgerService_PostPayout_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // LedgerServiceServer is the server API for LedgerService service.
 // All implementations must embed UnimplementedLedgerServiceServer
 // for forward compatibility.
@@ -240,6 +253,8 @@ type LedgerServiceServer interface {
 	SealPeriod(context.Context, *SealPeriodRequest) (*SealPeriodResponse, error)
 	// ListEntries lists an account's journal entries by effective_at, ordered (effective_at, id).
 	ListEntries(context.Context, *ListEntriesRequest) (*ListEntriesResponse, error)
+	// PostPayout releases collateral and credit balance to the customer once the bank confirms (Sprint 5).
+	PostPayout(context.Context, *PostPayoutRequest) (*PostJournalResponse, error)
 	mustEmbedUnimplementedLedgerServiceServer()
 }
 
@@ -288,6 +303,9 @@ func (UnimplementedLedgerServiceServer) SealPeriod(context.Context, *SealPeriodR
 }
 func (UnimplementedLedgerServiceServer) ListEntries(context.Context, *ListEntriesRequest) (*ListEntriesResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListEntries not implemented")
+}
+func (UnimplementedLedgerServiceServer) PostPayout(context.Context, *PostPayoutRequest) (*PostJournalResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method PostPayout not implemented")
 }
 func (UnimplementedLedgerServiceServer) mustEmbedUnimplementedLedgerServiceServer() {}
 func (UnimplementedLedgerServiceServer) testEmbeddedByValue()                       {}
@@ -544,6 +562,24 @@ func _LedgerService_ListEntries_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
+func _LedgerService_PostPayout_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PostPayoutRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LedgerServiceServer).PostPayout(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LedgerService_PostPayout_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LedgerServiceServer).PostPayout(ctx, req.(*PostPayoutRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // LedgerService_ServiceDesc is the grpc.ServiceDesc for LedgerService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -602,6 +638,10 @@ var LedgerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListEntries",
 			Handler:    _LedgerService_ListEntries_Handler,
+		},
+		{
+			MethodName: "PostPayout",
+			Handler:    _LedgerService_PostPayout_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

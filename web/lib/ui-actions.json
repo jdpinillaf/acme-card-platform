@@ -20,5 +20,12 @@
   {"method": "GET", "route": "/v1/accounts/{accountID}/statements/{statementID}", "action": "view-statement"},
   {"method": "GET", "route": "/v1/accounts/{accountID}/charges", "action": "refresh-charges"},
   {"method": "POST", "route": "/v1/support/accounts/{accountID}/charges/{chargeID}/waivers", "action": "waive-charge"},
-  {"method": "POST", "route": "/v1/dev/accounts/{accountID}/clock/advance", "action": "advance-clock"}
+  {"method": "POST", "route": "/v1/dev/accounts/{accountID}/clock/advance", "action": "advance-clock"},
+  {"method": "POST", "route": "/v1/accounts/{accountID}/close", "action": "close-account"},
+  {"method": "POST", "route": "/v1/accounts/{accountID}/cancel", "action": "cancel-account"},
+  {"method": "GET", "route": "/v1/accounts/{accountID}/payouts", "action": "refresh-payouts"},
+  {"method": "POST", "route": "/v1/support/accounts/{accountID}/close", "action": "support-close-account"},
+  {"method": "POST", "route": "/v1/support/accounts/{accountID}/payouts/{payoutID}/retry", "action": "retry-payout"},
+  {"method": "POST", "route": "/v1/webhooks/bank/payouts", "action": "bank-settle-payout"},
+  {"method": "GET", "route": "/v1/bank/payout-instructions/{attemptID}", "action": "bank-fetch-instruction"}
 ]

@@ -187,3 +187,27 @@ Append-only. One entry per decision. Format: context → decision → consequenc
 - **Due date is not a past-due day** for interest (spec B-6).
 - **Clock advance idempotent inside accounts** (`clock_advances`, migration `000014`): the gateway releases an idempotency key on a 5xx, so a retry no longer advances twice.
 
+
+## ADR-020 — Close, cancel and payouts (2026-10-25)
+**Context.** Sprint 5 ends the customer relationship. The user's decisions are in `docs/superpowers/specs/2026-10-25-sprint5-close-design.md` (§3, §4, §6c).
+
+**Decision.**
+- **States.** `pending_collateral → cancelled` (instant; pending deposits voided, a late bank settlement gets 409 `deposit_voided` and posts nothing). `active → closing → closed`. From the close request every new authorization declines `account_closing`; captures, reversals and refunds of earlier approvals still work; payments are accepted while debt is owed; deposits are refused.
+- **Close saga** (`accounts.close_stage`, driven by the request, dev clock advances and a per-minute sweep):
+  1. `in_flight` until no authorization, payment, settling deposit, refund or charge-off is in flight;
+  2. `final_statement`: billing cuts an off-cycle final statement (interest up to then, due + 21 days), after which billing charges nothing;
+  3. `awaiting_due`: debt paid → skip; otherwise on the final due cutoff (or at once if charged off), unless a payment received before it is still pending;
+  4. `applying`: `min(debt, collateral)` applied (`closeout:<id>:<n>`, dated at the cutoff);
+  5. `awaiting_returns`: until no settled payment is inside its 5-day return window (user decision; money never leaves twice);
+  6. `payout`: remaining collateral + credit balance, released only when the bank confirms;
+  7. `closed`.
+  A return during the saga re-raises the debt and is re-applied from the collateral.
+- **Payouts.** One open payout per account; attempts are 1..n and each attempt id is the external reference. `failed` is final for its attempt (a late `settled` gets 409 `attempt_failed`); support retries with a new attempt. The ledger posts one journal `payout:<attempt>` (debit `collateral_held` + `receivable`, credit `cash_clearing`). A refund landing on a closed account creates an additional payout. The credit balance is paid out only at close (refines ADR-018).
+- **Destination.** Given in the close request; stored AES-256-GCM encrypted (`pkg/secretbox`, `DESTINATION_KEY`; KMS in AWS) plus last 4 digits. The bank fetches the plain number through a bank-signed instruction route; everything else (events, audit, responses, logs) carries `****<last4>`, and the bank's webhook must echo the last 4.
+- **Reopen.** One open account per customer and currency (partial unique index); a new one is refused while a closed account of that customer and currency still has debt.
+- **Past due never exceeds what is owed** (`engine.CapToOwed`): debt cleared by collateral or refunds leaves nothing past due.
+
+**Implementation rulings.**
+- The final statement is cut once in-flight work has resolved (captures of earlier approvals land on it), not at the request.
+- `RETURN_WINDOW` is configurable for the dev load test only; accounts refuses another value unless `APP_ENV=dev`.
+- Migrations: accounts `000015`, billing `000004`.

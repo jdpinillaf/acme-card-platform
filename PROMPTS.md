@@ -198,3 +198,42 @@ Sprint 3 implemented on branch `sprint-3` from `docs/superpowers/plans/2026-10-2
 ## Sprint 4 delivery notes (2026-10-25)
 
 Sprint 4 implemented on branch `sprint-4` from `docs/superpowers/plans/2026-10-25-sprint4-statements.md`. Results in `docs/testing/sprint4.md`, decisions in ADR-019.
+
+## 2026-10-25 — Sprint 5 discovery
+
+### Prompt 20 (user)
+
+> Vamod a planear el sprint 5 y mergear sprint 4
+
+### Prompt 21 (user) — Sprint 5 answers
+
+> 1.Cliente y soporte
+> 2.se bloquea y se cierra cuando se resuelvan
+> 3.si
+> 4.se cancela al instante y los pendientes quedan anulsdos y se hace la reserva
+> 5.se espera a una fecha, si llega fecha de pgo ultimo dia se debita del deposito
+> 6.si
+> 7.si
+> 8.como el feposito pero al reves, esperanfo la aprobacion del banco
+> 9.En teoris se debe de devolver a una cuenta de banco
+> 10.queda penfiente y soporte la reintenta
+> 11.si con devolucion aidicinal
+> 12. Se cierran con el flujo
+> 13.si
+> 14.si
+
+### Prompt 22 (user) — Sprint 5 clarifications
+
+> Cancelación: Solo anular. Destino de devoluciones: La indica el cliente al cerrar.
+
+### Prompt 23 (user) — Sprint 5 builder-check answers
+
+> Devoluciones: Esperar 5 días. Cuenta destino: Cifrada + instrucción al banco.
+
+### Prompt 24 (user)
+
+> Iniciemos con el sprint 5 ya
+
+## Sprint 5 delivery notes (2026-10-25)
+
+Sprint 5 implemented on branch `sprint-5` from `docs/superpowers/plans/2026-10-25-sprint5-close.md`. Results in `docs/testing/sprint5.md`, decisions in ADR-020. The audit session works in a separate worktree (branch `journey-e2e`).

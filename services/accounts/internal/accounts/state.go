@@ -12,7 +12,9 @@ type State string
 const (
 	StatePendingCollateral State = "pending_collateral"
 	StateActive            State = "active"
+	StateClosing           State = "closing"
 	StateClosed            State = "closed"
+	StateCancelled         State = "cancelled"
 )
 
 // Event drives a state transition.
@@ -20,27 +22,39 @@ type Event string
 
 const (
 	EventCollateralConfirmed Event = "collateral_confirmed"
-	EventClose               Event = "close"
+	EventRequestClose        Event = "request_close"
+	EventCloseCompleted      Event = "close_completed"
+	EventCancel              Event = "cancel"
 )
 
 var (
 	ErrAccountClosed     = errors.New("account_closed")
+	ErrAccountClosing    = errors.New("account_closing")
 	ErrInvalidTransition = errors.New("invalid_transition")
 )
 
-// Transition returns the next state or an error. closed is terminal.
+// Transition returns the next state or an error. closed and cancelled are terminal:
+//
+//	pending_collateral --collateral_confirmed--> active --request_close--> closing --close_completed--> closed
+//	pending_collateral --cancel--> cancelled
 func Transition(from State, ev Event) (State, error) {
 	switch from {
-	case StateClosed:
+	case StateClosed, StateCancelled:
 		return "", ErrAccountClosed
-	case StatePendingCollateral, StateActive:
+	case StatePendingCollateral, StateActive, StateClosing:
 	default:
 		return "", fmt.Errorf("%w: unknown state %q", ErrInvalidTransition, from)
 	}
-	switch ev {
-	case EventCollateralConfirmed:
+	switch {
+	case ev == EventCollateralConfirmed && from == StateClosing:
+		return StateClosing, nil // a deposit settling at the close request still lands (review C1)
+	case ev == EventCollateralConfirmed:
 		return StateActive, nil
-	case EventClose:
+	case ev == EventCancel && from == StatePendingCollateral:
+		return StateCancelled, nil
+	case ev == EventRequestClose && from == StateActive:
+		return StateClosing, nil
+	case ev == EventCloseCompleted && from == StateClosing:
 		return StateClosed, nil
 	}
 	return "", fmt.Errorf("%w: %s on %s", ErrInvalidTransition, ev, from)
@@ -48,8 +62,11 @@ func Transition(from State, ev Event) (State, error) {
 
 // CanAcceptDeposit reports whether collateral may be added in this state.
 func CanAcceptDeposit(s State) error {
-	if s == StateClosed {
+	switch s {
+	case StateClosed, StateCancelled:
 		return ErrAccountClosed
+	case StateClosing:
+		return ErrAccountClosing
 	}
 	return nil
 }

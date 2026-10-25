@@ -2,6 +2,7 @@
 
 import { useCallback, useState } from "react";
 import { daysToDuePlus, daysToNextClose, formatMinor } from "@/lib/billing.ts";
+import { maskAccount } from "@/lib/payouts.ts";
 
 type CallResult = { status: number; replayed: boolean; ms: number; body: any };
 type LogEntry = { id: number; at: string; label: string; method: string; path: string; key?: string; results: CallResult[] };
@@ -10,7 +11,9 @@ type Account = {
   credit_limit_minor: number; available_credit_minor: number; collateral_minor: number;
   outstanding_minor: number; credit_balance_minor: number; restricted_reason?: string;
   account_time?: string; activated_at?: string; delinquency?: string;
+  close_stage?: string; close_requested_at?: string; destination_last4?: string;
 };
+type Payout = { id: string; amount_minor: number; currency: string; status: string; attempt: number; attempt_id: string; destination_last4: string };
 type Statement = {
   id: string; cycle: number; currency: string; period_start: string; period_end: string; due_date?: string;
   previous_balance_minor: number; purchases_minor: number; refunds_minor: number; payments_minor: number; returns_minor: number;
@@ -61,6 +64,9 @@ export default function Simulator() {
   const [dueOffset, setDueOffset] = useState(1);
   const [waive, setWaive] = useState<{ amount: number; reason: string }>({ amount: 2500, reason: "goodwill" });
   const [supportToken, setSupportToken] = useState("");
+  const [destination, setDestination] = useState({ bank_code: "BANK001", account_number: "000123456789", holder_name: "Jane Doe" });
+  const [closeReason, setCloseReason] = useState("customer request");
+  const [payouts, setPayouts] = useState<Payout[]>([]);
 
   const push = (e: Omit<LogEntry, "id" | "at">) =>
     setLog((l) => [{ ...e, id: ++seq, at: new Date().toLocaleTimeString() }, ...l].slice(0, 200));
@@ -248,6 +254,62 @@ export default function Simulator() {
     await refreshAllBilling();
   }
 
+  async function ensureSupportToken() {
+    if (supportToken) return supportToken;
+    const res = await fetch("/api/token", { method: "POST", body: JSON.stringify({ sub: "agent-sim", accounts: [], role: "support" }) });
+    const tok = (await res.json()).token as string;
+    setSupportToken(tok);
+    push({ label: "mint support token", method: "LOCAL", path: "/api/token", results: [{ status: res.status, replayed: false, ms: 0, body: { sub: "agent-sim", role: "support" } }] });
+    return tok;
+  }
+
+  async function refreshPayouts(acc = account) {
+    if (!acc) return;
+    const [r] = await gateway("list payouts", "GET", `/v1/accounts/${acc.id}/payouts`);
+    if (r.status === 200) setPayouts(r.body.payouts);
+  }
+
+  async function closeAccount(asSupport: boolean) {
+    if (!account) return;
+    const tok = asSupport ? await ensureSupportToken() : token;
+    const path = asSupport ? `/v1/support/accounts/${account.id}/close` : `/v1/accounts/${account.id}/close`;
+    const body = asSupport ? { destination, reason: closeReason } : { destination };
+    const results = await gateway(asSupport ? "support close" : "close account", "POST", path, body, { tok, times: repeat });
+    const ok = results.find((r) => r.status === 202);
+    if (ok) setAccount(ok.body);
+    await refreshPayouts();
+  }
+
+  async function cancelAccount() {
+    if (!account) return;
+    const [r] = await gateway("cancel account", "POST", `/v1/accounts/${account.id}/cancel`, undefined, { times: repeat });
+    if (r.status === 200) setAccount(r.body);
+  }
+
+  async function bankPayout(op: "instruction" | "settle" | "fail", p: Payout) {
+    setBusy(true);
+    try {
+      const res = await fetch("/api/bank/payouts", { method: "POST", body: JSON.stringify({ op, attempt_id: p.attempt_id, amount_minor: p.amount_minor,
+        currency: p.currency, last4: p.destination_last4, repeat, tamper }) });
+      const results = (await res.json()) as CallResult[];
+      // The bank sees the full number; the simulator log shows it masked.
+      for (const r of results) if (r.body && typeof r.body === "object" && "account_number" in r.body) r.body = { ...r.body, account_number: maskAccount(String(r.body.account_number)) };
+      const path = op === "instruction" ? `/v1/bank/payout-instructions/${p.attempt_id}` : "/v1/webhooks/bank/payouts";
+      push({ label: `bank payout ${op}${tamper ? " (tampered)" : ""}`, method: op === "instruction" ? "GET" : "POST", path, results });
+    } finally {
+      setBusy(false);
+    }
+    await refresh();
+    await refreshPayouts();
+  }
+
+  async function retryPayout(p: Payout) {
+    if (!account) return;
+    const tok = await ensureSupportToken();
+    await gateway("retry payout (support)", "POST", `/v1/support/accounts/${account.id}/payouts/${p.id}/retry`, undefined, { tok });
+    await refreshPayouts();
+  }
+
   async function control(label: string, method: string, path: string, body?: object) {
     if (!account) return;
     const [r] = await gateway(label, method, path, body);
@@ -269,7 +331,7 @@ export default function Simulator() {
     <main>
       <header>
         <h1>acme-card · flow simulator</h1>
-        <span className="muted">open account → collateral → card active → authorize · capture · reverse · refund → pay · settle · fail · return → advance clock · statements · waive</span>
+        <span className="muted">open account → collateral → card active → authorize · capture · reverse · refund → pay · settle · fail · return → advance clock · statements · waive → close · payout</span>
       </header>
 
       <div className="grid">
@@ -525,6 +587,52 @@ export default function Simulator() {
                   </tbody>
                 </table>
               </>
+            )}
+          </section>
+          <section className="panel">
+            <h2>8 · Close, cancel and payouts</h2>
+            <div className="muted" style={{ marginBottom: 8 }}>
+              Close blocks the card at once; the account closes after in-flight work, the final statement and its due date (debt is taken from the collateral), and the 5-day payment return window. The rest is paid out to the bank account below once the bank confirms. Cancel ends an account that never activated.
+            </div>
+            <div className="row">
+              <label>Bank code<input value={destination.bank_code} onChange={(e) => setDestination({ ...destination, bank_code: e.target.value })} /></label>
+              <label>Account number<input value={destination.account_number} onChange={(e) => setDestination({ ...destination, account_number: e.target.value })} /></label>
+              <label>Holder<input value={destination.holder_name} onChange={(e) => setDestination({ ...destination, holder_name: e.target.value })} /></label>
+            </div>
+            <div className="row">
+              <button data-action="close-account" className="primary" disabled={!account || busy} onClick={() => closeAccount(false)}>Close account</button>
+              <label className="inline">Support reason <input value={closeReason} maxLength={200} onChange={(e) => setCloseReason(e.target.value)} /></label>
+              <button data-action="support-close-account" disabled={!account || busy} onClick={() => closeAccount(true)}>Close (support)</button>
+              <button data-action="cancel-account" disabled={!account || busy} onClick={cancelAccount}>Cancel account</button>
+              <button data-action="refresh-payouts" disabled={!account || busy} onClick={() => refreshPayouts()}>Refresh payouts</button>
+            </div>
+            {account?.close_stage && (
+              <div className="row">
+                <span className={`badge s-${account.state === "closed" ? "settled" : "pending"}`}>{account.state}</span>
+                <span className="mono">stage: {account.close_stage}</span>
+                <span className="mono muted">destination ****{account.destination_last4}</span>
+              </div>
+            )}
+            {payouts.length > 0 && (
+              <table>
+                <thead><tr><th>Payout</th><th>Amount</th><th>Attempt</th><th>Status</th><th>Bank</th><th>Support</th></tr></thead>
+                <tbody>
+                  {payouts.map((p) => (
+                    <tr key={p.id}>
+                      <td className="mono">{p.id.slice(-12)}</td>
+                      <td>{formatMinor(p.amount_minor, p.currency)}</td>
+                      <td>{p.attempt}</td>
+                      <td><span className={`badge s-${p.status === "settled" ? "settled" : p.status === "pending" ? "pending" : "failed"}`}>{p.status}</span></td>
+                      <td className="row">
+                        <button data-action="bank-fetch-instruction" disabled={busy || p.status !== "pending"} onClick={() => bankPayout("instruction", p)}>Instruction</button>
+                        <button data-action="bank-settle-payout" disabled={busy || p.status !== "pending"} onClick={() => bankPayout("settle", p)}>Settle</button>
+                        <button data-action="bank-fail-payout" disabled={busy || p.status !== "pending"} onClick={() => bankPayout("fail", p)}>Fail</button>
+                      </td>
+                      <td><button data-action="retry-payout" disabled={busy || p.status !== "failed"} onClick={() => retryPayout(p)}>Retry</button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             )}
           </section>
         </div>

@@ -293,3 +293,17 @@ func TestPendingPaymentInPreviousWindowStaysThere(t *testing.T) {
 		t.Fatal("full payment before close 1, pending across it, keeps grace")
 	}
 }
+
+// Nothing can be past due beyond what is owed now (debt cleared by collateral or refunds).
+func TestCapToOwed(t *testing.T) {
+	r := DelinquencyResult{PastDue: 2500, DPD: 20, Missed: []Miss{{Cycle: 1, Shortfall: 2500}}}
+	if got := CapToOwed(r, 1000); got.PastDue != 1000 || got.DPD != 20 || len(got.Missed) != 1 {
+		t.Fatalf("partial: %+v", got)
+	}
+	if got := CapToOwed(r, 0); got.PastDue != 0 || got.DPD != 0 || len(got.Missed) != 1 {
+		t.Fatalf("nothing owed: %+v", got)
+	}
+	if got := CapToOwed(r, -500); got.PastDue != 0 || got.DPD != 0 {
+		t.Fatalf("credit balance: %+v", got)
+	}
+}

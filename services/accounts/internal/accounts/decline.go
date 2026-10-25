@@ -5,6 +5,7 @@ type DeclineReason string
 
 const (
 	DeclineAccountClosed          DeclineReason = "account_closed"
+	DeclineAccountClosing         DeclineReason = "account_closing"
 	DeclineChargedOff             DeclineReason = "charged_off"
 	DeclineCollateralNotConfirmed DeclineReason = "collateral_not_confirmed"
 	DeclineCurrencyNotSupported   DeclineReason = "currency_not_supported"
@@ -34,8 +35,10 @@ type DeclineInput struct {
 // when policy passes — insufficient_credit is decided afterwards by the ledger under its lock.
 func EvaluateDecline(in DeclineInput) DeclineReason {
 	switch {
-	case in.State == StateClosed:
+	case in.State == StateClosed || in.State == StateCancelled:
 		return DeclineAccountClosed
+	case in.State == StateClosing:
+		return DeclineAccountClosing
 	case in.Delinquency == DelinquencyChargedOff:
 		return DeclineChargedOff
 	case in.State != StateActive:

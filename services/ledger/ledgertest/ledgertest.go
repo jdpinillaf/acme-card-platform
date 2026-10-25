@@ -73,3 +73,7 @@ func (c inproc) SealPeriod(ctx context.Context, r *ledgerv1.SealPeriodRequest, _
 func (c inproc) ListEntries(ctx context.Context, r *ledgerv1.ListEntriesRequest, _ ...grpc.CallOption) (*ledgerv1.ListEntriesResponse, error) {
 	return c.s.ListEntries(ctx, r)
 }
+
+func (c inproc) PostPayout(ctx context.Context, r *ledgerv1.PostPayoutRequest, _ ...grpc.CallOption) (*ledgerv1.PostJournalResponse, error) {
+	return c.s.PostPayout(ctx, r)
+}

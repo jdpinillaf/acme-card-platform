@@ -65,7 +65,7 @@ func setup(t *testing.T) *fixture {
 
 	lis := bufconn.Listen(1 << 20)
 	srv := grpc.NewServer()
-	accountsv1.RegisterAccountsServiceServer(srv, accountstest.NewServer(connect("accounts"), f.ledger))
+	accountsv1.RegisterAccountsServiceServer(srv, accountstest.NewServer(connect("accounts"), f.ledger, accountstest.WithDestinationKey(make([]byte, 32))))
 	go func() { _ = srv.Serve(lis) }()
 	t.Cleanup(srv.Stop)
 	conn, err := grpc.NewClient("passthrough:///bufnet", grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return lis.Dial() }),

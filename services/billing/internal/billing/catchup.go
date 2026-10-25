@@ -105,7 +105,7 @@ func (s *Service) CatchUpAccount(ctx context.Context, accountID string) (int, er
 	if err != nil {
 		return 0, err
 	}
-	if acc.ActivatedAt == nil || acc.State != accountsv1.AccountState_ACCOUNT_STATE_ACTIVE {
+	if acc.ActivatedAt == nil || (acc.State != accountsv1.AccountState_ACCOUNT_STATE_ACTIVE && acc.State != accountsv1.AccountState_ACCOUNT_STATE_CLOSING) {
 		return 0, nil
 	}
 	if err := s.resumePending(ctx, accountID); err != nil {
@@ -151,6 +151,9 @@ func (r *run) reloadEntries(ctx context.Context) error {
 }
 
 func (r *run) execute(ctx context.Context) error {
+	if n := len(r.stmts); n > 0 && r.stmts[n-1].Final {
+		return nil // after the final statement nothing is billed any more (ADR-020)
+	}
 	last := len(r.stmts)
 	cursor := engine.CycleClose(r.act, last)
 	for {
@@ -169,7 +172,7 @@ func (r *run) execute(ctx context.Context) error {
 		if next.After(r.now) {
 			break
 		}
-		if err := r.close(ctx, last+1); err != nil {
+		if err := r.close(ctx, last+1, engine.CycleClose(r.act, last), next, false); err != nil {
 			return err
 		}
 		last++
@@ -192,6 +195,17 @@ func (r *run) execute(ctx context.Context) error {
 	return nil
 }
 
+// owedAt is the receivable from entries effective before t.
+func (r *run) owedAt(t time.Time) int64 {
+	var owed int64
+	for _, e := range r.entries {
+		if e.EffectiveAt.Before(t) {
+			owed += e.Delta
+		}
+	}
+	return owed
+}
+
 // nextBoundary is the first 00:00 UTC strictly after t.
 func nextBoundary(t time.Time) time.Time {
 	t = t.UTC()
@@ -203,7 +217,7 @@ func (r *run) delinquencyAt(ctx context.Context, t time.Time) error {
 	if r.chargedOff {
 		return nil
 	}
-	d := engine.Delinquency(r.facts, r.credits, t)
+	d := engine.CapToOwed(engine.Delinquency(r.facts, r.credits, t), r.owedAt(t))
 	for _, m := range d.Missed {
 		cycle := m.Cycle
 		f := r.facts[cycle-1]
@@ -244,10 +258,10 @@ func (r *run) delinquencyAt(ctx context.Context, t time.Time) error {
 	return nil
 }
 
-// close generates statement n (spec C-9 / plan "sealed periods"): interest, seal, totals, S3, row.
-func (r *run) close(ctx context.Context, n int) error {
+// close generates statement n for [prevClose, closeAt) (spec C-9 / plan "sealed periods"):
+// interest, seal, totals, S3, row. final marks the off-cycle statement cut at close (ADR-020).
+func (r *run) close(ctx context.Context, n int, prevClose, closeAt time.Time, final bool) error {
 	acc := r.acc.Id
-	prevClose, closeAt := engine.CycleClose(r.act, n-1), engine.CycleClose(r.act, n)
 	if err := r.reloadEntries(ctx); err != nil {
 		return err
 	}
@@ -263,7 +277,9 @@ func (r *run) close(ctx context.Context, n int) error {
 		}
 		facts := r.facts
 		// A day is past due when DPD ≥ 1 at its start; the due date itself is not (spec B-6).
-		pastDue := func(d time.Time) bool { return engine.Delinquency(facts, r.credits, d).DPD >= 1 }
+		pastDue := func(d time.Time) bool {
+			return engine.CapToOwed(engine.Delinquency(facts, r.credits, d), r.owedAt(d)).DPD >= 1
+		}
 		if interest := engine.Interest(engine.Replay(es, prevClose, closeAt).Days, r.s.cfg.APRBps, grace, pastDue); interest > 0 {
 			posted, err := r.s.postCharge(ctx, acc, "interest", n, interestRef, interest, closeAt.Add(-time.Second))
 			if err != nil {
@@ -299,8 +315,8 @@ func (r *run) close(ctx context.Context, n int) error {
 		PaymentsMinor: rr.Totals.Payments, ReturnsMinor: rr.Totals.Returns, InterestMinor: rr.Totals.Interest, FeesMinor: rr.Totals.Fees,
 		WaiversMinor: rr.Totals.Waivers, CollateralAppliedMinor: rr.Totals.CollateralApplied, NewBalanceMinor: rr.Closing.Total(),
 		MinimumDueMinor: minimum, PastDueMinor: pastDueAtClose, Grace: grace, APRBps: r.s.cfg.APRBps, PendingPaymentsMinor: pending,
-		BalanceOnly: balanceOnly,
-		Buckets:     engine.DocBuckets{PrincipalMinor: rr.Closing.Principal, InterestMinor: rr.Closing.Interest, FeesMinor: rr.Closing.Fees}}
+		BalanceOnly: balanceOnly, Final: final,
+		Buckets: engine.DocBuckets{PrincipalMinor: rr.Closing.Principal, InterestMinor: rr.Closing.Interest, FeesMinor: rr.Closing.Fees}}
 	for _, e := range r.entries {
 		if e.Delta != 0 && !e.EffectiveAt.Before(prevClose) && e.EffectiveAt.Before(closeAt) {
 			doc.Transactions = append(doc.Transactions, engine.DocLine{EffectiveAt: e.EffectiveAt, Type: e.Type, Reference: e.Reference, AmountMinor: e.Delta})
@@ -316,15 +332,15 @@ func (r *run) close(ctx context.Context, n int) error {
 		Payments: doc.PaymentsMinor, Returns: doc.ReturnsMinor, Interest: doc.InterestMinor, Fees: doc.FeesMinor, Waivers: doc.WaiversMinor,
 		Collateral: doc.CollateralAppliedMinor, NewBalance: doc.NewBalanceMinor, Minimum: minimum, PastDue: pastDueAtClose,
 		Principal: rr.Closing.Principal, IBucket: rr.Closing.Interest, FBucket: rr.Closing.Fees, Grace: grace, BalanceOnly: balanceOnly,
-		S3Key: key, SHA256: sum}
+		S3Key: key, SHA256: sum, Final: final, GeneratedAt: time.Now().UTC()}
 	err := pgx.BeginFunc(ctx, r.s.pool, func(tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx, `INSERT INTO statements (id, account_id, cycle, currency, period_start, period_end, due_date, previous_balance_minor,
 			purchases_minor, refunds_minor, payments_minor, returns_minor, interest_minor, fees_minor, waivers_minor, collateral_applied_minor,
-			new_balance_minor, minimum_due_minor, past_due_minor, principal_minor, interest_bucket_minor, fee_bucket_minor, grace, balance_only, s3_key, sha256)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
+			new_balance_minor, minimum_due_minor, past_due_minor, principal_minor, interest_bucket_minor, fee_bucket_minor, grace, balance_only, s3_key, sha256, final)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
 			ON CONFLICT (account_id, cycle) DO NOTHING`,
 			st.ID, acc, n, st.Currency, prevClose, closeAt, due, st.Previous, st.Purchases, st.Refunds, st.Payments, st.Returns, st.Interest,
-			st.Fees, st.Waivers, st.Collateral, st.NewBalance, minimum, pastDueAtClose, st.Principal, st.IBucket, st.FBucket, grace, balanceOnly, key, sum)
+			st.Fees, st.Waivers, st.Collateral, st.NewBalance, minimum, pastDueAtClose, st.Principal, st.IBucket, st.FBucket, grace, balanceOnly, key, sum, final)
 		if err != nil || tag.RowsAffected() == 0 {
 			return err
 		}

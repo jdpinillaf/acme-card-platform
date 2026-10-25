@@ -126,4 +126,37 @@ SELECT 'charged-off account with active holds', count(*) FROM accounts.accounts 
 UNION ALL
 SELECT 'billing work stuck > 5 min',          (SELECT count(*) FROM billing.charges WHERE status='pending' AND created_at < now() - interval '5 minutes')
                                             + (SELECT count(*) FROM billing.waivers WHERE status='pending' AND created_at < now() - interval '5 minutes')
-                                            + (SELECT count(*) FROM accounts.accounts WHERE charge_off_pending_at < now() - interval '5 minutes');
+                                            + (SELECT count(*) FROM accounts.accounts WHERE charge_off_pending_at < now() - interval '5 minutes')
+UNION ALL
+-- ---------- Sprint 5: close and payouts (ADR-020) ----------
+SELECT 'closed account still holding money',  count(*) FROM accounts.accounts a
+  JOIN ledger.balances c ON c.account_id=a.id AND c.sub_account='collateral_held'
+  JOIN ledger.balances r ON r.account_id=a.id AND r.sub_account='receivable'
+  WHERE a.state='closed' AND (c.raw_balance_minor < 0 OR r.raw_balance_minor < 0)
+    AND NOT EXISTS (SELECT 1 FROM accounts.payouts p WHERE p.account_id=a.id AND p.status IN ('pending','settling','failed'))
+    AND a.updated_at < now() - interval '2 minutes'
+UNION ALL
+SELECT 'payout journal ≠ settled attempt',    count(*) FROM (
+  SELECT t.id FROM accounts.payout_attempts t JOIN accounts.payouts p ON p.id=t.payout_id
+  FULL JOIN (SELECT j.reference, x.amount_minor FROM ledger.journal_entries j JOIN ledger.postings x ON x.journal_entry_id=j.id AND x.side='credit'
+             WHERE j.entry_type='payout_settled') l ON l.reference = 'payout:'||t.id
+  WHERE (t.status='settled' AND (l.reference IS NULL OR l.amount_minor <> p.collateral_minor + p.credit_minor))
+     OR (l.reference IS NOT NULL AND (t.id IS NULL OR t.status NOT IN ('settling','settled')))) x
+UNION ALL
+SELECT 'collateral paid out > deposited',     count(*) FROM (
+  SELECT p.account_id FROM accounts.payouts p WHERE p.status='settled' GROUP BY 1
+  HAVING sum(p.collateral_minor) > (SELECT coalesce(sum(d.amount_minor),0) FROM accounts.deposits d WHERE d.account_id=p.account_id AND d.status='settled')) x
+UNION ALL
+SELECT 'closed account with in-flight work',  count(*) FROM accounts.accounts a WHERE a.state='closed' AND (
+     EXISTS (SELECT 1 FROM accounts.authorizations z WHERE z.account_id=a.id AND (z.status IN ('approved','pending') OR z.pending_op IS NOT NULL))
+  OR EXISTS (SELECT 1 FROM accounts.payments z WHERE z.account_id=a.id AND z.status IN ('pending','settling'))
+  OR EXISTS (SELECT 1 FROM accounts.deposits z WHERE z.account_id=a.id AND z.status IN ('pending','settling')))
+UNION ALL
+SELECT 'payment returned after its close payout', count(*) FROM accounts.payments m JOIN accounts.payouts p ON p.account_id=m.account_id AND p.kind='close'
+  WHERE m.status IN ('returning','returned') AND m.returning_at > p.created_at
+UNION ALL
+SELECT 'cancelled account with an open deposit', count(*) FROM accounts.accounts a JOIN accounts.deposits d ON d.account_id=a.id
+  WHERE a.state='cancelled' AND d.status IN ('pending','settling','settled')
+UNION ALL
+SELECT 'close saga stuck > 10 min',           count(*) FROM accounts.accounts
+  WHERE state='closing' AND close_stage IN ('final_statement','applying') AND close_stage_at < now() - interval '10 minutes';

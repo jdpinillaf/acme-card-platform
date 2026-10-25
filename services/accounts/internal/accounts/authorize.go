@@ -41,6 +41,7 @@ var declineProto = map[DeclineReason]commonv1.DeclineReason{
 	DeclinePastDue:                commonv1.DeclineReason_DECLINE_REASON_PAST_DUE,
 	DeclineChargedOff:             commonv1.DeclineReason_DECLINE_REASON_CHARGED_OFF,
 	DeclineOverLimit:              commonv1.DeclineReason_DECLINE_REASON_OVER_LIMIT,
+	DeclineAccountClosing:         commonv1.DeclineReason_DECLINE_REASON_ACCOUNT_CLOSING,
 	DeclineCardFrozen:             commonv1.DeclineReason_DECLINE_REASON_CARD_FROZEN,
 	DeclineVelocity:               commonv1.DeclineReason_DECLINE_REASON_VELOCITY_LIMIT_EXCEEDED,
 	DeclinePurchaseLimit:          commonv1.DeclineReason_DECLINE_REASON_PURCHASE_LIMIT_EXCEEDED,
