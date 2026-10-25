@@ -11,7 +11,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/acme/acme-card/pkg/events"
@@ -28,8 +28,13 @@ CREATE TABLE outbox (
 );
 CREATE INDEX outbox_unpublished_idx ON outbox (seq) WHERE published_at IS NULL;`
 
-// Enqueue writes ev inside tx.
-func Enqueue(ctx context.Context, tx pgx.Tx, evs ...events.Event) error {
+// Execer is satisfied by pgx.Tx, *pgx.Conn and *pgxpool.Pool.
+type Execer interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+// Enqueue writes evs through tx (normally the state-change transaction).
+func Enqueue(ctx context.Context, tx Execer, evs ...events.Event) error {
 	for _, ev := range evs {
 		b, err := json.Marshal(ev)
 		if err != nil {

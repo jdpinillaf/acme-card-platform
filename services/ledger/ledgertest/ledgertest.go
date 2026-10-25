@@ -15,7 +15,9 @@ import (
 type inproc struct{ s *ledger.Service }
 
 // NewClient returns a LedgerServiceClient that calls the service directly on pool (ledger schema).
-func NewClient(pool *pgxpool.Pool) ledgerv1.LedgerServiceClient { return inproc{ledger.NewService(pool)} }
+func NewClient(pool *pgxpool.Pool) ledgerv1.LedgerServiceClient {
+	return inproc{ledger.NewService(pool)}
+}
 
 // NewServer returns the ledger gRPC server implementation, for tests that need a real network hop.
 func NewServer(pool *pgxpool.Pool) ledgerv1.LedgerServiceServer { return ledger.NewService(pool) }
