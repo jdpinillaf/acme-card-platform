@@ -155,3 +155,28 @@ func TestListPaymentsNewestFirst(t *testing.T) {
 }
 
 var _ = fmt.Sprint
+
+func TestDebtBelowMinimumCanBePaidOff(t *testing.T) {
+	f, _ := txFixture(t)
+	ctx := context.Background()
+	acc := f.activeAccount(t, "cust-small", 1000)
+	a := f.authorize(t, acc.Id, "net-small", 300).Authorization
+	_, _ = f.capture(a.Id, "cap-small", 300)
+	if _, err := f.refund(a.Id, "rf-small", 250); err != nil { // leaves 0.50 owed
+		t.Fatal(err)
+	}
+	if _, err := f.createPayment(acc.Id, 49, nil); grpcx.Reason(err) != "invalid_amount" {
+		t.Fatalf("below the remaining debt and below 1.00: %v", err)
+	}
+	r, err := f.createPayment(acc.Id, 50, nil)
+	if err != nil {
+		t.Fatalf("paying off a debt under 1.00 must be possible: %v", err)
+	}
+	if _, err := f.svc.SettlePayment(ctx, settlePay(r.Payment, "bank-small", paySettled)); err != nil {
+		t.Fatal(err)
+	}
+	g, _ := f.svc.GetAccount(ctx, &accountsv1.GetAccountRequest{AccountId: acc.Id})
+	if g.Account.OutstandingMinor != 0 {
+		t.Fatalf("outstanding=%d", g.Account.OutstandingMinor)
+	}
+}

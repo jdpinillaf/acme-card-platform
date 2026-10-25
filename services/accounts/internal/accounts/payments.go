@@ -19,7 +19,8 @@ import (
 )
 
 const (
-	// MinPaymentMinor is the smallest payment ($1.00 in a 2-decimal currency).
+	// MinPaymentMinor is the smallest payment ($1.00 in a 2-decimal currency), unless the whole
+	// remaining balance is smaller.
 	MinPaymentMinor int64 = 100
 	// PaymentTTL is how long a payment intent waits for the bank before expiring.
 	PaymentTTL = 7 * 24 * time.Hour
@@ -88,8 +89,8 @@ func (s *Service) paymentResponse(ctx context.Context, p paymentRow, replayed bo
 // CreatePayment registers a customer payment intent. Credit is only restored when the bank settles
 // it. Open payments (pending/settling) can never sum to more than the outstanding debt.
 func (s *Service) CreatePayment(ctx context.Context, req *accountsv1.CreatePaymentRequest) (*accountsv1.PaymentResponse, error) {
-	if req.AmountMinor < MinPaymentMinor || req.AmountMinor > MaxDepositMinor {
-		return nil, grpcx.Error(codes.InvalidArgument, "invalid_amount", "amount_minor must be at least 100 (1.00) and within limits")
+	if req.AmountMinor <= 0 || req.AmountMinor > MaxDepositMinor {
+		return nil, grpcx.Error(codes.InvalidArgument, "invalid_amount", "amount_minor must be positive and within limits")
 	}
 	acc, err := s.load(ctx, s.pool, req.AccountId, false)
 	if err != nil {
@@ -138,6 +139,10 @@ func (s *Service) CreatePayment(ctx context.Context, req *accountsv1.CreatePayme
 		}
 		if req.AmountMinor > room {
 			return grpcx.Error(codes.FailedPrecondition, "payment_exceeds_balance", "payment exceeds the outstanding balance")
+		}
+		// Minimum 1.00, except that a remaining balance under 1.00 can always be paid off in full.
+		if req.AmountMinor < min(MinPaymentMinor, room) {
+			return grpcx.Error(codes.InvalidArgument, "invalid_amount", "amount_minor must be at least 100 (1.00), or the full remaining balance if it is smaller")
 		}
 		id := uuid.Must(uuid.NewV7()).String()
 		p, err = scanPayment(tx.QueryRow(ctx, `
