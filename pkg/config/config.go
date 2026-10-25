@@ -3,8 +3,10 @@
 package config
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"time"
@@ -54,8 +56,15 @@ func Load() (Config, error) {
 		SNSTopicARN:       os.Getenv("SNS_TOPIC_ARN"),
 		AuditSQSQueueURL:  os.Getenv("AUDIT_SQS_QUEUE_URL"),
 	}
+	if c.DatabaseURL == "" && os.Getenv("DB_HOST") != "" {
+		dsn, err := dsnFromRDSSecret(os.Getenv("DB_HOST"), os.Getenv("DB_CREDENTIALS"))
+		if err != nil {
+			return Config{}, err
+		}
+		c.DatabaseURL = dsn
+	}
 	if c.DatabaseURL == "" {
-		return Config{}, errors.New("config: DATABASE_URL is required")
+		return Config{}, errors.New("config: DATABASE_URL (or DB_HOST + DB_CREDENTIALS) is required")
 	}
 	if c.JWTHS256Secret != "" && len(c.JWTHS256Secret) < minJWTSecretBytes {
 		return Config{}, fmt.Errorf("config: JWT_HS256_SECRET must be at least %d bytes", minJWTSecretBytes)
@@ -71,6 +80,19 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	return c, nil
+}
+
+// dsnFromRDSSecret builds a TLS-verified DSN from the RDS-managed secret JSON injected by ECS.
+func dsnFromRDSSecret(host, secretJSON string) (string, error) {
+	var cred struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := json.Unmarshal([]byte(secretJSON), &cred); err != nil || cred.Username == "" {
+		return "", errors.New("config: DB_CREDENTIALS must be the RDS secret JSON with username and password")
+	}
+	u := url.URL{Scheme: "postgres", User: url.UserPassword(cred.Username, cred.Password), Host: host, Path: "/acmecard", RawQuery: "sslmode=verify-full"}
+	return u.String(), nil
 }
 
 func getenv(key, def string) string {

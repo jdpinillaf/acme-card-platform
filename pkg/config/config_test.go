@@ -58,3 +58,27 @@ func TestLoadParsesDurationAndInt(t *testing.T) {
 		t.Fatalf("got %+v", c)
 	}
 }
+
+func TestLoadBuildsDSNFromRDSSecretWithTLS(t *testing.T) {
+	t.Setenv("DATABASE_URL", "")
+	t.Setenv("JWT_HS256_SECRET", "")
+	t.Setenv("DB_HOST", "acme.abc.us-east-1.rds.amazonaws.com:5432")
+	t.Setenv("DB_CREDENTIALS", `{"username":"acme_admin","password":"p@ss/w:rd"}`)
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "postgres://acme_admin:p%40ss%2Fw%3Ard@acme.abc.us-east-1.rds.amazonaws.com:5432/acmecard?sslmode=verify-full"
+	if c.DatabaseURL != want {
+		t.Fatalf("got  %s\nwant %s", c.DatabaseURL, want)
+	}
+}
+
+func TestLoadRejectsMalformedRDSSecret(t *testing.T) {
+	t.Setenv("DATABASE_URL", "")
+	t.Setenv("DB_HOST", "h:5432")
+	t.Setenv("DB_CREDENTIALS", `not-json`)
+	if _, err := Load(); err == nil {
+		t.Fatal("malformed DB_CREDENTIALS must fail")
+	}
+}
