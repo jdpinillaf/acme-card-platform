@@ -295,3 +295,133 @@ func (c *cancelAfterPlace) PlaceHold(ctx context.Context, r *ledgerv1.PlaceHoldR
 	c.cancel()
 	return res, err
 }
+
+// ---- terminal failures of reserved operations (audit H2) ----
+
+// A capture whose hold the ledger already closed (e.g. the 8-day safety net expired it) cannot be
+// retried into success: the row must reach a terminal state instead of staying pending forever.
+func TestCaptureOnDeadHoldFailsTerminally(t *testing.T) {
+	f, c := txFixture(t)
+	ctx := context.Background()
+	acc := f.activeAccount(t, "cust-h2", 1000)
+	a := f.authorize(t, acc.Id, "net-h2", 300).Authorization
+	if _, err := f.ledgerClient.ReleaseHold(ctx, &ledgerv1.ReleaseHoldRequest{HoldReference: "auth:net-h2", Reason: ledgerv1.HoldRelease_HOLD_RELEASE_EXPIRED}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.capture(a.Id, "C-h2", 300); grpcx.Reason(err) != "hold_not_active" {
+		t.Fatalf("capture on a dead hold: %v", err)
+	}
+	var st string
+	var op *string
+	_ = f.pool.QueryRow(ctx, `SELECT status, pending_op FROM authorizations WHERE id=$1`, a.Id).Scan(&st, &op)
+	if st != "failed" || op != nil {
+		t.Fatalf("status=%s pending_op=%v, want failed with no pending op", st, op)
+	}
+	if _, err := f.reverse(a.Id, "V-h2"); grpcx.Reason(err) != "authorization_failed" {
+		t.Fatalf("follow-ups must see the terminal state, got %v", err)
+	}
+	c.Advance(PendingTimeout + time.Second)
+	if err := f.svc.ResolvePending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if f.events(t, "authorization.failed") != 1 {
+		t.Fatal("terminal failure must be evented once")
+	}
+	if av, _ := f.balances(t, acc.Id); av != 1000 {
+		t.Fatalf("available=%d want 1000", av)
+	}
+}
+
+// A refund the ledger refuses outright is marked failed and stops counting toward the cap.
+func TestRefundRefusedByLedgerFailsTerminally(t *testing.T) {
+	f, c := txFixture(t)
+	ctx := context.Background()
+	acc := f.activeAccount(t, "cust-h2r", 1000)
+	a := f.authorize(t, acc.Id, "net-h2r", 200).Authorization
+	if _, err := f.capture(a.Id, "C-h2r", 200); err != nil {
+		t.Fatal(err)
+	}
+	rl := &refusingLedger{LedgerServiceClient: f.ledgerClient}
+	rl.refuse.Store(true)
+	f.svc = NewService(f.pool, rl, WithClock(c))
+	if _, err := f.refund(a.Id, "R-h2r", 150); err == nil {
+		t.Fatal("expected the ledger refusal")
+	}
+	var st string
+	_ = f.pool.QueryRow(ctx, `SELECT status FROM refunds WHERE network_ref='R-h2r'`).Scan(&st)
+	if st != "failed" {
+		t.Fatalf("refund status=%s want failed", st)
+	}
+	if _, err := f.refund(a.Id, "R-h2r-2", 200); err != nil {
+		t.Fatalf("a failed refund must not consume the cap: %v", err)
+	}
+	c.Advance(PendingTimeout + time.Second)
+	if err := f.svc.ResolvePending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var refunded int64
+	_ = f.pool.QueryRow(ctx, `SELECT refunded_minor FROM authorizations WHERE id=$1`, a.Id).Scan(&refunded)
+	if refunded != 200 {
+		t.Fatalf("refunded=%d want 200", refunded)
+	}
+}
+
+// refusingLedger answers PostRefund with a permanent (non-retryable) error while armed.
+type refusingLedger struct {
+	ledgerv1.LedgerServiceClient
+	refuse atomic.Bool
+}
+
+func (l *refusingLedger) PostRefund(ctx context.Context, r *ledgerv1.PostRefundRequest, o ...grpc.CallOption) (*ledgerv1.PostJournalResponse, error) {
+	if l.refuse.CompareAndSwap(true, false) {
+		return nil, grpcx.Error(codes.InvalidArgument, "invalid_refund", "simulated permanent refusal")
+	}
+	return l.LedgerServiceClient.PostRefund(ctx, r, o...)
+}
+
+// ---- reconciler ordering (audit H3) ----
+
+// hookedLedger runs a callback once, right before the next ReleaseHold reaches the ledger.
+type hookedLedger struct {
+	ledgerv1.LedgerServiceClient
+	onRelease func()
+}
+
+func (h *hookedLedger) ReleaseHold(ctx context.Context, r *ledgerv1.ReleaseHoldRequest, o ...grpc.CallOption) (*ledgerv1.ReleaseHoldResponse, error) {
+	if fn := h.onRelease; fn != nil {
+		h.onRelease = nil
+		fn()
+	}
+	return h.LedgerServiceClient.ReleaseHold(ctx, r, o...)
+}
+
+// The reconciler must fail a stale pending authorization BEFORE releasing its hold. Otherwise a
+// late duplicate that finalizes between the release and the fail leaves an approved authorization
+// with no hold behind it.
+func TestReconcilerFailsPendingAuthorizationBeforeReleasingHold(t *testing.T) {
+	f, c, fl := flakyFixture(t)
+	ctx := context.Background()
+	acc := f.activeAccount(t, "cust-h3", 1000)
+	fl.failPlace.Store(true)
+	if _, err := f.svc.Authorize(ctx, authReq(acc.Id, "net-h3", 300)); err == nil {
+		t.Fatal("expected the simulated lost response")
+	}
+	c.Advance(PendingTimeout + time.Second)
+	hooked := &hookedLedger{LedgerServiceClient: fl}
+	f.svc = NewService(f.pool, hooked, WithClock(c))
+	hooked.onRelease = func() { _, _ = f.svc.Authorize(ctx, authReq(acc.Id, "net-h3", 300)) } // late duplicate
+	if err := f.svc.ResolvePending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var st string
+	_ = f.pool.QueryRow(ctx, `SELECT status FROM authorizations WHERE network_ref='net-h3'`).Scan(&st)
+	if st != "failed" {
+		t.Fatalf("status=%s want failed", st)
+	}
+	if hs := f.holdStatus(t, "net-h3"); hs != "released" {
+		t.Fatalf("hold=%s want released", hs)
+	}
+	if av, _ := f.balances(t, acc.Id); av != 1000 {
+		t.Fatalf("available=%d want 1000", av)
+	}
+}

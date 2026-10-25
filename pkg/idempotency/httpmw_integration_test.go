@@ -69,12 +69,20 @@ func TestMiddlewareConcurrentSameKeyRunsHandlerOnce(t *testing.T) {
 	}
 }
 
-func TestMiddlewareStoresErrorOutcomesAndRejectsPayloadMismatch(t *testing.T) {
+// A 5xx means the effect did not (observably) happen: the key must be released so the client's
+// retry with the same key runs the handler again instead of replaying the failure for 24 hours.
+func TestMiddlewareDoesNotStore5xxSoRetryRuns(t *testing.T) {
 	s := newStore(t)
+	var calls atomic.Int32
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		SetOutcome(r.Context(), OutcomeRolledBack)
-		w.WriteHeader(500)
-		_, _ = w.Write([]byte("boom"))
+		if calls.Add(1) == 1 {
+			SetOutcome(r.Context(), OutcomeRolledBack)
+			w.WriteHeader(500)
+			_, _ = w.Write([]byte("boom"))
+			return
+		}
+		w.WriteHeader(201)
+		_, _ = w.Write([]byte(`{"ok":true}`))
 	})
 	srv := httptest.NewServer(Middleware(s, func(*http.Request) string { return "sub" })(handler))
 	defer srv.Close()
@@ -91,23 +99,59 @@ func TestMiddlewareStoresErrorOutcomesAndRejectsPayloadMismatch(t *testing.T) {
 		return resp, string(b)
 	}
 	r1, b1 := do(`{"a":1}`)
-	r2, b2 := do(`{"a":1}`)
-	if r1.StatusCode != 500 || r2.StatusCode != 500 || b1 != "boom" || b2 != "boom" {
-		t.Fatalf("5xx must be stored and replayed: %d %s / %d %s", r1.StatusCode, b1, r2.StatusCode, b2)
+	if r1.StatusCode != 500 || b1 != "boom" {
+		t.Fatalf("first call: %d %s", r1.StatusCode, b1)
 	}
-	if r2.Header.Get(HeaderReplayed) != "true" {
-		t.Fatal("second call must be a replay")
-	}
-	var outcome string
-	if err := s.pool.QueryRow(r1.Request.Context(), `SELECT outcome FROM idempotency_keys WHERE key_hash=$1`, KeyHash("sub", "k")).Scan(&outcome); err != nil {
+	var rows int
+	if err := s.pool.QueryRow(r1.Request.Context(), `SELECT count(*) FROM idempotency_keys WHERE key_hash=$1`, KeyHash("sub", "k")).Scan(&rows); err != nil {
 		t.Fatal(err)
 	}
-	if outcome != string(OutcomeRolledBack) {
-		t.Fatalf("outcome=%s want rolled_back", outcome)
+	if rows != 0 {
+		t.Fatalf("a 5xx must not leave a stored key (rows=%d)", rows)
 	}
-	r3, b3 := do(`{"a":2}`)
-	if r3.StatusCode != 422 || !strings.Contains(b3, "idempotency_key_reuse") {
-		t.Fatalf("mismatch must be 422: %d %s", r3.StatusCode, b3)
+	r2, b2 := do(`{"a":1}`)
+	if r2.StatusCode != 201 || b2 != `{"ok":true}` || r2.Header.Get(HeaderReplayed) == "true" {
+		t.Fatalf("retry must run the handler again: %d %s replayed=%q", r2.StatusCode, b2, r2.Header.Get(HeaderReplayed))
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("handler ran %d times, want 2", calls.Load())
+	}
+	r3, _ := do(`{"a":1}`)
+	if r3.Header.Get(HeaderReplayed) != "true" || r3.StatusCode != 201 {
+		t.Fatalf("the stored 201 must replay: %d", r3.StatusCode)
+	}
+	r4, b4 := do(`{"a":2}`)
+	if r4.StatusCode != 422 || !strings.Contains(b4, "idempotency_key_reuse") {
+		t.Fatalf("mismatch must be 422: %d %s", r4.StatusCode, b4)
+	}
+}
+
+// 4xx are the client's own doing and stay replayable, so a retry cannot turn a rejected request
+// into an accepted one without changing the key.
+func TestMiddlewareStoresAndReplays4xx(t *testing.T) {
+	s := newStore(t)
+	var calls atomic.Int32
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(409)
+		_, _ = w.Write([]byte(`{"error":"conflict"}`))
+	})
+	srv := httptest.NewServer(Middleware(s, func(*http.Request) string { return "sub" })(handler))
+	defer srv.Close()
+	for i := 0; i < 2; i++ {
+		req, _ := http.NewRequest("POST", srv.URL+"/v1/x", strings.NewReader(`{}`))
+		req.Header.Set(HeaderKey, "k4")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != 409 || (i == 1 && resp.Header.Get(HeaderReplayed) != "true") {
+			t.Fatalf("call %d: %d replayed=%q", i, resp.StatusCode, resp.Header.Get(HeaderReplayed))
+		}
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("handler ran %d times, want 1", calls.Load())
 	}
 }
 

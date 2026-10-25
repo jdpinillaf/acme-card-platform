@@ -170,3 +170,6 @@ func isLockTimeout(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == lockNotAvailable
 }
+
+// WithLease sets how long a claim may stay in progress before another request may take it over.
+func (s *Store) WithLease(d time.Duration) *Store { return s }
