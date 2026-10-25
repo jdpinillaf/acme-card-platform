@@ -41,5 +41,13 @@ func main() {
 		os.Exit(1)
 	}
 	log.Info("audit consumer started", "queue", cfg.AuditSQSQueueURL)
-	store.NewConsumer(clients.SQS, cfg.AuditSQSQueueURL, store.New(pool), log).Run(ctx)
+	st := store.New(pool)
+	// Chain rows written before Sprint 6 once, before consuming new events (ADR-021).
+	if n, err := st.BackfillChain(ctx); err != nil {
+		log.Error("chain backfill", "err", err)
+		os.Exit(1)
+	} else if n > 0 {
+		log.Info("chained pre-existing audit events", "count", n)
+	}
+	store.NewConsumer(clients.SQS, cfg.AuditSQSQueueURL, st, log).Run(ctx)
 }
