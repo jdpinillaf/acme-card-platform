@@ -107,7 +107,10 @@ func main() {
 }
 
 // sweeper removes expired idempotency keys (24h TTL) and stale rate-limit windows every hour.
-func sweeper(ctx context.Context, log interface{ Info(string, ...any); Error(string, ...any) }, idem *idempotency.Store, lim *ratelimit.Limiter) {
+func sweeper(ctx context.Context, log interface {
+	Info(string, ...any)
+	Error(string, ...any)
+}, idem *idempotency.Store, lim *ratelimit.Limiter) {
 	t := time.NewTicker(time.Hour)
 	defer t.Stop()
 	for {

@@ -20,7 +20,7 @@ import (
 )
 
 func main() {
-	url := flag.String("url", "http://localhost:8080/v1/webhooks/bank/deposits", "webhook endpoint")
+	url := flag.String("url", "http://localhost:8088/v1/webhooks/bank/deposits", "webhook endpoint")
 	deposit := flag.String("deposit", "", "deposit id (required)")
 	amount := flag.Int64("amount", 0, "amount in minor units (required)")
 	currency := flag.String("currency", "USD", "ISO-4217 currency")
