@@ -1,6 +1,6 @@
 # Sprint 6 — Audit hardening
 
-Status: draft for builder check · 2026-10-25 · builds on Sprints 1–5 (ADR-001…020)
+Status: builder-checked · 2026-10-25 · builds on Sprints 1–5 (ADR-001…020)
 
 ## 1. Intent
 
@@ -76,6 +76,27 @@ This sprint makes the audit trail **verifiable**, **complete**, **reconcilable**
   - `GET /v1/audit/replay/{accountId}`;
   - `POST /v1/audit/exports {filter}` → NDJSON in S3 + `GET /v1/audit/exports/{id}` (download).
 - **I-10 Sensitive reads.** accounts emits `payout.instruction_read` and billing emits `statement.read`, with actor and ids only.
+
+
+## 4b. Builder-check calls (user: "continúa con lo sugerido")
+- **B-1 Replay source.**
+  - An AFTER UPDATE/INSERT trigger on `accounts.accounts` enqueues `account.changed` (aggregate `account`) into the accounts outbox. It carries the full row (minus `destination_ciphertext` and lease columns), so every mutation is covered without touching the ~20 call sites. Existing event names and payloads are unchanged (the customer-journey test depends on them).
+  - Replay compares `state, frozen, collateral_minor, credit_limit_minor, purchase_limit_minor, restricted_reason, delinquency, close_stage, clock_offset_seconds` from the latest `account.changed`/`snapshot.account` with the live row. It also compares each ledger sub-account balance from the latest `ledger.journal_posted` balances (or the snapshot) with the live ledger.
+  - Accounts with no such event yet start from their first snapshot. "Billing stage" in I-4 means `delinquency`.
+- **B-2 Redaction.**
+  - The redaction is an exact, case-insensitive key match at any depth in `before`/`after`, on these keys: `account_number`, `holder_name`, `destination_ciphertext`, `token`, `access_token`, `secret`, `password`.
+  - `authorization` is a domain object and is **not** redacted.
+  - The value becomes `"[redacted]"` before hashing, and the row records `redacted = true`. Events are never rejected, so no gap appears.
+- **B-3 HTTP audit unchanged.** GETs stay unaudited by the middleware (the journey test relies on it). The audit API emits explicit events:
+  - `audit.queried` for every successful read;
+  - `audit.exported` for every export;
+  - `audit.access_denied` for every refused call on `/v1/audit/*`, from a gateway hook on the role check.
+- **B-4 Completeness scope.** The scope is published events (gaps in `source_seq`) plus stuck outboxes: unpublished rows older than 5 min, per service, reported by verify. Gateway HTTP-audit write failures stay log-only (unchanged).
+- **B-5 Purge.**
+  - The monthly retention job archives, verifies and then calls `audit_purge_archived` by itself, as the audit service's DB role.
+  - `cmd/auditctl` offers `archive|verify|purge` for operators.
+  - The auditor role never purges.
+- **B-6 Snapshot day.** Snapshots run once per real UTC day (worker) and on demand (`SnapshotAccounts` RPC, used by tests and the load gate). They do not run on simulated clocks.
 
 ## 5. Test gates
 - Chain: tampering with any field, deleting a row (with triggers disabled), or reordering is detected at the exact `chain_seq`. Concurrent inserts keep a contiguous chain.
