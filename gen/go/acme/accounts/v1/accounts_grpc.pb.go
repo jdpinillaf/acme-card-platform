@@ -34,6 +34,11 @@ const (
 	AccountsService_SettlePayment_FullMethodName    = "/acme.accounts.v1.AccountsService/SettlePayment"
 	AccountsService_ReturnPayment_FullMethodName    = "/acme.accounts.v1.AccountsService/ReturnPayment"
 	AccountsService_ListPayments_FullMethodName     = "/acme.accounts.v1.AccountsService/ListPayments"
+	AccountsService_AdvanceClock_FullMethodName     = "/acme.accounts.v1.AccountsService/AdvanceClock"
+	AccountsService_SetDelinquency_FullMethodName   = "/acme.accounts.v1.AccountsService/SetDelinquency"
+	AccountsService_ChargeOff_FullMethodName        = "/acme.accounts.v1.AccountsService/ChargeOff"
+	AccountsService_CheckExposure_FullMethodName    = "/acme.accounts.v1.AccountsService/CheckExposure"
+	AccountsService_ListAccountIDs_FullMethodName   = "/acme.accounts.v1.AccountsService/ListAccountIDs"
 )
 
 // AccountsServiceClient is the client API for AccountsService service.
@@ -61,6 +66,17 @@ type AccountsServiceClient interface {
 	// ReturnPayment is driven by the bank webhook within the return window. Idempotent on return_ref.
 	ReturnPayment(ctx context.Context, in *ReturnPaymentRequest, opts ...grpc.CallOption) (*PaymentResponse, error)
 	ListPayments(ctx context.Context, in *ListPaymentsRequest, opts ...grpc.CallOption) (*ListPaymentsResponse, error)
+	// Billing support (Sprint 4).
+	// AdvanceClock moves the account's simulated clock forward (dev only; gated at the gateway).
+	AdvanceClock(ctx context.Context, in *AdvanceClockRequest, opts ...grpc.CallOption) (*GetAccountResponse, error)
+	// SetDelinquency sets none | past_due; charged_off is reached only through ChargeOff.
+	SetDelinquency(ctx context.Context, in *SetDelinquencyRequest, opts ...grpc.CallOption) (*GetAccountResponse, error)
+	// ChargeOff applies collateral to the debt and blocks the card permanently. Idempotent.
+	ChargeOff(ctx context.Context, in *ChargeOffRequest, opts ...grpc.CallOption) (*GetAccountResponse, error)
+	// CheckExposure restricts the card (over_limit) when holds + receivable exceed the limit.
+	CheckExposure(ctx context.Context, in *CheckExposureRequest, opts ...grpc.CallOption) (*GetAccountResponse, error)
+	// ListAccountIDs pages through active and charged-off accounts for the billing sweep.
+	ListAccountIDs(ctx context.Context, in *ListAccountIDsRequest, opts ...grpc.CallOption) (*ListAccountIDsResponse, error)
 }
 
 type accountsServiceClient struct {
@@ -221,6 +237,56 @@ func (c *accountsServiceClient) ListPayments(ctx context.Context, in *ListPaymen
 	return out, nil
 }
 
+func (c *accountsServiceClient) AdvanceClock(ctx context.Context, in *AdvanceClockRequest, opts ...grpc.CallOption) (*GetAccountResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetAccountResponse)
+	err := c.cc.Invoke(ctx, AccountsService_AdvanceClock_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *accountsServiceClient) SetDelinquency(ctx context.Context, in *SetDelinquencyRequest, opts ...grpc.CallOption) (*GetAccountResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetAccountResponse)
+	err := c.cc.Invoke(ctx, AccountsService_SetDelinquency_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *accountsServiceClient) ChargeOff(ctx context.Context, in *ChargeOffRequest, opts ...grpc.CallOption) (*GetAccountResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetAccountResponse)
+	err := c.cc.Invoke(ctx, AccountsService_ChargeOff_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *accountsServiceClient) CheckExposure(ctx context.Context, in *CheckExposureRequest, opts ...grpc.CallOption) (*GetAccountResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetAccountResponse)
+	err := c.cc.Invoke(ctx, AccountsService_CheckExposure_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *accountsServiceClient) ListAccountIDs(ctx context.Context, in *ListAccountIDsRequest, opts ...grpc.CallOption) (*ListAccountIDsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListAccountIDsResponse)
+	err := c.cc.Invoke(ctx, AccountsService_ListAccountIDs_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AccountsServiceServer is the server API for AccountsService service.
 // All implementations must embed UnimplementedAccountsServiceServer
 // for forward compatibility.
@@ -246,6 +312,17 @@ type AccountsServiceServer interface {
 	// ReturnPayment is driven by the bank webhook within the return window. Idempotent on return_ref.
 	ReturnPayment(context.Context, *ReturnPaymentRequest) (*PaymentResponse, error)
 	ListPayments(context.Context, *ListPaymentsRequest) (*ListPaymentsResponse, error)
+	// Billing support (Sprint 4).
+	// AdvanceClock moves the account's simulated clock forward (dev only; gated at the gateway).
+	AdvanceClock(context.Context, *AdvanceClockRequest) (*GetAccountResponse, error)
+	// SetDelinquency sets none | past_due; charged_off is reached only through ChargeOff.
+	SetDelinquency(context.Context, *SetDelinquencyRequest) (*GetAccountResponse, error)
+	// ChargeOff applies collateral to the debt and blocks the card permanently. Idempotent.
+	ChargeOff(context.Context, *ChargeOffRequest) (*GetAccountResponse, error)
+	// CheckExposure restricts the card (over_limit) when holds + receivable exceed the limit.
+	CheckExposure(context.Context, *CheckExposureRequest) (*GetAccountResponse, error)
+	// ListAccountIDs pages through active and charged-off accounts for the billing sweep.
+	ListAccountIDs(context.Context, *ListAccountIDsRequest) (*ListAccountIDsResponse, error)
 	mustEmbedUnimplementedAccountsServiceServer()
 }
 
@@ -300,6 +377,21 @@ func (UnimplementedAccountsServiceServer) ReturnPayment(context.Context, *Return
 }
 func (UnimplementedAccountsServiceServer) ListPayments(context.Context, *ListPaymentsRequest) (*ListPaymentsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListPayments not implemented")
+}
+func (UnimplementedAccountsServiceServer) AdvanceClock(context.Context, *AdvanceClockRequest) (*GetAccountResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method AdvanceClock not implemented")
+}
+func (UnimplementedAccountsServiceServer) SetDelinquency(context.Context, *SetDelinquencyRequest) (*GetAccountResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SetDelinquency not implemented")
+}
+func (UnimplementedAccountsServiceServer) ChargeOff(context.Context, *ChargeOffRequest) (*GetAccountResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ChargeOff not implemented")
+}
+func (UnimplementedAccountsServiceServer) CheckExposure(context.Context, *CheckExposureRequest) (*GetAccountResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CheckExposure not implemented")
+}
+func (UnimplementedAccountsServiceServer) ListAccountIDs(context.Context, *ListAccountIDsRequest) (*ListAccountIDsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListAccountIDs not implemented")
 }
 func (UnimplementedAccountsServiceServer) mustEmbedUnimplementedAccountsServiceServer() {}
 func (UnimplementedAccountsServiceServer) testEmbeddedByValue()                         {}
@@ -592,6 +684,96 @@ func _AccountsService_ListPayments_Handler(srv interface{}, ctx context.Context,
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AccountsService_AdvanceClock_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AdvanceClockRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AccountsServiceServer).AdvanceClock(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AccountsService_AdvanceClock_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AccountsServiceServer).AdvanceClock(ctx, req.(*AdvanceClockRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AccountsService_SetDelinquency_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetDelinquencyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AccountsServiceServer).SetDelinquency(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AccountsService_SetDelinquency_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AccountsServiceServer).SetDelinquency(ctx, req.(*SetDelinquencyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AccountsService_ChargeOff_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ChargeOffRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AccountsServiceServer).ChargeOff(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AccountsService_ChargeOff_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AccountsServiceServer).ChargeOff(ctx, req.(*ChargeOffRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AccountsService_CheckExposure_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CheckExposureRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AccountsServiceServer).CheckExposure(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AccountsService_CheckExposure_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AccountsServiceServer).CheckExposure(ctx, req.(*CheckExposureRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AccountsService_ListAccountIDs_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListAccountIDsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AccountsServiceServer).ListAccountIDs(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AccountsService_ListAccountIDs_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AccountsServiceServer).ListAccountIDs(ctx, req.(*ListAccountIDsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AccountsService_ServiceDesc is the grpc.ServiceDesc for AccountsService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -658,6 +840,26 @@ var AccountsService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListPayments",
 			Handler:    _AccountsService_ListPayments_Handler,
+		},
+		{
+			MethodName: "AdvanceClock",
+			Handler:    _AccountsService_AdvanceClock_Handler,
+		},
+		{
+			MethodName: "SetDelinquency",
+			Handler:    _AccountsService_SetDelinquency_Handler,
+		},
+		{
+			MethodName: "ChargeOff",
+			Handler:    _AccountsService_ChargeOff_Handler,
+		},
+		{
+			MethodName: "CheckExposure",
+			Handler:    _AccountsService_CheckExposure_Handler,
+		},
+		{
+			MethodName: "ListAccountIDs",
+			Handler:    _AccountsService_ListAccountIDs_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

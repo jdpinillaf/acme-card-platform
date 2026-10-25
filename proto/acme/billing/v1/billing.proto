@@ -1,0 +1,127 @@
+syntax = "proto3";
+
+package acme.billing.v1;
+
+import "acme/common/v1/common.proto";
+import "google/protobuf/timestamp.proto";
+
+// BillingService owns cycles, statements, interest, fees and delinquency (Sprint 4).
+service BillingService {
+  // CatchUp runs every due billing event for the account up to its account time. Idempotent.
+  rpc CatchUp(CatchUpRequest) returns (CatchUpResponse);
+  rpc ListStatements(ListStatementsRequest) returns (ListStatementsResponse);
+  rpc GetStatement(GetStatementRequest) returns (GetStatementResponse);
+  rpc GetSummary(GetSummaryRequest) returns (BillingSummary);
+  rpc ListCharges(ListChargesRequest) returns (ListChargesResponse);
+  // WaiveCharge reverses part or all of an interest or fee charge (support role). Idempotent on meta key.
+  rpc WaiveCharge(WaiveChargeRequest) returns (WaiveChargeResponse);
+}
+
+message CatchUpRequest {
+  string account_id = 1;
+}
+message CatchUpResponse {
+  int32 statements_generated = 1;
+}
+
+message Statement {
+  string id = 1;
+  string account_id = 2;
+  int32 cycle = 3;
+  google.protobuf.Timestamp period_start = 4;
+  google.protobuf.Timestamp period_end = 5;
+  // Unset after charge-off (balance-only statements).
+  google.protobuf.Timestamp due_date = 6;
+  int64 previous_balance_minor = 7;
+  int64 purchases_minor = 8;
+  int64 refunds_minor = 9;
+  int64 payments_minor = 10;
+  int64 returns_minor = 11;
+  int64 interest_minor = 12;
+  int64 fees_minor = 13;
+  int64 waivers_minor = 14;
+  int64 collateral_applied_minor = 15;
+  int64 new_balance_minor = 16;
+  int64 minimum_due_minor = 17;
+  int64 principal_minor = 18;
+  int64 interest_bucket_minor = 19;
+  int64 fee_bucket_minor = 20;
+  string s3_key = 21;
+  string sha256 = 22;
+  google.protobuf.Timestamp generated_at = 23;
+  string currency = 24;
+}
+
+message ListStatementsRequest {
+  string account_id = 1;
+}
+message ListStatementsResponse {
+  repeated Statement statements = 1;
+}
+
+message GetStatementRequest {
+  string account_id = 1;
+  string statement_id = 2;
+}
+message GetStatementResponse {
+  Statement statement = 1;
+  // The statement document stored in S3.
+  bytes body_json = 2;
+}
+
+message GetSummaryRequest {
+  string account_id = 1;
+}
+message BillingSummary {
+  string account_id = 1;
+  google.protobuf.Timestamp account_time = 2;
+  google.protobuf.Timestamp cycle_start = 3;
+  google.protobuf.Timestamp cycle_end = 4;
+  Statement last_statement = 5;
+  int64 minimum_due_minor = 6;
+  google.protobuf.Timestamp due_date = 7;
+  int64 past_due_minor = 8;
+  int32 dpd = 9;
+  bool grace = 10;
+  // none | past_due | charged_off
+  string stage = 11;
+  string currency = 12;
+}
+
+message Charge {
+  string id = 1;
+  // interest | fee
+  string kind = 2;
+  int32 cycle = 3;
+  int64 amount_minor = 4;
+  int64 waived_minor = 5;
+  google.protobuf.Timestamp effective_at = 6;
+  string status = 7;
+}
+message ListChargesRequest {
+  string account_id = 1;
+}
+message ListChargesResponse {
+  repeated Charge charges = 1;
+}
+
+message Waiver {
+  string id = 1;
+  string charge_id = 2;
+  int64 amount_minor = 3;
+  string reason = 4;
+  string actor = 5;
+  google.protobuf.Timestamp created_at = 6;
+}
+message WaiveChargeRequest {
+  string account_id = 1;
+  string charge_id = 2;
+  int64 amount_minor = 3;
+  string reason = 4;
+  acme.common.v1.RequestMeta meta = 5;
+}
+message WaiveChargeResponse {
+  Charge charge = 1;
+  Waiver waiver = 2;
+  bool replayed = 3;
+}

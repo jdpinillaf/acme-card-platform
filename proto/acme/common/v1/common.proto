@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package acme.common.v1;
 
+import "google/protobuf/timestamp.proto";
+
 // Money is an exact amount: integer minor units (cents) plus ISO-4217 currency. Never floats.
 message Money {
   int64 amount_minor = 1;
@@ -19,10 +21,15 @@ enum DeclineReason {
   DECLINE_REASON_INSUFFICIENT_CREDIT = 6;
   DECLINE_REASON_CURRENCY_NOT_SUPPORTED = 7;
   DECLINE_REASON_PAYMENT_RETURNED = 8;
+  DECLINE_REASON_PAST_DUE = 9;
+  DECLINE_REASON_CHARGED_OFF = 10;
+  DECLINE_REASON_OVER_LIMIT = 11;
 }
 
 // RequestMeta carries idempotency and actor context across service calls.
 message RequestMeta {
   string idempotency_key_hash = 1;
   string actor = 2;
+  // effective_at is the business date of a ledger posting (account time, Sprint 4). Unset = now.
+  google.protobuf.Timestamp effective_at = 3;
 }
