@@ -193,8 +193,25 @@ export default function () {
       headers: { "Content-Type": "application/json", "X-Acme-Timestamp": ts, "X-Acme-Signature": sig }, tags: { name: path },
     });
     if (!check(settled, { "payment settled": (r) => r.status === 200 && r.json("payment.status") === "settled" })) return;
+    // One iteration in ten has its payment returned by the bank: the debt comes back (within the
+    // limit here, so the fail-safe restriction is lifted right away) and the invariants get data.
+    let expectedOwed = 0;
+    if (__ITER % 10 === 0) {
+      const rpath = `/v1/webhooks/bank/payments/${payId}/return`;
+      const rbody = JSON.stringify({ return_ref: `r-${payId}`, amount_minor: owed });
+      const rts = String(Math.floor(Date.now() / 1000));
+      const rsig = crypto.hmac("sha256", BANK_SECRET, `${rts}.POST ${rpath}.${rbody}`, "hex");
+      const ret = http.post(`${BASE}${rpath}`, rbody, {
+        headers: { "Content-Type": "application/json", "X-Acme-Timestamp": rts, "X-Acme-Signature": rsig }, tags: { name: "/v1/webhooks/bank/payments/:id/return" },
+      });
+      if (!check(ret, { "payment returned": (r) => r.status === 200 && r.json("payment.status") === "returned" })) return;
+      expectedOwed = owed;
+    }
     const final = http.get(`${BASE}/v1/accounts/${acc}`, { headers: { Authorization: `Bearer ${tok}` }, tags: { name: "/v1/accounts/:id" } });
-    if (!check(final, { "available restored to the limit": (r) => r.json("available_credit_minor") === amount && r.json("outstanding_minor") === 0 })) {
+    if (!check(final, {
+      "available matches payments and returns": (r) => r.json("available_credit_minor") === amount - expectedOwed && r.json("outstanding_minor") === expectedOwed,
+      "no restriction within the limit": (r) => !r.json("restricted_reason"),
+    })) {
       wrongBalance.add(1);
     }
   }

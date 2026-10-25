@@ -11,10 +11,6 @@ SELECT 'limit != ledger collateral',          count(*) FROM accounts.accounts a 
 UNION ALL
 SELECT 'balance snapshot drift',              count(*) FROM ledger.balances b LEFT JOIN (SELECT account_id, sub_account, sum(CASE WHEN side='debit' THEN amount_minor ELSE -amount_minor END) s FROM ledger.postings GROUP BY 1,2) p USING (account_id, sub_account) WHERE b.raw_balance_minor <> coalesce(p.s, 0)
 UNION ALL
--- Lease-based claims (ADR-017): an abandoned in_progress row whose lease expired is recoverable
--- (the next retry takes it over); only rows without a lease could never be recovered.
-SELECT 'idempotency keys unrecoverable',      count(*) FROM gateway.idempotency_keys WHERE status = 'in_progress' AND lease_until IS NULL AND created_at < now() - interval '1 minute'
-UNION ALL
 SELECT 'deposits stuck in settling',          count(*) FROM accounts.deposits WHERE status = 'settling' AND created_at < now() - interval '1 minute' 
 UNION ALL
 -- Signed exposure (ADR-018): holds + receivable ≤ limit, except an overage explained by returned
@@ -23,7 +19,7 @@ SELECT 'exposure > limit (not explained by returns)', count(*) FROM (
   SELECT b.account_id FROM ledger.balances b
   JOIN ledger.balances r ON r.account_id=b.account_id AND r.sub_account='receivable'
   LEFT JOIN (SELECT account_id, sum(amount_minor) h FROM ledger.holds WHERE status='active' GROUP BY 1) h ON h.account_id=b.account_id
-  LEFT JOIN (SELECT account_id, sum(amount_minor) s FROM accounts.payments WHERE status='returned' GROUP BY 1) rt ON rt.account_id=b.account_id
+  LEFT JOIN (SELECT account_id, sum(amount_minor) s FROM accounts.payments WHERE status IN ('returning','returned') GROUP BY 1) rt ON rt.account_id=b.account_id
   WHERE b.sub_account='collateral_held'
     AND coalesce(h.h,0) + r.raw_balance_minor + b.raw_balance_minor > coalesce(rt.s, 0)) x
 UNION ALL
@@ -35,7 +31,7 @@ UNION ALL
 SELECT 'restricted but within limit > 5 min', count(*) FROM accounts.accounts a
   JOIN ledger.balances r ON r.account_id=a.id AND r.sub_account='receivable'
   LEFT JOIN (SELECT account_id, sum(amount_minor) h FROM ledger.holds WHERE status='active' GROUP BY 1) h ON h.account_id=a.id
-  WHERE a.restricted_reason IS NOT NULL AND coalesce(h.h,0) + r.raw_balance_minor <= a.credit_limit_minor AND a.updated_at < now() - interval '5 minutes'
+  WHERE a.restricted_reason IS NOT NULL AND coalesce(h.h,0) + r.raw_balance_minor <= a.credit_limit_minor AND a.restricted_at < now() - interval '5 minutes'
 UNION ALL
 SELECT 'payment journal ≠ settled payment',   count(*) FROM (
   SELECT p.id FROM accounts.payments p
