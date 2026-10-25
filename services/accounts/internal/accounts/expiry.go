@@ -83,6 +83,9 @@ func (s *Service) expireOne(ctx context.Context) (done bool, err error) {
 //     the network or bank asked for them and every ledger step is idempotent.
 func (s *Service) ResolvePending(ctx context.Context) error {
 	cutoff := s.clock.Now().Add(-PendingTimeout)
+	if err := s.resolvePayments(ctx, cutoff); err != nil {
+		return err
+	}
 
 	rows, err := s.pool.Query(ctx, `SELECT `+authCols+` FROM authorizations WHERE status='pending' AND created_at < $1 LIMIT 100`, cutoff)
 	if err != nil {
@@ -224,6 +227,14 @@ func (s *Service) RunExpiry(ctx context.Context, every time.Duration, log *slog.
 		}
 		if err := s.ResolvePending(ctx); err != nil && ctx.Err() == nil {
 			log.Error("pending resolution failed", "err", err)
+		}
+		if n, err := s.ExpirePayments(ctx, 500); err != nil && ctx.Err() == nil {
+			log.Error("payment expiry failed", "err", err)
+		} else if n > 0 {
+			log.Info("payment intents expired", "count", n)
+		}
+		if _, err := s.ReevaluateRestrictions(ctx, 500); err != nil && ctx.Err() == nil {
+			log.Error("restriction re-evaluation failed", "err", err)
 		}
 		if err := s.velocity.Sweep(ctx, s.clock.Now()); err != nil && ctx.Err() == nil {
 			log.Error("velocity window sweep failed", "err", err)

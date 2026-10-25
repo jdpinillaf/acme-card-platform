@@ -23,7 +23,7 @@ import (
 // a timeout after the ledger committed.
 type flakyLedger struct {
 	ledgerv1.LedgerServiceClient
-	failPlace, failCapture, failRefund, failJournal atomic.Bool
+	failPlace, failCapture, failRefund, failJournal, failPayment, failPaymentReturn atomic.Bool
 }
 
 func (l *flakyLedger) PostJournal(ctx context.Context, r *ledgerv1.PostJournalRequest, o ...grpc.CallOption) (*ledgerv1.PostJournalResponse, error) {

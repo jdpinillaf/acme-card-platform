@@ -93,6 +93,7 @@ func scanAccount(row pgx.Row) (accountRow, error) {
 type ledgerView struct {
 	Available  int64
 	Receivable int64
+	Holds      int64
 }
 
 func (a accountRow) proto(v ledgerView) *accountsv1.Account {
@@ -458,7 +459,7 @@ func (s *Service) available(ctx context.Context, acc accountRow) (ledgerView, er
 	if err != nil {
 		return ledgerView{}, err
 	}
-	return ledgerView{Available: b.AvailableMinor, Receivable: b.ReceivableMinor}, nil
+	return ledgerView{Available: b.AvailableMinor, Receivable: b.ReceivableMinor, Holds: b.HoldsMinor}, nil
 }
 
 func stateProto(s State) accountsv1.AccountState {
