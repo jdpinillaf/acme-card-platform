@@ -21,6 +21,8 @@ var subAccountNames = map[ledgerv1.SubAccount]string{
 	ledgerv1.SubAccount_SUB_ACCOUNT_COLLATERAL_HELD:  "collateral_held",
 	ledgerv1.SubAccount_SUB_ACCOUNT_CREDIT_AVAILABLE: "credit_available",
 	ledgerv1.SubAccount_SUB_ACCOUNT_RECEIVABLE:       "receivable",
+	ledgerv1.SubAccount_SUB_ACCOUNT_INTEREST_INCOME:  "interest_income",
+	ledgerv1.SubAccount_SUB_ACCOUNT_FEE_INCOME:       "fee_income",
 }
 
 // postable sub-accounts. credit_available is derived, never posted (see ADR / ledger ruling).
@@ -28,6 +30,8 @@ var postable = []ledgerv1.SubAccount{
 	ledgerv1.SubAccount_SUB_ACCOUNT_CASH_CLEARING,
 	ledgerv1.SubAccount_SUB_ACCOUNT_COLLATERAL_HELD,
 	ledgerv1.SubAccount_SUB_ACCOUNT_RECEIVABLE,
+	ledgerv1.SubAccount_SUB_ACCOUNT_INTEREST_INCOME,
+	ledgerv1.SubAccount_SUB_ACCOUNT_FEE_INCOME,
 }
 
 func subAccountFromName(s string) ledgerv1.SubAccount {
@@ -82,9 +86,11 @@ func ValidatePostings(ps []*ledgerv1.Posting) error {
 }
 
 // NormalBalance converts a raw (Σdebit − Σcredit) balance to the sub-account's natural sign.
-// collateral_held is a liability to the customer, hence credit-normal.
+// collateral_held is a liability to the customer and the income accounts are revenue, hence
+// credit-normal.
 func NormalBalance(sa ledgerv1.SubAccount, raw int64) int64 {
-	if sa == ledgerv1.SubAccount_SUB_ACCOUNT_COLLATERAL_HELD {
+	switch sa {
+	case ledgerv1.SubAccount_SUB_ACCOUNT_COLLATERAL_HELD, ledgerv1.SubAccount_SUB_ACCOUNT_INTEREST_INCOME, ledgerv1.SubAccount_SUB_ACCOUNT_FEE_INCOME:
 		return -raw
 	}
 	return raw
