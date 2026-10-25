@@ -66,3 +66,10 @@ Append-only. One entry per decision. Format: context → decision → consequenc
 **Deferred (pre-deploy hardening, required before any real AWS use):**
 - Per-service DB roles with least privilege. Today every service gets the RDS master secret, so the append-only triggers could be disabled by that role. Audit should use a role without UPDATE/DELETE/ALTER.
 - One IAM task role per service instead of one shared role.
+
+## ADR-014 — Sprint 2 scope decisions (2026-10-25)
+- **Overdraft is removed from the product**, not deferred. ADR-007's "future opt-in feature" is withdrawn: a purchase can never exceed the collateral-backed limit.
+- Outbound notifications move out of Sprint 2 into a sprint of their own.
+- Freeze/unfreeze moves from Sprint 5 into Sprint 2, because `card_frozen` is a Sprint 2 decline reason.
+- Card network simulated through HMAC-signed endpoints. Holds live 7 days. No partial approvals, incremental authorizations, partial captures, captures without an authorization, standalone refunds or currency conversion. Captures are for at most the authorized amount. Reversals are allowed within 3 days. Refunds after payment leave a credit balance. Velocity is 10 attempts per minute. The purchase limit applies per transaction. Handled declines return 201 with a reason.
+- Full design: `docs/superpowers/specs/2026-10-25-sprint2-card-transactions-design.md`.
