@@ -102,3 +102,17 @@ func TestSummaryPastDueCappedAtOutstanding(t *testing.T) {
 		t.Fatalf("summary after the debt was cleared: %v %+v", err, s)
 	}
 }
+
+func TestStatementReadAudited(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	acc := f.activeAccount(t, 1000)
+	f.advanceTo(t, acc.Id, f.closeN(t, acc, 1))
+	st := f.statements(t, acc.Id)[0]
+	if _, err := f.svc.GetStatement(ctx, &billingv1.GetStatementRequest{AccountId: acc.Id, StatementId: st.Id}); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.count(t, f.pool, `SELECT count(*) FROM outbox WHERE payload->>'type'='statement.read' AND payload->>'aggregate_id'=$1`, st.Id); n != 1 {
+		t.Fatalf("statement.read events=%d", n)
+	}
+}

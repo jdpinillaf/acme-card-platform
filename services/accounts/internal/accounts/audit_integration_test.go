@@ -1,0 +1,136 @@
+//go:build integration
+
+package accounts
+
+import (
+	"context"
+	"encoding/json"
+	"strings"
+	"testing"
+
+	accountsv1 "github.com/acme/acme-card/gen/go/acme/accounts/v1"
+)
+
+func (f *fixture) changedEvents(t *testing.T, acc string) []map[string]any {
+	t.Helper()
+	rows, err := f.pool.Query(context.Background(), `SELECT payload FROM outbox WHERE payload->>'type'='account.changed' AND payload->>'aggregate_id'=$1 ORDER BY seq`, acc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var out []map[string]any
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			t.Fatal(err)
+		}
+		var m map[string]any
+		_ = json.Unmarshal(raw, &m)
+		out = append(out, m)
+	}
+	return out
+}
+
+func TestAccountChangedOnEveryMutation(t *testing.T) {
+	f, _, _ := closeFixture(t)
+	ctx := context.Background()
+	acc := f.open(t, "cust-au1")
+	if n := len(f.changedEvents(t, acc.Id)); n != 1 {
+		t.Fatalf("after open: %d", n)
+	}
+	dep := f.deposit(t, acc.Id, 1000)
+	if _, err := f.svc.SettleDeposit(ctx, settled(dep, "bank-au1")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.svc.SetFrozen(ctx, &accountsv1.SetFrozenRequest{AccountId: acc.Id, Frozen: true}); err != nil {
+		t.Fatal(err)
+	}
+	evs := f.changedEvents(t, acc.Id)
+	last := evs[len(evs)-1]["after"].(map[string]any)
+	if len(evs) < 3 || last["frozen"] != true || last["collateral_minor"] != 1000.0 || last["state"] != "active" {
+		t.Fatalf("events=%d last=%v", len(evs), last)
+	}
+	if _, err := f.svc.SetFrozen(ctx, &accountsv1.SetFrozenRequest{AccountId: acc.Id, Frozen: false}); err != nil {
+		t.Fatal(err)
+	}
+	f.close(t, acc.Id)
+	for _, e := range f.changedEvents(t, acc.Id) {
+		raw, _ := json.Marshal(e)
+		if strings.Contains(string(raw), "destination_ciphertext") || strings.Contains(string(raw), dest.AccountNumber) {
+			t.Fatalf("account.changed leaks the destination: %s", raw)
+		}
+		if e["occurred_at"] == nil || e["id"] == nil {
+			t.Fatalf("envelope: %v", e)
+		}
+	}
+}
+
+func TestLeaseOnlyChangeEmitsNothing(t *testing.T) {
+	f, _, _ := closeFixture(t)
+	acc := f.activeAccount(t, "cust-au2", 1000)
+	before := len(f.changedEvents(t, acc.Id))
+	if _, err := f.pool.Exec(context.Background(), `UPDATE accounts SET close_checked_at=now(), close_lease_until=now(), close_lease_owner=gen_random_uuid() WHERE id=$1`, acc.Id); err != nil {
+		t.Fatal(err)
+	}
+	if after := len(f.changedEvents(t, acc.Id)); after != before {
+		t.Fatalf("lease-only change emitted %d events", after-before)
+	}
+}
+
+func TestSnapshotAccounts(t *testing.T) {
+	f, _, _ := closeFixture(t)
+	ctx := context.Background()
+	acc := f.withDebt(t, "cust-au3", 1000, 300)
+	r, err := f.svc.SnapshotAccounts(ctx, &accountsv1.SnapshotAccountsRequest{AccountIds: []string{acc.Id}})
+	if err != nil || r.Count != 1 {
+		t.Fatalf("snapshot: %v %+v", err, r)
+	}
+	var raw []byte
+	if err := f.pool.QueryRow(ctx, `SELECT payload->'after' FROM outbox WHERE payload->>'type'='snapshot.account' AND payload->>'aggregate_id'=$1`, acc.Id).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	var after struct {
+		Account  json.RawMessage  `json:"account"`
+		Balances map[string]int64 `json:"balances"`
+		Hash     string           `json:"snapshot_hash"`
+	}
+	if err := json.Unmarshal(raw, &after); err != nil {
+		t.Fatal(err)
+	}
+	if after.Balances["receivable"] != 300 || after.Balances["collateral_held"] != 1000 {
+		t.Fatalf("balances: %v", after.Balances)
+	}
+	want, _ := SnapshotHash(after.Account, after.Balances)
+	if after.Hash != want || len(after.Hash) != 64 {
+		t.Fatalf("hash %s want %s", after.Hash, want)
+	}
+}
+
+func TestRunSnapshotsOncePerDay(t *testing.T) {
+	f, _, _ := closeFixture(t)
+	ctx := context.Background()
+	f.activeAccount(t, "cust-au4", 1000)
+	f.activeAccount(t, "cust-au5", 1000)
+	n1, err := f.svc.SnapshotDaily(ctx)
+	if err != nil || n1 != 2 {
+		t.Fatalf("first run: %d %v", n1, err)
+	}
+	if n2, err := f.svc.SnapshotDaily(ctx); err != nil || n2 != 0 {
+		t.Fatalf("second run same day: %d %v", n2, err)
+	}
+}
+
+func TestInstructionReadAudited(t *testing.T) {
+	f, _, _ := closeFixture(t)
+	acc := f.activeAccount(t, "cust-au6", 1000)
+	p := f.closeToPayout(t, acc.Id)
+	if _, err := f.svc.GetPayoutInstruction(context.Background(), &accountsv1.GetPayoutInstructionRequest{AttemptId: p.AttemptId}); err != nil {
+		t.Fatal(err)
+	}
+	if f.events(t, "payout.instruction_read") != 1 {
+		t.Fatal("instruction read event")
+	}
+	if n := f.count(t, f.pool, `SELECT count(*) FROM outbox WHERE payload->>'type'='payout.instruction_read' AND payload::text LIKE '%'||$1||'%'`, dest.AccountNumber); n != 0 {
+		t.Fatal("instruction_read must not carry the number")
+	}
+}
