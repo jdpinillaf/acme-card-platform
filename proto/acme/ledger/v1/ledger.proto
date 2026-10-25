@@ -22,6 +22,17 @@ service LedgerService {
   rpc ReleaseHold(ReleaseHoldRequest) returns (ReleaseHoldResponse);
   // PostRefund credits the receivable (may go negative: credit balance). Idempotent on reference.
   rpc PostRefund(PostRefundRequest) returns (PostJournalResponse);
+  // PostPayment credits the receivable with a confirmed customer payment. Idempotent on reference.
+  rpc PostPayment(PostPaymentRequest) returns (PostJournalResponse);
+  // PostPaymentReturn reverses a returned payment (receivable goes back up). Idempotent on reference.
+  rpc PostPaymentReturn(PostPaymentRequest) returns (PostJournalResponse);
+}
+
+message PostPaymentRequest {
+  string account_id = 1;
+  string reference = 2;
+  int64 amount_minor = 3;
+  acme.common.v1.RequestMeta meta = 4;
 }
 
 enum HoldRelease {
@@ -119,6 +130,7 @@ message GetBalancesResponse {
   string currency = 1;
   repeated Balance balances = 2;
   int64 holds_minor = 3;
-  // available = max(0, collateral_held - max(receivable, 0) - holds)
+  // available = max(0, collateral_held - receivable - holds); receivable is signed (negative = credit balance)
   int64 available_minor = 4;
+  int64 receivable_minor = 5;
 }

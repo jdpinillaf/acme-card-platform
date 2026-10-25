@@ -22,6 +22,75 @@ service AccountsService {
   rpc SetFrozen(SetFrozenRequest) returns (GetAccountResponse);
   rpc SetPurchaseLimit(SetPurchaseLimitRequest) returns (GetAccountResponse);
   rpc ListTransactions(ListTransactionsRequest) returns (ListTransactionsResponse);
+
+  // Customer repayments (Sprint 3).
+  rpc CreatePayment(CreatePaymentRequest) returns (PaymentResponse);
+  // SettlePayment is driven by the bank webhook (settled | failed). Idempotent on external_ref.
+  rpc SettlePayment(SettlePaymentRequest) returns (PaymentResponse);
+  // ReturnPayment is driven by the bank webhook within the return window. Idempotent on return_ref.
+  rpc ReturnPayment(ReturnPaymentRequest) returns (PaymentResponse);
+  rpc ListPayments(ListPaymentsRequest) returns (ListPaymentsResponse);
+}
+
+enum PaymentStatus {
+  PAYMENT_STATUS_UNSPECIFIED = 0;
+  PAYMENT_STATUS_PENDING = 1;
+  PAYMENT_STATUS_SETTLING = 2;
+  PAYMENT_STATUS_SETTLED = 3;
+  PAYMENT_STATUS_FAILED = 4;
+  PAYMENT_STATUS_EXPIRED = 5;
+  PAYMENT_STATUS_RETURNING = 6;
+  PAYMENT_STATUS_RETURNED = 7;
+}
+
+message Payment {
+  string id = 1;
+  string account_id = 2;
+  acme.common.v1.Money amount = 3;
+  PaymentStatus status = 4;
+  string external_ref = 5;
+  string return_ref = 6;
+  google.protobuf.Timestamp created_at = 7;
+  google.protobuf.Timestamp settled_at = 8;
+  google.protobuf.Timestamp returned_at = 9;
+}
+
+message PaymentResponse {
+  Payment payment = 1;
+  Account account = 2;
+  bool replayed = 3;
+}
+
+message CreatePaymentRequest {
+  string account_id = 1;
+  int64 amount_minor = 2;
+  acme.common.v1.RequestMeta meta = 3;
+}
+
+message SettlePaymentRequest {
+  string payment_id = 1;
+  string external_ref = 2;
+  int64 amount_minor = 3;
+  string currency = 4;
+  PaymentStatus status = 5; // SETTLED or FAILED
+  acme.common.v1.RequestMeta meta = 6;
+}
+
+message ReturnPaymentRequest {
+  string payment_id = 1;
+  string return_ref = 2;
+  int64 amount_minor = 3;
+  acme.common.v1.RequestMeta meta = 4;
+}
+
+message ListPaymentsRequest {
+  string account_id = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+}
+message ListPaymentsResponse {
+  repeated Payment payments = 1;
+  string next_page_token = 2;
 }
 
 enum AuthorizationStatus {
@@ -152,6 +221,11 @@ message Account {
   int64 purchase_limit_minor = 9;
   google.protobuf.Timestamp created_at = 10;
   google.protobuf.Timestamp updated_at = 11;
+  // Debt owed (max(receivable, 0)) and the customer's credit balance (max(-receivable, 0)).
+  int64 outstanding_minor = 12;
+  int64 credit_balance_minor = 13;
+  // System restriction (e.g. "payment_returned"); empty when none.
+  string restricted_reason = 14;
 }
 
 message Deposit {
