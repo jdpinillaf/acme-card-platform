@@ -1,0 +1,156 @@
+syntax = "proto3";
+
+package acme.audit.v1;
+
+import "acme/common/v1/common.proto";
+import "google/protobuf/timestamp.proto";
+
+// AuditService is the auditor's read side of the trail plus its integrity jobs (Sprint 6, ADR-021).
+service AuditService {
+  rpc QueryEvents(QueryEventsRequest) returns (QueryEventsResponse);
+  // Verify recomputes the hash chain, checks the signed checkpoints, per-source gaps and stuck outboxes.
+  rpc Verify(VerifyRequest) returns (VerifyReport);
+  rpc CreateCheckpoint(CreateCheckpointRequest) returns (Checkpoint);
+  rpc RunReconciliation(RunReconciliationRequest) returns (ReconciliationReport);
+  rpc GetReconciliation(GetReconciliationRequest) returns (ReconciliationReport);
+  // Replay rebuilds an account from the trail and compares it with the live state.
+  rpc Replay(ReplayRequest) returns (ReplayReport);
+  rpc CreateExport(CreateExportRequest) returns (Export);
+  rpc GetExport(GetExportRequest) returns (GetExportResponse);
+  rpc RunRetention(RunRetentionRequest) returns (RetentionReport);
+}
+
+message AuditEvent {
+  string id = 1;
+  string event_type = 2;
+  string aggregate_type = 3;
+  string aggregate_id = 4;
+  string actor = 5;
+  int32 http_status = 6;
+  bytes before_json = 7;
+  bytes after_json = 8;
+  google.protobuf.Timestamp occurred_at = 9;
+  google.protobuf.Timestamp recorded_at = 10;
+  string source = 11;
+  int64 source_seq = 12;
+  int64 chain_seq = 13;
+  string hash = 14;
+  bool redacted = 15;
+}
+
+message EventFilter {
+  string account_id = 1;
+  string event_type = 2;
+  string actor = 3;
+  google.protobuf.Timestamp from = 4;
+  google.protobuf.Timestamp to = 5;
+}
+
+message QueryEventsRequest {
+  EventFilter filter = 1;
+  string page_token = 2;
+  int32 page_size = 3;
+  acme.common.v1.RequestMeta meta = 4;
+}
+message QueryEventsResponse {
+  repeated AuditEvent events = 1;
+  string next_page_token = 2;
+}
+
+message VerifyRequest {
+  acme.common.v1.RequestMeta meta = 1;
+}
+message Gap {
+  string source = 1;
+  int64 from_seq = 2;
+  int64 to_seq = 3;
+}
+message StuckOutbox {
+  string source = 1;
+  int64 count = 2;
+  google.protobuf.Timestamp oldest = 3;
+}
+message VerifyReport {
+  bool chain_valid = 1;
+  int64 first_bad_chain_seq = 2;
+  int64 checked = 3;
+  bool checkpoints_valid = 4;
+  int32 checkpoints = 5;
+  repeated Gap gaps = 6;
+  repeated StuckOutbox stuck_outbox = 7;
+  string detail = 8;
+}
+
+message CreateCheckpointRequest {
+  acme.common.v1.RequestMeta meta = 1;
+}
+message Checkpoint {
+  int64 chain_seq = 1;
+  string hash = 2;
+  google.protobuf.Timestamp created_at = 3;
+  string prev_checkpoint_sha256 = 4;
+  string s3_key = 5;
+  string signature = 6;
+}
+
+message RunReconciliationRequest {
+  acme.common.v1.RequestMeta meta = 1;
+}
+message GetReconciliationRequest {
+  acme.common.v1.RequestMeta meta = 1;
+}
+message ReconciliationCheck {
+  string name = 1;
+  int64 violations = 2;
+}
+message ReconciliationReport {
+  string run_id = 1;
+  google.protobuf.Timestamp ran_at = 2;
+  repeated ReconciliationCheck checks = 3;
+  int64 total_violations = 4;
+  string s3_key = 5;
+}
+
+message ReplayRequest {
+  string account_id = 1;
+  acme.common.v1.RequestMeta meta = 2;
+}
+message Difference {
+  string field = 1;
+  string audit = 2;
+  string live = 3;
+}
+message ReplayReport {
+  string account_id = 1;
+  repeated Difference differences = 2;
+  string based_on_event = 3;
+}
+
+message CreateExportRequest {
+  EventFilter filter = 1;
+  acme.common.v1.RequestMeta meta = 2;
+}
+message Export {
+  string id = 1;
+  string s3_key = 2;
+  int64 count = 3;
+  string sha256 = 4;
+  google.protobuf.Timestamp created_at = 5;
+}
+message GetExportRequest {
+  string id = 1;
+  acme.common.v1.RequestMeta meta = 2;
+}
+message GetExportResponse {
+  Export export = 1;
+  bytes body = 2;
+}
+
+message RunRetentionRequest {
+  google.protobuf.Timestamp now = 1;
+}
+message RetentionReport {
+  int64 archived = 1;
+  int64 purged = 2;
+  string manifest_key = 3;
+}

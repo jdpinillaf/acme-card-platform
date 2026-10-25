@@ -28,6 +28,13 @@ CREATE TABLE outbox (
 );
 CREATE INDEX outbox_unpublished_idx ON outbox (seq) WHERE published_at IS NULL;`
 
+// SequenceMigration is the per-source publish counter each service adds (Sprint 6).
+const SequenceMigration = `
+CREATE TABLE outbox_sequence (
+    source   text   PRIMARY KEY,
+    next_seq bigint NOT NULL CHECK (next_seq >= 1)
+);`
+
 // Execer is satisfied by pgx.Tx, *pgx.Conn and *pgxpool.Pool.
 type Execer interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
@@ -49,14 +56,15 @@ func Enqueue(ctx context.Context, tx Execer, evs ...events.Event) error {
 
 // Relay moves unpublished rows to a Publisher.
 type Relay struct {
-	pool  *pgxpool.Pool
-	pub   events.Publisher
-	batch int
+	pool   *pgxpool.Pool
+	pub    events.Publisher
+	batch  int
+	source string
 }
 
-// NewRelay builds a relay publishing up to batch events per round.
-func NewRelay(pool *pgxpool.Pool, pub events.Publisher, batch int) *Relay {
-	return &Relay{pool: pool, pub: pub, batch: batch}
+// NewRelay builds a relay publishing up to batch events per round for source (the service name).
+func NewRelay(pool *pgxpool.Pool, pub events.Publisher, batch int, source string) *Relay {
+	return &Relay{pool: pool, pub: pub, batch: batch, source: source}
 }
 
 // RelayOnce publishes one batch. Rows are locked with SKIP LOCKED so several relay workers
@@ -99,6 +107,21 @@ func (r *Relay) RelayOnce(ctx context.Context) (int, error) {
 	}
 	if len(evs) == 0 {
 		return 0, nil
+	}
+	// Contiguous per-source numbers, assigned under the counter's row lock inside this
+	// transaction: a failed publish rolls the numbers back with it, so audit can detect any gap.
+	if _, err := tx.Exec(ctx, `INSERT INTO outbox_sequence (source, next_seq) VALUES ($1, 1) ON CONFLICT DO NOTHING`, r.source); err != nil {
+		return 0, fmt.Errorf("outbox: sequence: %w", err)
+	}
+	var next int64
+	if err := tx.QueryRow(ctx, `SELECT next_seq FROM outbox_sequence WHERE source=$1 FOR UPDATE`, r.source).Scan(&next); err != nil {
+		return 0, fmt.Errorf("outbox: sequence: %w", err)
+	}
+	for i := range evs {
+		evs[i].Source, evs[i].SourceSeq = r.source, next+int64(i)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE outbox_sequence SET next_seq=$2 WHERE source=$1`, r.source, next+int64(len(evs))); err != nil {
+		return 0, fmt.Errorf("outbox: sequence: %w", err)
 	}
 	if err := r.pub.Publish(ctx, evs); err != nil {
 		return 0, err

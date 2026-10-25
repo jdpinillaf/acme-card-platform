@@ -103,8 +103,8 @@ func startStackWith(t *testing.T, cfg stackConfig) *stack {
 
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
 	pub := events.NewSNSPublisher(aws.SNS, aws.TopicARN)
-	for _, p := range []*pgxpool.Pool{s.accounts, s.ledger, s.gateway, s.billing} {
-		go outbox.NewRelay(p, pub, 100).Run(ctx, 100*time.Millisecond, quiet)
+	for source, p := range map[string]*pgxpool.Pool{"accounts": s.accounts, "ledger": s.ledger, "gateway": s.gateway, "billing": s.billing} {
+		go outbox.NewRelay(p, pub, 100, source).Run(ctx, 100*time.Millisecond, quiet)
 	}
 	go audittest.NewConsumer(aws.SQS, aws.QueueURL, s.audit).Run(ctx)
 

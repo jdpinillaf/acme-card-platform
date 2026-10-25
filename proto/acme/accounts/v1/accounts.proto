@@ -57,6 +57,16 @@ service AccountsService {
   rpc SettlePayout(SettlePayoutRequest) returns (PayoutResponse);
   // GetPayoutInstruction returns the decrypted destination to the bank only.
   rpc GetPayoutInstruction(GetPayoutInstructionRequest) returns (PayoutInstruction);
+
+  // Audit (Sprint 6): emit snapshot.account events now (all non-cancelled accounts when ids is empty).
+  rpc SnapshotAccounts(SnapshotAccountsRequest) returns (SnapshotAccountsResponse);
+}
+
+message SnapshotAccountsRequest {
+  repeated string account_ids = 1;
+}
+message SnapshotAccountsResponse {
+  int32 count = 1;
 }
 
 message Destination {

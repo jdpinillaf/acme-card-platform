@@ -64,7 +64,7 @@ func main() {
 		log.Error("aws", "err", err)
 		os.Exit(1)
 	}
-	go outbox.NewRelay(pool, events.NewSNSPublisher(clients.SNS, cfg.SNSTopicARN), 100).Run(ctx, 250*time.Millisecond, log)
+	go outbox.NewRelay(pool, events.NewSNSPublisher(clients.SNS, cfg.SNSTopicARN), 100, "gateway").Run(ctx, 250*time.Millisecond, log)
 
 	conn, err := grpcx.Dial(cfg.AccountsGRPCAddr)
 	if err != nil {
