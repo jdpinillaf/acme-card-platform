@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 
@@ -194,5 +196,65 @@ func TestBankWebhookVerifiesSignatureAndRecordsRejections(t *testing.T) {
 	bad := `{"deposit_id":"x","external_ref":"r","amount_minor":1,"currency":"USD","status":"maybe"}`
 	if w := do(h, "POST", "/v1/webhooks/bank/deposits", bad, signedWebhook(t, bad, []byte("bank"), time.Now())); w.Code != 400 {
 		t.Fatalf("bad status: %d", w.Code)
+	}
+}
+
+type countingSink struct{ n int }
+
+func (c *countingSink) Exec(context.Context, string, ...any) (pgconn.CommandTag, error) {
+	c.n++
+	return pgconn.CommandTag{}, nil
+}
+
+type allowAll struct{}
+
+func (allowAll) Allow(context.Context, string, time.Time) (bool, time.Duration, error) {
+	return true, 0, nil
+}
+
+func TestRejectedWebhooksAreNotAuditedPerRequest(t *testing.T) {
+	sink := &countingSink{}
+	rej := &nopRejections{}
+	h := New(Deps{Accounts: &fakeAccounts{}, JWTSecret: jwtSecret, BankSecret: []byte("bank"), WebhookTolerance: 5 * time.Minute,
+		Rejections: rej, Limiter: allowAll{}, AuditSink: sink})
+	body := `{"deposit_id":"d","external_ref":"r","amount_minor":1,"currency":"USD","status":"settled"}`
+	for i := 0; i < 20; i++ {
+		do(h, "POST", "/v1/webhooks/bank/deposits", body, signedWebhook(t, body, []byte("forged"), time.Now()))
+	}
+	if rej.n != 20 || sink.n != 0 {
+		t.Fatalf("rejections=%d audit writes=%d; rejected webhooks must only hit the deduped rejection log", rej.n, sink.n)
+	}
+	do(h, "POST", "/v1/webhooks/bank/deposits", body, signedWebhook(t, body, []byte("bank"), time.Now()))
+	if sink.n != 1 {
+		t.Fatalf("accepted webhook must be audited, writes=%d", sink.n)
+	}
+}
+
+type ipRecorder struct{ sources []string }
+
+func (r *ipRecorder) Record(_ context.Context, source, _ string, _ time.Time) error {
+	r.sources = append(r.sources, source)
+	return nil
+}
+
+func TestClientIPIgnoresSpoofedHeaders(t *testing.T) {
+	rec := &ipRecorder{}
+	h := New(Deps{Accounts: &fakeAccounts{}, JWTSecret: jwtSecret, BankSecret: []byte("bank"), WebhookTolerance: time.Minute,
+		Rejections: rec, DisableStateful: true, TrustedProxies: []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")}})
+	send := func(remote string, hdr map[string]string) {
+		r := httptest.NewRequest("POST", "/v1/webhooks/bank/deposits", strings.NewReader("{}"))
+		r.RemoteAddr = remote
+		for k, v := range hdr {
+			r.Header.Set(k, v)
+		}
+		h.ServeHTTP(httptest.NewRecorder(), r)
+	}
+	// Direct client (not a trusted proxy): headers are ignored entirely.
+	send("203.0.113.7:5555", map[string]string{"True-Client-IP": "1.1.1.1", "X-Forwarded-For": "2.2.2.2", "X-Real-IP": "3.3.3.3"})
+	// Via trusted proxy: the right-most untrusted XFF hop is the client; client-supplied prefix is ignored.
+	send("10.0.0.5:5555", map[string]string{"True-Client-IP": "1.1.1.1", "X-Forwarded-For": "9.9.9.9, 198.51.100.4"})
+	want := []string{"203.0.113.7", "198.51.100.4"}
+	if len(rec.sources) != 2 || rec.sources[0] != want[0] || rec.sources[1] != want[1] {
+		t.Fatalf("sources=%v want %v", rec.sources, want)
 	}
 }

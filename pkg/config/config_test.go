@@ -82,3 +82,19 @@ func TestLoadRejectsMalformedRDSSecret(t *testing.T) {
 		t.Fatal("malformed DB_CREDENTIALS must fail")
 	}
 }
+
+func TestLoadParsesTrustedProxies(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://x")
+	t.Setenv("TRUSTED_PROXY_CIDRS", "10.0.0.0/8, 172.16.0.0/12")
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.TrustedProxies) != 2 || c.TrustedProxies[1].String() != "172.16.0.0/12" {
+		t.Fatalf("%v", c.TrustedProxies)
+	}
+	t.Setenv("TRUSTED_PROXY_CIDRS", "not-a-cidr")
+	if _, err := Load(); err == nil {
+		t.Fatal("bad CIDR must fail")
+	}
+}

@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -37,6 +39,8 @@ type Config struct {
 	AWSEndpointURL   string
 	SNSTopicARN      string
 	AuditSQSQueueURL string
+
+	TrustedProxies []netip.Prefix
 }
 
 // Load reads and validates configuration from the environment.
@@ -78,6 +82,16 @@ func Load() (Config, error) {
 	}
 	if c.RateLimitPerMinute, err = getInt("RATE_LIMIT_PER_MINUTE", 60); err != nil {
 		return Config{}, err
+	}
+	for _, raw := range strings.Split(os.Getenv("TRUSTED_PROXY_CIDRS"), ",") {
+		if raw = strings.TrimSpace(raw); raw == "" {
+			continue
+		}
+		p, err := netip.ParsePrefix(raw)
+		if err != nil {
+			return Config{}, fmt.Errorf("config: TRUSTED_PROXY_CIDRS: %w", err)
+		}
+		c.TrustedProxies = append(c.TrustedProxies, p)
 	}
 	return c, nil
 }

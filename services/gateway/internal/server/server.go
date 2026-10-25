@@ -8,9 +8,10 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
+	"net/netip"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -51,6 +52,10 @@ type Deps struct {
 	AuditSink   outbox.Execer // gateway pool; audit events go to its outbox
 	Ready       []func(context.Context) error
 
+	// TrustedProxies are the load balancer networks whose X-Forwarded-For hops are believed.
+	// Requests from any other address use RemoteAddr; client-supplied IP headers are ignored.
+	TrustedProxies []netip.Prefix
+
 	// DisableStateful skips idempotency, rate limit and audit (unit tests only).
 	DisableStateful bool
 }
@@ -61,7 +66,7 @@ type server struct{ Deps }
 func New(d Deps) http.Handler {
 	s := &server{d}
 	r := chi.NewRouter()
-	r.Use(middleware.RequestID, middleware.RealIP, s.recoverer, s.timeout)
+	r.Use(middleware.RequestID, s.recoverer, s.timeout)
 
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		httpx.WriteJSON(w, 200, map[string]string{"status": "ok"})
@@ -204,7 +209,10 @@ func (s *server) bankDepositWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := webhook.Verify(s.BankSecret, raw, r.Header.Get(webhook.HeaderTimestamp), r.Header.Get(webhook.HeaderSignature), time.Now(), s.WebhookTolerance); err != nil {
-		if recErr := s.Rejections.Record(r.Context(), clientIP(r), err.Error(), time.Now()); recErr != nil {
+		// Rejections are collapsed per (source, window) in webhook_rejections; skip the per-request
+		// audit event so a flood of forged webhooks cannot grow the append-only audit log.
+		skipAudit(r.Context())
+		if recErr := s.Rejections.Record(r.Context(), s.clientIP(r), err.Error(), time.Now()); recErr != nil {
 			slog.ErrorContext(r.Context(), "record webhook rejection", "err", recErr)
 		}
 		httpx.WriteError(w, 401, err.Error(), "webhook signature rejected")
@@ -303,6 +311,14 @@ func (s *server) rateLimit(next http.Handler) http.Handler {
 
 type outcomeKey struct{}
 
+type skipAuditKey struct{}
+
+func skipAudit(ctx context.Context) {
+	if p, ok := ctx.Value(skipAuditKey{}).(*bool); ok {
+		*p = true
+	}
+}
+
 // setOutcome records the outcome for both the idempotency store and the audit event.
 func setOutcome(ctx context.Context, o idempotency.Outcome) {
 	idempotency.SetOutcome(ctx, o)
@@ -319,11 +335,15 @@ func (s *server) audit(next http.Handler) http.Handler {
 			return
 		}
 		var outcome idempotency.Outcome
+		var skip bool
 		ctx := context.WithValue(r.Context(), outcomeKey{}, &outcome)
+		ctx = context.WithValue(ctx, skipAuditKey{}, &skip)
 		ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
 		start := time.Now()
 		next.ServeHTTP(ww, r.WithContext(ctx))
-
+		if skip {
+			return
+		}
 		if outcome == "" {
 			outcome = idempotency.OutcomeForStatus(ww.Status())
 		}
@@ -333,7 +353,7 @@ func (s *server) audit(next http.Handler) http.Handler {
 		}
 		actor := auth.Subject(r)
 		if actor == "" {
-			actor = "anonymous@" + clientIP(r)
+			actor = "anonymous@" + s.clientIP(r)
 		}
 		ev := events.New("http.request", "http_request", middleware.GetReqID(r.Context()))
 		ev.Actor = actor
@@ -397,10 +417,36 @@ func writeGRPCError(w http.ResponseWriter, r *http.Request, err error) {
 	httpx.WriteError(w, httpStatus, code, msg)
 }
 
-func clientIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
+// clientIP returns the caller address. X-Forwarded-For is only trusted when the direct peer is a
+// configured proxy, and then read right to left, skipping trusted hops: the left part of the
+// header is client-controlled. True-Client-IP / X-Real-IP from clients are never trusted.
+func (s *server) clientIP(r *http.Request) string {
+	peer, err := netip.ParseAddrPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr
 	}
-	return host
+	addr := peer.Addr().Unmap()
+	if !s.trusted(addr) {
+		return addr.String()
+	}
+	hops := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
+	for i := len(hops) - 1; i >= 0; i-- {
+		hop, err := netip.ParseAddr(strings.TrimSpace(hops[i]))
+		if err != nil {
+			break
+		}
+		if !s.trusted(hop.Unmap()) {
+			return hop.Unmap().String()
+		}
+	}
+	return addr.String()
+}
+
+func (s *server) trusted(a netip.Addr) bool {
+	for _, p := range s.TrustedProxies {
+		if p.Contains(a) {
+			return true
+		}
+	}
+	return false
 }

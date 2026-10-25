@@ -3,6 +3,7 @@
 variable "name" { type = string }
 variable "region" { type = string }
 variable "vpc_id" { type = string }
+variable "vpc_cidr" { type = string }
 variable "public_subnet_ids" { type = list(string) }
 variable "private_subnet_ids" { type = list(string) }
 variable "certificate_arn" { type = string }
@@ -243,6 +244,7 @@ resource "aws_ecs_task_definition" "svc" {
       { name = "ACCOUNTS_GRPC_ADDR", value = "accounts.acme.internal:9001" },
       { name = "LEDGER_GRPC_ADDR", value = "ledger.acme.internal:9002" },
       { name = "DB_HOST", value = var.db_endpoint },
+      { name = "TRUSTED_PROXY_CIDRS", value = var.vpc_cidr }, # only the ALB sits in front of the gateway
     ]
     secrets = concat(
       [{ name = "DB_CREDENTIALS", valueFrom = var.db_master_secret_arn }],

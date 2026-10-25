@@ -81,6 +81,7 @@ module "ecs" {
   name                    = local.name
   region                  = var.region
   vpc_id                  = module.network.vpc_id
+  vpc_cidr                = var.vpc_cidr
   public_subnet_ids       = module.network.public_subnet_ids
   private_subnet_ids      = module.network.private_subnet_ids
   certificate_arn         = var.certificate_arn

@@ -78,6 +78,7 @@ func main() {
 		Idempotency:      idem,
 		Limiter:          limiter,
 		AuditSink:        pool,
+		TrustedProxies:   cfg.TrustedProxies,
 		Ready: []func(context.Context) error{
 			pool.Ping,
 			func(ctx context.Context) error {
