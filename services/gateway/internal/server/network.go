@@ -48,6 +48,7 @@ var declineReasons = map[commonv1.DeclineReason]string{
 	commonv1.DeclineReason_DECLINE_REASON_ACCOUNT_CLOSED:           "account_closed",
 	commonv1.DeclineReason_DECLINE_REASON_COLLATERAL_NOT_CONFIRMED: "collateral_not_confirmed",
 	commonv1.DeclineReason_DECLINE_REASON_CURRENCY_NOT_SUPPORTED:   "currency_not_supported",
+	commonv1.DeclineReason_DECLINE_REASON_PAYMENT_RETURNED:         "payment_returned",
 	commonv1.DeclineReason_DECLINE_REASON_CARD_FROZEN:              "card_frozen",
 	commonv1.DeclineReason_DECLINE_REASON_VELOCITY_LIMIT_EXCEEDED:  "velocity_limit_exceeded",
 	commonv1.DeclineReason_DECLINE_REASON_PURCHASE_LIMIT_EXCEEDED:  "purchase_limit_exceeded",

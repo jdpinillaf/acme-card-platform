@@ -88,6 +88,8 @@ func New(d Deps) http.Handler {
 			r.Post("/unfreeze", s.setFrozen(false))
 			r.Put("/limits", s.setLimits)
 			r.Get("/transactions", s.listTransactions)
+			r.Post("/payments", s.createPayment)
+			r.Get("/payments", s.listPayments)
 		})
 	})
 
@@ -96,6 +98,8 @@ func New(d Deps) http.Handler {
 			r.Use(s.audit)
 		}
 		r.Post("/v1/webhooks/bank/deposits", s.bankDepositWebhook)
+		r.Post("/v1/webhooks/bank/payments", s.bankPaymentWebhook)
+		r.Post("/v1/webhooks/bank/payments/{paymentID}/return", s.bankPaymentReturn)
 		r.Post("/v1/network/authorizations", s.networkAuthorize)
 		r.Post("/v1/network/authorizations/{authID}/capture", s.networkCapture)
 		r.Post("/v1/network/authorizations/{authID}/reversal", s.networkReverse)
@@ -116,6 +120,9 @@ type accountJSON struct {
 	AvailableCreditMinor int64  `json:"available_credit_minor"`
 	CollateralMinor      int64  `json:"collateral_minor"`
 	PurchaseLimitMinor   int64  `json:"purchase_limit_minor"`
+	OutstandingMinor     int64  `json:"outstanding_minor"`
+	CreditBalanceMinor   int64  `json:"credit_balance_minor"`
+	RestrictedReason     string `json:"restricted_reason,omitempty"`
 	CreatedAt            string `json:"created_at,omitempty"`
 	UpdatedAt            string `json:"updated_at,omitempty"`
 }
@@ -153,7 +160,8 @@ func ts(t *timestamppb.Timestamp) string {
 func toAccountJSON(a *accountsv1.Account) accountJSON {
 	return accountJSON{ID: a.Id, CustomerID: a.CustomerId, Currency: a.Currency, State: accountStates[a.State], Frozen: a.Frozen,
 		CreditLimitMinor: a.CreditLimitMinor, AvailableCreditMinor: a.AvailableCreditMinor, CollateralMinor: a.CollateralMinor,
-		PurchaseLimitMinor: a.PurchaseLimitMinor, CreatedAt: ts(a.CreatedAt), UpdatedAt: ts(a.UpdatedAt)}
+		PurchaseLimitMinor: a.PurchaseLimitMinor, CreatedAt: ts(a.CreatedAt), UpdatedAt: ts(a.UpdatedAt),
+		OutstandingMinor: a.OutstandingMinor, CreditBalanceMinor: a.CreditBalanceMinor, RestrictedReason: a.RestrictedReason}
 }
 
 func toDepositJSON(d *accountsv1.Deposit) depositJSON {
