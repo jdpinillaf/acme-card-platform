@@ -13,7 +13,10 @@ ALTER TABLE accounts
     ADD COLUMN close_reason           text,
     ADD COLUMN destination_ciphertext text,
     ADD COLUMN destination_last4      text,
-    ADD COLUMN final_due_at           timestamptz;
+    ADD COLUMN final_due_at           timestamptz,
+    -- collateral applied to the debt at close: amount fixed at reserve, seq makes each application a new reference
+    ADD COLUMN close_apply_amount     bigint CHECK (close_apply_amount >= 0),
+    ADD COLUMN close_apply_seq        int NOT NULL DEFAULT 0;
 
 ALTER TABLE deposits DROP CONSTRAINT deposits_status_check;
 ALTER TABLE deposits ADD CONSTRAINT deposits_status_check CHECK (status IN ('pending','settling','settled','failed','voided'));

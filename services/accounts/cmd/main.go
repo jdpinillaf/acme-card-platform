@@ -11,6 +11,7 @@ import (
 	"google.golang.org/grpc"
 
 	accountsv1 "github.com/acme/acme-card/gen/go/acme/accounts/v1"
+	billingv1 "github.com/acme/acme-card/gen/go/acme/billing/v1"
 	ledgerv1 "github.com/acme/acme-card/gen/go/acme/ledger/v1"
 	"github.com/acme/acme-card/pkg/awsx"
 	"github.com/acme/acme-card/pkg/config"
@@ -57,7 +58,14 @@ func main() {
 	}
 	defer conn.Close()
 
-	svc := accounts.NewService(pool, ledgerv1.NewLedgerServiceClient(conn))
+	billingConn, err := grpcx.Dial(cfg.BillingGRPCAddr)
+	if err != nil {
+		log.Error("dial billing", "err", err)
+		os.Exit(1)
+	}
+	defer billingConn.Close()
+
+	svc := accounts.NewService(pool, ledgerv1.NewLedgerServiceClient(conn), accounts.WithBilling(billingv1.NewBillingServiceClient(billingConn)))
 	go svc.RunExpiry(ctx, time.Minute, log)
 	log.Info("accounts listening", "addr", cfg.GRPCAddr)
 	if err := grpcx.Serve(ctx, cfg.GRPCAddr, func(s *grpc.Server) { accountsv1.RegisterAccountsServiceServer(s, svc) }); err != nil {

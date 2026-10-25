@@ -240,6 +240,9 @@ func (s *Service) RunExpiry(ctx context.Context, every time.Duration, log *slog.
 		if _, err := s.ReevaluateRestrictions(ctx, 500); err != nil && ctx.Err() == nil {
 			log.Error("restriction re-evaluation failed", "err", err)
 		}
+		if err := s.AdvanceClosing(ctx, 200); err != nil && ctx.Err() == nil {
+			log.Error("close saga sweep failed", "err", err)
+		}
 		if err := s.velocity.Sweep(ctx, s.clock.Now()); err != nil && ctx.Err() == nil {
 			log.Error("velocity window sweep failed", "err", err)
 		}

@@ -15,6 +15,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	accountsv1 "github.com/acme/acme-card/gen/go/acme/accounts/v1"
+	billingv1 "github.com/acme/acme-card/gen/go/acme/billing/v1"
 	commonv1 "github.com/acme/acme-card/gen/go/acme/common/v1"
 	ledgerv1 "github.com/acme/acme-card/gen/go/acme/ledger/v1"
 	"github.com/acme/acme-card/pkg/clock"
@@ -23,6 +24,7 @@ import (
 	"github.com/acme/acme-card/pkg/money"
 	"github.com/acme/acme-card/pkg/outbox"
 	"github.com/acme/acme-card/pkg/ratelimit"
+	"github.com/acme/acme-card/pkg/secretbox"
 )
 
 const uniqueViolation = "23505"
@@ -37,6 +39,11 @@ type Service struct {
 	ledger   ledgerv1.LedgerServiceClient
 	clock    clock.Clock
 	velocity *ratelimit.Limiter
+	billing  billingv1.BillingServiceClient // close saga: final statement (Sprint 5)
+	box      *secretbox.Box                 // close saga: destination account encryption
+	// returnWindow is how long a settled payment can still be returned (ADR-018); the close saga
+	// holds the payout until every window has passed.
+	returnWindow time.Duration
 }
 
 // Option configures the Service.
@@ -45,6 +52,15 @@ type Option func(*Service)
 // WithClock injects the clock used for transaction timestamps, expiry and windows.
 func WithClock(c clock.Clock) Option { return func(s *Service) { s.clock = c } }
 
+// WithBilling lets the close saga cut the final statement; without it closes wait at that stage.
+func WithBilling(b billingv1.BillingServiceClient) Option { return func(s *Service) { s.billing = b } }
+
+// WithDestinationBox sets the key that encrypts payout destinations; without it closes are refused.
+func WithDestinationBox(b *secretbox.Box) Option { return func(s *Service) { s.box = b } }
+
+// WithReturnWindow overrides the payment return window (dev load tests only).
+func WithReturnWindow(d time.Duration) Option { return func(s *Service) { s.returnWindow = d } }
+
 // WithVelocity overrides the card velocity limit (default 10 attempts per minute).
 func WithVelocity(limit int, window time.Duration) Option {
 	return func(s *Service) { s.velocity = ratelimit.New(s.pool, limit, window) }
@@ -52,7 +68,7 @@ func WithVelocity(limit int, window time.Duration) Option {
 
 // NewService builds the accounts service.
 func NewService(pool *pgxpool.Pool, ledger ledgerv1.LedgerServiceClient, opts ...Option) *Service {
-	s := &Service{pool: pool, ledger: ledger, clock: clock.System{}}
+	s := &Service{pool: pool, ledger: ledger, clock: clock.System{}, returnWindow: ReturnWindow}
 	s.velocity = ratelimit.New(pool, VelocityLimit, VelocityWindow)
 	for _, o := range opts {
 		o(s)
@@ -74,11 +90,14 @@ type accountRow struct {
 	ClockOffset   int64      `json:"clock_offset_seconds"`
 	ActivatedAt   *time.Time `json:"activated_at,omitempty"`
 	Delinquency   string     `json:"delinquency"`
+	CloseStage    *string    `json:"close_stage,omitempty"`
+	CloseReqAt    *time.Time `json:"close_requested_at,omitempty"`
+	DestLast4     *string    `json:"destination_last4,omitempty"`
 	CreatedAt     time.Time  `json:"-"`
 	UpdatedAt     time.Time  `json:"-"`
 }
 
-const accountCols = `id::text, customer_id, currency, state, frozen, collateral_minor, credit_limit_minor, purchase_limit_minor, created_at, updated_at, restricted_reason, exposure_epoch, clock_offset_seconds, activated_at, delinquency`
+const accountCols = `id::text, customer_id, currency, state, frozen, collateral_minor, credit_limit_minor, purchase_limit_minor, created_at, updated_at, restricted_reason, exposure_epoch, clock_offset_seconds, activated_at, delinquency, close_stage, close_requested_at, destination_last4`
 
 func (a accountRow) restriction() string {
 	if a.Restricted == nil {
@@ -89,7 +108,7 @@ func (a accountRow) restriction() string {
 
 func scanAccount(row pgx.Row) (accountRow, error) {
 	var a accountRow
-	err := row.Scan(&a.ID, &a.CustomerID, &a.Currency, &a.State, &a.Frozen, &a.Collateral, &a.CreditLimit, &a.PurchaseLimit, &a.CreatedAt, &a.UpdatedAt, &a.Restricted, &a.Epoch, &a.ClockOffset, &a.ActivatedAt, &a.Delinquency)
+	err := row.Scan(&a.ID, &a.CustomerID, &a.Currency, &a.State, &a.Frozen, &a.Collateral, &a.CreditLimit, &a.PurchaseLimit, &a.CreatedAt, &a.UpdatedAt, &a.Restricted, &a.Epoch, &a.ClockOffset, &a.ActivatedAt, &a.Delinquency, &a.CloseStage, &a.CloseReqAt, &a.DestLast4)
 	return a, err
 }
 
@@ -105,6 +124,7 @@ func (s *Service) accountProto(a accountRow, v ledgerView) *accountsv1.Account {
 	available := v.Available
 	return &accountsv1.Account{
 		AccountTime: timestamppb.New(s.accountNow(a)), ActivatedAt: tsp(a.ActivatedAt), Delinquency: a.Delinquency,
+		CloseStage: strOr(a.CloseStage), CloseRequestedAt: tsp(a.CloseReqAt), DestinationLast4: strOr(a.DestLast4),
 		Id: a.ID, CustomerId: a.CustomerID, Currency: a.Currency, State: stateProto(a.State), Frozen: a.Frozen,
 		CreditLimitMinor: a.CreditLimit, AvailableCreditMinor: available, CollateralMinor: a.Collateral,
 		PurchaseLimitMinor: a.PurchaseLimit, CreatedAt: timestamppb.New(a.CreatedAt), UpdatedAt: timestamppb.New(a.UpdatedAt),

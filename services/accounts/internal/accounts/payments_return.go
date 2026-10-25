@@ -45,7 +45,7 @@ func (s *Service) ReturnPayment(ctx context.Context, req *accountsv1.ReturnPayme
 		default:
 			return grpcx.Error(codes.FailedPrecondition, "not_settled", "only settled payments can be returned")
 		}
-		if s.clock.Now().Sub(*p.SettledAt) > ReturnWindow {
+		if s.clock.Now().Sub(*p.SettledAt) > s.returnWindow {
 			return grpcx.Error(codes.FailedPrecondition, "return_window_expired", "returns are only accepted within 5 days of settlement")
 		}
 		if req.AmountMinor != p.Amount {

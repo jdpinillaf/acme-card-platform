@@ -67,7 +67,7 @@ func NewService(pool *pgxpool.Pool, ledger ledgerv1.LedgerServiceClient, account
 
 const statementCols = `id::text, account_id::text, cycle, currency, period_start, period_end, due_date, previous_balance_minor, purchases_minor,
 	refunds_minor, payments_minor, returns_minor, interest_minor, fees_minor, waivers_minor, collateral_applied_minor, new_balance_minor,
-	minimum_due_minor, past_due_minor, principal_minor, interest_bucket_minor, fee_bucket_minor, grace, balance_only, s3_key, sha256, generated_at`
+	minimum_due_minor, past_due_minor, principal_minor, interest_bucket_minor, fee_bucket_minor, grace, balance_only, s3_key, sha256, generated_at, final`
 
 type statementRow struct {
 	ID, AccountID, Currency, S3Key, SHA256 string
@@ -78,14 +78,14 @@ type statementRow struct {
 	Returns, Interest, Fees, Waivers       int64
 	Collateral, NewBalance, Minimum        int64
 	PastDue, Principal, IBucket, FBucket   int64
-	Grace, BalanceOnly                     bool
+	Grace, BalanceOnly, Final              bool
 }
 
 func scanStatement(row pgx.Row) (statementRow, error) {
 	var s statementRow
 	err := row.Scan(&s.ID, &s.AccountID, &s.Cycle, &s.Currency, &s.PeriodStart, &s.PeriodEnd, &s.DueDate, &s.Previous, &s.Purchases,
 		&s.Refunds, &s.Payments, &s.Returns, &s.Interest, &s.Fees, &s.Waivers, &s.Collateral, &s.NewBalance,
-		&s.Minimum, &s.PastDue, &s.Principal, &s.IBucket, &s.FBucket, &s.Grace, &s.BalanceOnly, &s.S3Key, &s.SHA256, &s.GeneratedAt)
+		&s.Minimum, &s.PastDue, &s.Principal, &s.IBucket, &s.FBucket, &s.Grace, &s.BalanceOnly, &s.S3Key, &s.SHA256, &s.GeneratedAt, &s.Final)
 	return s, err
 }
 
@@ -110,7 +110,7 @@ func (s statementRow) proto() *billingv1.Statement {
 		PreviousBalanceMinor: s.Previous, PurchasesMinor: s.Purchases, RefundsMinor: s.Refunds, PaymentsMinor: s.Payments,
 		ReturnsMinor: s.Returns, InterestMinor: s.Interest, FeesMinor: s.Fees, WaiversMinor: s.Waivers, CollateralAppliedMinor: s.Collateral,
 		NewBalanceMinor: s.NewBalance, MinimumDueMinor: s.Minimum, PrincipalMinor: s.Principal, InterestBucketMinor: s.IBucket,
-		FeeBucketMinor: s.FBucket, S3Key: s.S3Key, Sha256: s.SHA256, GeneratedAt: timestamppb.New(s.GeneratedAt)}
+		FeeBucketMinor: s.FBucket, S3Key: s.S3Key, Sha256: s.SHA256, GeneratedAt: timestamppb.New(s.GeneratedAt), Final: s.Final}
 }
 
 func (s *Service) loadStatements(ctx context.Context, accountID string) ([]statementRow, error) {
