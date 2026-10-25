@@ -13,6 +13,7 @@ import (
 	"google.golang.org/grpc/health/grpc_health_v1"
 
 	accountsv1 "github.com/acme/acme-card/gen/go/acme/accounts/v1"
+	billingv1 "github.com/acme/acme-card/gen/go/acme/billing/v1"
 	"github.com/acme/acme-card/pkg/awsx"
 	"github.com/acme/acme-card/pkg/config"
 	"github.com/acme/acme-card/pkg/db"
@@ -71,6 +72,19 @@ func main() {
 		os.Exit(1)
 	}
 	defer conn.Close()
+	billingConn, err := grpcx.Dial(cfg.BillingGRPCAddr)
+	if err != nil {
+		log.Error("dial billing", "err", err)
+		os.Exit(1)
+	}
+	defer billingConn.Close()
+	if cfg.DevClockEnabled {
+		if cfg.AppEnv != "dev" { // allow-list: only the local dev environment
+			log.Error("DEV_CLOCK_ENABLED is only allowed with APP_ENV=dev", "app_env", cfg.AppEnv)
+			os.Exit(1)
+		}
+		log.Warn("simulated account clock route enabled (dev only)")
+	}
 
 	idem := idempotency.NewStore(pool, cfg.IdempotencyTTL)
 	limiter := ratelimit.New(pool, cfg.RateLimitPerMinute, time.Minute)
@@ -78,6 +92,8 @@ func main() {
 
 	handler := server.New(server.Deps{
 		Accounts:         accountsv1.NewAccountsServiceClient(conn),
+		Billing:          billingv1.NewBillingServiceClient(billingConn),
+		DevClock:         cfg.DevClockEnabled,
 		JWTSecret:        []byte(cfg.JWTHS256Secret),
 		BankSecret:       []byte(cfg.BankWebhookSecret),
 		NetworkSecret:    []byte(cfg.NetworkWebhookSecret),

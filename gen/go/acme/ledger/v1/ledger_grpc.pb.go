@@ -19,15 +19,19 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	LedgerService_OpenLedger_FullMethodName        = "/acme.ledger.v1.LedgerService/OpenLedger"
-	LedgerService_PostJournal_FullMethodName       = "/acme.ledger.v1.LedgerService/PostJournal"
-	LedgerService_GetBalances_FullMethodName       = "/acme.ledger.v1.LedgerService/GetBalances"
-	LedgerService_PlaceHold_FullMethodName         = "/acme.ledger.v1.LedgerService/PlaceHold"
-	LedgerService_CaptureHold_FullMethodName       = "/acme.ledger.v1.LedgerService/CaptureHold"
-	LedgerService_ReleaseHold_FullMethodName       = "/acme.ledger.v1.LedgerService/ReleaseHold"
-	LedgerService_PostRefund_FullMethodName        = "/acme.ledger.v1.LedgerService/PostRefund"
-	LedgerService_PostPayment_FullMethodName       = "/acme.ledger.v1.LedgerService/PostPayment"
-	LedgerService_PostPaymentReturn_FullMethodName = "/acme.ledger.v1.LedgerService/PostPaymentReturn"
+	LedgerService_OpenLedger_FullMethodName                = "/acme.ledger.v1.LedgerService/OpenLedger"
+	LedgerService_PostJournal_FullMethodName               = "/acme.ledger.v1.LedgerService/PostJournal"
+	LedgerService_GetBalances_FullMethodName               = "/acme.ledger.v1.LedgerService/GetBalances"
+	LedgerService_PlaceHold_FullMethodName                 = "/acme.ledger.v1.LedgerService/PlaceHold"
+	LedgerService_CaptureHold_FullMethodName               = "/acme.ledger.v1.LedgerService/CaptureHold"
+	LedgerService_ReleaseHold_FullMethodName               = "/acme.ledger.v1.LedgerService/ReleaseHold"
+	LedgerService_PostRefund_FullMethodName                = "/acme.ledger.v1.LedgerService/PostRefund"
+	LedgerService_PostPayment_FullMethodName               = "/acme.ledger.v1.LedgerService/PostPayment"
+	LedgerService_PostPaymentReturn_FullMethodName         = "/acme.ledger.v1.LedgerService/PostPaymentReturn"
+	LedgerService_PostCharge_FullMethodName                = "/acme.ledger.v1.LedgerService/PostCharge"
+	LedgerService_PostCollateralApplication_FullMethodName = "/acme.ledger.v1.LedgerService/PostCollateralApplication"
+	LedgerService_SealPeriod_FullMethodName                = "/acme.ledger.v1.LedgerService/SealPeriod"
+	LedgerService_ListEntries_FullMethodName               = "/acme.ledger.v1.LedgerService/ListEntries"
 )
 
 // LedgerServiceClient is the client API for LedgerService service.
@@ -55,6 +59,14 @@ type LedgerServiceClient interface {
 	PostPayment(ctx context.Context, in *PostPaymentRequest, opts ...grpc.CallOption) (*PostJournalResponse, error)
 	// PostPaymentReturn reverses a returned payment (receivable goes back up). Idempotent on reference.
 	PostPaymentReturn(ctx context.Context, in *PostPaymentReturnRequest, opts ...grpc.CallOption) (*PostJournalResponse, error)
+	// PostCharge posts interest, fees and their waivers against receivable (Sprint 4). Idempotent on reference.
+	PostCharge(ctx context.Context, in *PostChargeRequest, opts ...grpc.CallOption) (*PostJournalResponse, error)
+	// PostCollateralApplication applies held collateral to receivable at charge-off. Idempotent on reference.
+	PostCollateralApplication(ctx context.Context, in *PostCollateralApplicationRequest, opts ...grpc.CallOption) (*PostJournalResponse, error)
+	// SealPeriod raises the account's sealed_through watermark; later postings never get an earlier effective_at.
+	SealPeriod(ctx context.Context, in *SealPeriodRequest, opts ...grpc.CallOption) (*SealPeriodResponse, error)
+	// ListEntries lists an account's journal entries by effective_at, ordered (effective_at, id).
+	ListEntries(ctx context.Context, in *ListEntriesRequest, opts ...grpc.CallOption) (*ListEntriesResponse, error)
 }
 
 type ledgerServiceClient struct {
@@ -155,6 +167,46 @@ func (c *ledgerServiceClient) PostPaymentReturn(ctx context.Context, in *PostPay
 	return out, nil
 }
 
+func (c *ledgerServiceClient) PostCharge(ctx context.Context, in *PostChargeRequest, opts ...grpc.CallOption) (*PostJournalResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PostJournalResponse)
+	err := c.cc.Invoke(ctx, LedgerService_PostCharge_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *ledgerServiceClient) PostCollateralApplication(ctx context.Context, in *PostCollateralApplicationRequest, opts ...grpc.CallOption) (*PostJournalResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PostJournalResponse)
+	err := c.cc.Invoke(ctx, LedgerService_PostCollateralApplication_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *ledgerServiceClient) SealPeriod(ctx context.Context, in *SealPeriodRequest, opts ...grpc.CallOption) (*SealPeriodResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SealPeriodResponse)
+	err := c.cc.Invoke(ctx, LedgerService_SealPeriod_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *ledgerServiceClient) ListEntries(ctx context.Context, in *ListEntriesRequest, opts ...grpc.CallOption) (*ListEntriesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListEntriesResponse)
+	err := c.cc.Invoke(ctx, LedgerService_ListEntries_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // LedgerServiceServer is the server API for LedgerService service.
 // All implementations must embed UnimplementedLedgerServiceServer
 // for forward compatibility.
@@ -180,6 +232,14 @@ type LedgerServiceServer interface {
 	PostPayment(context.Context, *PostPaymentRequest) (*PostJournalResponse, error)
 	// PostPaymentReturn reverses a returned payment (receivable goes back up). Idempotent on reference.
 	PostPaymentReturn(context.Context, *PostPaymentReturnRequest) (*PostJournalResponse, error)
+	// PostCharge posts interest, fees and their waivers against receivable (Sprint 4). Idempotent on reference.
+	PostCharge(context.Context, *PostChargeRequest) (*PostJournalResponse, error)
+	// PostCollateralApplication applies held collateral to receivable at charge-off. Idempotent on reference.
+	PostCollateralApplication(context.Context, *PostCollateralApplicationRequest) (*PostJournalResponse, error)
+	// SealPeriod raises the account's sealed_through watermark; later postings never get an earlier effective_at.
+	SealPeriod(context.Context, *SealPeriodRequest) (*SealPeriodResponse, error)
+	// ListEntries lists an account's journal entries by effective_at, ordered (effective_at, id).
+	ListEntries(context.Context, *ListEntriesRequest) (*ListEntriesResponse, error)
 	mustEmbedUnimplementedLedgerServiceServer()
 }
 
@@ -216,6 +276,18 @@ func (UnimplementedLedgerServiceServer) PostPayment(context.Context, *PostPaymen
 }
 func (UnimplementedLedgerServiceServer) PostPaymentReturn(context.Context, *PostPaymentReturnRequest) (*PostJournalResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method PostPaymentReturn not implemented")
+}
+func (UnimplementedLedgerServiceServer) PostCharge(context.Context, *PostChargeRequest) (*PostJournalResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method PostCharge not implemented")
+}
+func (UnimplementedLedgerServiceServer) PostCollateralApplication(context.Context, *PostCollateralApplicationRequest) (*PostJournalResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method PostCollateralApplication not implemented")
+}
+func (UnimplementedLedgerServiceServer) SealPeriod(context.Context, *SealPeriodRequest) (*SealPeriodResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SealPeriod not implemented")
+}
+func (UnimplementedLedgerServiceServer) ListEntries(context.Context, *ListEntriesRequest) (*ListEntriesResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListEntries not implemented")
 }
 func (UnimplementedLedgerServiceServer) mustEmbedUnimplementedLedgerServiceServer() {}
 func (UnimplementedLedgerServiceServer) testEmbeddedByValue()                       {}
@@ -400,6 +472,78 @@ func _LedgerService_PostPaymentReturn_Handler(srv interface{}, ctx context.Conte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _LedgerService_PostCharge_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PostChargeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LedgerServiceServer).PostCharge(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LedgerService_PostCharge_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LedgerServiceServer).PostCharge(ctx, req.(*PostChargeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LedgerService_PostCollateralApplication_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PostCollateralApplicationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LedgerServiceServer).PostCollateralApplication(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LedgerService_PostCollateralApplication_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LedgerServiceServer).PostCollateralApplication(ctx, req.(*PostCollateralApplicationRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LedgerService_SealPeriod_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SealPeriodRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LedgerServiceServer).SealPeriod(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LedgerService_SealPeriod_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LedgerServiceServer).SealPeriod(ctx, req.(*SealPeriodRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LedgerService_ListEntries_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListEntriesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LedgerServiceServer).ListEntries(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LedgerService_ListEntries_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LedgerServiceServer).ListEntries(ctx, req.(*ListEntriesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // LedgerService_ServiceDesc is the grpc.ServiceDesc for LedgerService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -442,6 +586,22 @@ var LedgerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "PostPaymentReturn",
 			Handler:    _LedgerService_PostPaymentReturn_Handler,
+		},
+		{
+			MethodName: "PostCharge",
+			Handler:    _LedgerService_PostCharge_Handler,
+		},
+		{
+			MethodName: "PostCollateralApplication",
+			Handler:    _LedgerService_PostCollateralApplication_Handler,
+		},
+		{
+			MethodName: "SealPeriod",
+			Handler:    _LedgerService_SealPeriod_Handler,
+		},
+		{
+			MethodName: "ListEntries",
+			Handler:    _LedgerService_ListEntries_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

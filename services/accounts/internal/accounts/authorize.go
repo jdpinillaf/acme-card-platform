@@ -38,6 +38,9 @@ var declineProto = map[DeclineReason]commonv1.DeclineReason{
 	DeclineCollateralNotConfirmed: commonv1.DeclineReason_DECLINE_REASON_COLLATERAL_NOT_CONFIRMED,
 	DeclineCurrencyNotSupported:   commonv1.DeclineReason_DECLINE_REASON_CURRENCY_NOT_SUPPORTED,
 	DeclinePaymentReturned:        commonv1.DeclineReason_DECLINE_REASON_PAYMENT_RETURNED,
+	DeclinePastDue:                commonv1.DeclineReason_DECLINE_REASON_PAST_DUE,
+	DeclineChargedOff:             commonv1.DeclineReason_DECLINE_REASON_CHARGED_OFF,
+	DeclineOverLimit:              commonv1.DeclineReason_DECLINE_REASON_OVER_LIMIT,
 	DeclineCardFrozen:             commonv1.DeclineReason_DECLINE_REASON_CARD_FROZEN,
 	DeclineVelocity:               commonv1.DeclineReason_DECLINE_REASON_VELOCITY_LIMIT_EXCEEDED,
 	DeclinePurchaseLimit:          commonv1.DeclineReason_DECLINE_REASON_PURCHASE_LIMIT_EXCEEDED,
@@ -77,17 +80,18 @@ type authRow struct {
 	PendingOp     *string    `json:"pending_op,omitempty"`
 	PendingAmount *int64     `json:"pending_op_amount,omitempty"`
 	PendingAt     *time.Time `json:"pending_op_at,omitempty"`
+	OpEffectiveAt *time.Time `json:"op_effective_at,omitempty"`
 }
 
 const authCols = `id::text, account_id::text, network_ref, request_hash, amount_minor, currency, merchant_id, merchant_name, mcc,
 	status, decline_reason, captured_minor, refunded_minor, capture_network_ref, reversal_network_ref,
-	created_at, expires_at, captured_at, reversed_at, pending_op, pending_op_amount, pending_op_at`
+	created_at, expires_at, captured_at, reversed_at, pending_op, pending_op_amount, pending_op_at, op_effective_at`
 
 func scanAuth(row pgx.Row) (authRow, error) {
 	var a authRow
 	err := row.Scan(&a.ID, &a.AccountID, &a.NetworkRef, &a.RequestHash, &a.Amount, &a.Currency, &a.MerchantID, &a.MerchantName, &a.MCC,
 		&a.Status, &a.DeclineReason, &a.Captured, &a.Refunded, &a.CaptureRef, &a.ReversalRef,
-		&a.CreatedAt, &a.ExpiresAt, &a.CapturedAt, &a.ReversedAt, &a.PendingOp, &a.PendingAmount, &a.PendingAt)
+		&a.CreatedAt, &a.ExpiresAt, &a.CapturedAt, &a.ReversedAt, &a.PendingOp, &a.PendingAmount, &a.PendingAt, &a.OpEffectiveAt)
 	return a, err
 }
 
@@ -193,7 +197,7 @@ func (s *Service) Authorize(ctx context.Context, req *accountsv1.AuthorizeReques
 		if err != nil {
 			return err
 		}
-		reason := EvaluateDecline(DeclineInput{State: acc.State, Frozen: acc.Frozen, Restricted: acc.Restricted != nil, AccountCurrency: acc.Currency, Currency: req.Currency,
+		reason := EvaluateDecline(DeclineInput{State: acc.State, Frozen: acc.Frozen, RestrictedReason: acc.restriction(), Delinquency: acc.Delinquency, AccountCurrency: acc.Currency, Currency: req.Currency,
 			VelocityOK: velocityOK, PurchaseLimit: acc.PurchaseLimit, Amount: req.AmountMinor})
 		if reason == "" {
 			row = inserted

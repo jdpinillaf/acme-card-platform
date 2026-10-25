@@ -28,11 +28,13 @@ Monorepo layout, docker-compose (Postgres, LocalStack), Makefile, proto + buf, s
 - Credit balance is spendable on purchases (ADR-018); never paid out in cash.
 - Design: `docs/superpowers/specs/2026-10-25-sprint3-repayments-design.md`. Results: `docs/testing/sprint3.md`.
 
-## Sprint 4 — Statements, interest, late fees  ← next
-- `billing` service: billing cycles, statement generation (S3 object), minimum payment, interest accrual (daily, integer math), late fee on missed due date.
-- Tests: deterministic accrual fixtures; statement totals reconcile with ledger.
+## Sprint 4 — Statements, interest, late fees  ✓ done
+- `billing` service: monthly statements on the activation day (JSON in S3 + Postgres row), due 21 days later, minimum = 1% + interest + fees + past due (floor $25).
+- Interest 1.9% monthly (22.80% APR), daily integer accrual, standard grace; $25 late fee; block at 15 days past due; collateral applied and card blocked for good at 60 (ADR-019).
+- Per-account simulated clock (dev only) drives cycles and business dates; support waivers of interest and fees.
+- Design: `docs/superpowers/specs/2026-10-25-sprint4-statements-design.md`. Results: `docs/testing/sprint4.md`.
 
-## Sprint 5 — Close, cancel
+## Sprint 5 — Close, cancel  ← next
 - `POST /v1/accounts/{id}/close` (freeze/unfreeze moved to Sprint 2).
 - Close in good standing → release collateral (`collateral_held → cash_clearing`). Close with debt → apply collateral to `receivable`, remainder released.
 - Tests: close is terminal; collateral application math.

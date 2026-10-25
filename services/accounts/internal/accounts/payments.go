@@ -41,13 +41,16 @@ type paymentRow struct {
 	SettledAt   *time.Time `json:"settled_at,omitempty"`
 	ReturningAt *time.Time `json:"returning_at,omitempty"`
 	ReturnedAt  *time.Time `json:"returned_at,omitempty"`
+	ReceivedAt  time.Time  `json:"received_at"`
+	SettleAt    *time.Time `json:"settle_effective_at,omitempty"`
+	ReturnAt    *time.Time `json:"return_effective_at,omitempty"`
 }
 
-const paymentCols = `id::text, account_id::text, amount_minor, currency, status, external_ref, return_ref, created_at, settling_at, settled_at, returning_at, returned_at`
+const paymentCols = `id::text, account_id::text, amount_minor, currency, status, external_ref, return_ref, created_at, settling_at, settled_at, returning_at, returned_at, received_at, settle_effective_at, return_effective_at`
 
 func scanPayment(row pgx.Row) (paymentRow, error) {
 	var p paymentRow
-	err := row.Scan(&p.ID, &p.AccountID, &p.Amount, &p.Currency, &p.Status, &p.ExternalRef, &p.ReturnRef, &p.CreatedAt, &p.SettlingAt, &p.SettledAt, &p.ReturningAt, &p.ReturnedAt)
+	err := row.Scan(&p.ID, &p.AccountID, &p.Amount, &p.Currency, &p.Status, &p.ExternalRef, &p.ReturnRef, &p.CreatedAt, &p.SettlingAt, &p.SettledAt, &p.ReturningAt, &p.ReturnedAt, &p.ReceivedAt, &p.SettleAt, &p.ReturnAt)
 	return p, err
 }
 
@@ -71,7 +74,8 @@ func strOr(p *string) string {
 func (p paymentRow) proto() *accountsv1.Payment {
 	return &accountsv1.Payment{Id: p.ID, AccountId: p.AccountID, Amount: &commonv1.Money{AmountMinor: p.Amount, Currency: p.Currency},
 		Status: paymentStatusProto[p.Status], ExternalRef: strOr(p.ExternalRef), ReturnRef: strOr(p.ReturnRef),
-		CreatedAt: timestamppb.New(p.CreatedAt), SettledAt: tsp(p.SettledAt), ReturnedAt: tsp(p.ReturnedAt)}
+		CreatedAt: timestamppb.New(p.CreatedAt), SettledAt: tsp(p.SettledAt), ReturnedAt: tsp(p.ReturnedAt),
+		ReceivedAt: timestamppb.New(p.ReceivedAt), SettleEffectiveAt: tsp(p.SettleAt)}
 }
 
 func (s *Service) paymentResponse(ctx context.Context, p paymentRow, replayed bool) (*accountsv1.PaymentResponse, error) {
@@ -83,7 +87,7 @@ func (s *Service) paymentResponse(ctx context.Context, p paymentRow, replayed bo
 	if err != nil {
 		return nil, err
 	}
-	return &accountsv1.PaymentResponse{Payment: p.proto(), Account: acc.proto(v), Replayed: replayed}, nil
+	return &accountsv1.PaymentResponse{Payment: p.proto(), Account: s.accountProto(acc, v), Replayed: replayed}, nil
 }
 
 // CreatePayment registers a customer payment intent. Credit is only restored when the bank settles
@@ -146,10 +150,10 @@ func (s *Service) CreatePayment(ctx context.Context, req *accountsv1.CreatePayme
 		}
 		id := uuid.Must(uuid.NewV7()).String()
 		p, err = scanPayment(tx.QueryRow(ctx, `
-			INSERT INTO payments (id, account_id, amount_minor, currency, status, idempotency_key_hash, created_at)
-			VALUES ($1,$2,$3,$4,'pending',$5,$6)
+			INSERT INTO payments (id, account_id, amount_minor, currency, status, idempotency_key_hash, created_at, received_at)
+			VALUES ($1,$2,$3,$4,'pending',$5,$6,$7)
 			ON CONFLICT (idempotency_key_hash) WHERE idempotency_key_hash IS NOT NULL DO NOTHING
-			RETURNING `+paymentCols, id, acc.ID, req.AmountMinor, locked.Currency, keyHash, s.clock.Now()))
+			RETURNING `+paymentCols, id, acc.ID, req.AmountMinor, locked.Currency, keyHash, s.clock.Now(), s.accountNow(locked)))
 		if errors.Is(err, pgx.ErrNoRows) { // concurrent duplicate with the same key won
 			replayed = true
 			p, err = scanPayment(tx.QueryRow(ctx, `SELECT `+paymentCols+` FROM payments WHERE idempotency_key_hash=$1`, *keyHash))
@@ -166,7 +170,7 @@ func (s *Service) CreatePayment(ctx context.Context, req *accountsv1.CreatePayme
 		return nil, internal(err)
 	}
 	// Creating an intent does not touch the ledger, so the view read above is still current.
-	return &accountsv1.PaymentResponse{Payment: p.proto(), Account: locked.proto(view), Replayed: replayed}, nil
+	return &accountsv1.PaymentResponse{Payment: p.proto(), Account: s.accountProto(locked, view), Replayed: replayed}, nil
 }
 
 // ExpirePayments expires pending payment intents the bank never answered (PaymentTTL), freeing

@@ -11,10 +11,12 @@ export function signWebhook(secret: string, body: string, nowSec = Math.floor(Da
 const b64url = (v: object) => Buffer.from(JSON.stringify(v)).toString("base64url");
 
 /** HS256 JWT with authorized_accounts. Mirrors pkg/auth.Sign. Dev-only issuer. */
-export function signJwt(secret: string, sub: string, accounts: string[], ttlSec: number, nowSec = Math.floor(Date.now() / 1000)) {
+export function signJwt(secret: string, sub: string, accounts: string[], ttlSec: number, nowSec = Math.floor(Date.now() / 1000), role?: string) {
   if (secret.length < 32) throw new Error("JWT secret must be at least 32 bytes");
   const header = b64url({ alg: "HS256", typ: "JWT" });
-  const payload = b64url({ iss: "acme-card", sub, iat: nowSec, exp: nowSec + ttlSec, authorized_accounts: accounts });
+  const claims: Record<string, unknown> = { iss: "acme-card", sub, iat: nowSec, exp: nowSec + ttlSec, authorized_accounts: accounts };
+  if (role) claims.role = role; // e.g. "support" (charge waivers); mirrors pkg/auth.SignWithRole
+  const payload = b64url(claims);
   const sig = createHmac("sha256", secret).update(`${header}.${payload}`).digest("base64url");
   return `${header}.${payload}.${sig}`;
 }

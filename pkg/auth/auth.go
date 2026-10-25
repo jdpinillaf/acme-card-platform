@@ -18,7 +18,12 @@ import (
 type Claims struct {
 	jwt.RegisteredClaims
 	AuthorizedAccounts []string `json:"authorized_accounts"`
+	// Role is empty for customers; "support" may reverse charges on any account (Sprint 4).
+	Role string `json:"role,omitempty"`
 }
+
+// RoleSupport is the support-agent role (charge waivers).
+const RoleSupport = "support"
 
 // Authorized reports whether the token may act on accountID.
 func (c *Claims) Authorized(accountID string) bool {
@@ -32,6 +37,11 @@ func (c *Claims) Authorized(accountID string) bool {
 
 // Sign mints an HS256 token for sub that may act on accounts, valid for ttl.
 func Sign(secret []byte, sub string, accounts []string, ttl time.Duration) (string, error) {
+	return SignWithRole(secret, sub, accounts, "", ttl)
+}
+
+// SignWithRole is Sign with a role claim (e.g. RoleSupport).
+func SignWithRole(secret []byte, sub string, accounts []string, role string, ttl time.Duration) (string, error) {
 	now := time.Now()
 	claims := Claims{
 		RegisteredClaims: jwt.RegisteredClaims{
@@ -41,6 +51,7 @@ func Sign(secret []byte, sub string, accounts []string, ttl time.Duration) (stri
 			Issuer:    "acme-card",
 		},
 		AuthorizedAccounts: accounts,
+		Role:               role,
 	}
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(secret)
 }
@@ -98,6 +109,25 @@ func RequireAccount(extract func(*http.Request) string) func(http.Handler) http.
 			}
 			if id := extract(r); id == "" || !claims.Authorized(id) {
 				httpx.WriteError(w, http.StatusForbidden, "account_not_authorized", "token is not authorized for this account")
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// RequireRole denies the request (403 forbidden) unless the token carries role. Must run after
+// Middleware.
+func RequireRole(role string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			claims, ok := FromContext(r.Context())
+			if !ok {
+				httpx.WriteError(w, http.StatusUnauthorized, "unauthorized", "missing bearer token")
+				return
+			}
+			if claims.Role != role {
+				httpx.WriteError(w, http.StatusForbidden, "forbidden", "token lacks the required role")
 				return
 			}
 			next.ServeHTTP(w, r)

@@ -155,3 +155,46 @@ Sprint 3 implemented on branch `sprint-3` from `docs/superpowers/plans/2026-10-2
 ### Prompt 15 (user)
 
 > Creame un artifcat para ver el estado del proyecto
+
+## 2026-10-25 — Sprint 4 discovery
+
+### Prompt 16 (user)
+
+> Sigamso con el Sprint 4, hagamos revision del plan a ejectuar
+
+### Prompt 17 (user) — Sprint 4 answers
+
+> 1.dia de activacion
+> 2.21 dias
+> 3.Si, hagamos un reloj simulado
+> 4.Tal cual
+> 5.Json en s3
+> 6.Si, se genera
+> 7.Si
+> 8.Que otras opciones hay para calcular el pago minimo?
+> 9.Que se reciba el pago antes de la fecha limite, si se demora un poco en confrimar no reporta en mora hasta aprobar o rechazar
+> 10.1.9% anual, configurable
+> 11.Si, estandar
+> 12.Si
+> 13.Si se cobra si esta atraazdo
+> 14.25$
+> 15.Se espera 15 dias mas y se bloquea luego
+> 16.Aplicar el deposito completo y bloquear tarjeta
+> 17.Si, se permite
+> 18.Cuenta de cliente
+> 19Asi tal cual
+> 20Si, se pueden
+> 21.Si, expone todo
+> 22. Si
+
+### Prompt 18 (user) — Sprint 4 clarifications
+
+> Tasa: 1.9% mensual (~22.8% anual). Mínimo: A. 1% + int + cargos. Cobro del depósito: 60 días de atraso. Rama: Fusionar y seguir.
+
+### Prompt 19 (user)
+
+> Ok vale al terminar inciia con el sprint y el flujo de testeo
+
+## Sprint 4 delivery notes (2026-10-25)
+
+Sprint 4 implemented on branch `sprint-4` from `docs/superpowers/plans/2026-10-25-sprint4-statements.md`. Results in `docs/testing/sprint4.md`, decisions in ADR-019.

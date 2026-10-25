@@ -58,7 +58,7 @@ func TestEvaluateDeclinePrecedence(t *testing.T) {
 
 func TestEvaluateDeclinePaymentReturnedPrecedence(t *testing.T) {
 	in := okInput()
-	in.Restricted, in.Frozen = true, true
+	in.RestrictedReason, in.Frozen = RestrictionPaymentReturned, true
 	if got := EvaluateDecline(in); got != DeclinePaymentReturned {
 		t.Fatalf("restricted+frozen: got %s want payment_returned", got)
 	}
@@ -67,8 +67,45 @@ func TestEvaluateDeclinePaymentReturnedPrecedence(t *testing.T) {
 		t.Fatalf("closed wins: got %s", got)
 	}
 	in = okInput()
-	in.Restricted, in.Currency = true, "COP"
+	in.RestrictedReason, in.Currency = RestrictionPaymentReturned, "COP"
 	if got := EvaluateDecline(in); got != DeclineCurrencyNotSupported {
 		t.Fatalf("currency before restriction: got %s", got)
+	}
+}
+
+func TestEvaluateDeclineSprint4Order(t *testing.T) {
+	in := DeclineInput{State: StatePendingCollateral, Delinquency: DelinquencyChargedOff, RestrictedReason: RestrictionOverLimit,
+		Frozen: true, AccountCurrency: "USD", Currency: "COP", VelocityOK: false, PurchaseLimit: 1, Amount: 100}
+	order := []struct {
+		want  DeclineReason
+		clear func(*DeclineInput)
+	}{
+		{DeclineChargedOff, func(in *DeclineInput) { in.Delinquency = DelinquencyPastDue }},
+		{DeclineCollateralNotConfirmed, func(in *DeclineInput) { in.State = StateActive }},
+		{DeclineCurrencyNotSupported, func(in *DeclineInput) { in.Currency = "USD" }},
+		{DeclineOverLimit, func(in *DeclineInput) { in.RestrictedReason = "" }},
+		{DeclinePastDue, func(in *DeclineInput) { in.Delinquency = DelinquencyNone }},
+		{DeclineCardFrozen, func(in *DeclineInput) { in.Frozen = false }},
+		{DeclineVelocity, func(in *DeclineInput) { in.VelocityOK = true }},
+		{DeclinePurchaseLimit, func(in *DeclineInput) { in.PurchaseLimit = 0 }},
+	}
+	for _, step := range order {
+		if got := EvaluateDecline(in); got != step.want {
+			t.Fatalf("want %s got %s", step.want, got)
+		}
+		step.clear(&in)
+	}
+	if got := EvaluateDecline(in); got != "" {
+		t.Fatalf("all cleared: got %s", got)
+	}
+	closed := okInput()
+	closed.State, closed.Delinquency = StateClosed, DelinquencyChargedOff
+	if got := EvaluateDecline(closed); got != DeclineAccountClosed {
+		t.Fatalf("closed beats charged_off: %s", got)
+	}
+	pr := okInput()
+	pr.RestrictedReason, pr.Delinquency = RestrictionPaymentReturned, DelinquencyPastDue
+	if got := EvaluateDecline(pr); got != DeclinePaymentReturned {
+		t.Fatalf("payment_returned beats past_due: %s", got)
 	}
 }

@@ -159,3 +159,31 @@ Append-only. One entry per decision. Format: context → decision → consequenc
 **Deferred minors.**
 - The payment cap can race a settlement in a millisecond window; an overpayment becomes a spendable credit balance.
 - The simulator's bank-payments proxy returns 500 on malformed input.
+
+## ADR-019 — Billing: statements, interest, late fees, delinquency, simulated clock (2026-10-25)
+**Context.** Sprint 4 adds monthly statements and the cost of carrying a balance. The user's decisions are recorded in `docs/superpowers/specs/2026-10-25-sprint4-statements-design.md` (§3, interpretations §4, builder calls §5/§5b).
+
+**Decision.**
+- **New `billing` service** owns cycles, statements, interest, late fees and delinquency. Statements are deterministic JSON in S3 (`statements/<account>/<cycle>.json`) plus a Postgres row with totals, buckets and the SHA-256 of the object. One statement per cycle, also with no activity.
+- **Cycle**: monthly on the activation day (29–31 → 28), due date close + 21 days, UTC days. A payment received (created) any time on the due date is on time; a payment still pending holds off delinquency until the bank answers.
+- **Interest**: 1.9% monthly = 22.80% APR (`BILLING_APR_BPS=2280`), daily balance × APR / 365 in integer micro-units, floored at close. Standard grace period; interest on interest and fees only while past due; posted at `close − 1s`.
+- **Minimum**: `min(new balance, max(floor, 1% principal + cycle interest + cycle fees + past-due minimum))`; floor and late fee per currency (`BILLING_FIXED_AMOUNTS`, $25 for USD).
+- **Delinquency is derived, never counted**: past-due amount and DPD come from the statements and the payments/waivers credited since; a late payment cures it. DPD 1 → late fee (once per statement, capped at its minimum); DPD 15 → `past_due` decline; DPD 60 → charge-off: collateral applied to the debt (`collateral_applied`, fees → interest → principal), limit lowered, `charged_off` permanently. Later statements are balance-only.
+- **Buckets come from the ledger**: `receivable` stays the single debt; billing replays the journal (by `effective_at`) to split principal / interest / fees. Payments allocate fees → interest → principal; a return restores exactly what its payment reduced.
+- **Ledger**: `journal_entries.effective_at` (business date) next to `posted_at`; per-account `interest_income` / `fee_income`; `PostCharge`, `PostCollateralApplication`, `ListEntries`, and **sealed periods** (`SealPeriod`): a posting never gets an `effective_at` before the last closed statement, so a saga that reserved before a close lands in the next cycle and closed statements always reconcile.
+- **Simulated clock**: a per-account offset in `accounts` (only grows, 1–400 days per call). It drives billing and every posting's business date (persisted at reserve so reconciler retries post the same date). Infrastructure timers (idempotency, velocity, webhook tolerance, hold/intent expiry, reversal/return windows) stay on real time. The gateway route exists only with `DEV_CLOCK_ENABLED=1`, and the gateway refuses to start with it unless `APP_ENV=dev`.
+- **Over the collateral**: interest and fees may exceed it (accepted); the card is then restricted `over_limit` until exposure is back within the limit.
+- **Waivers**: a `role: support` JWT reverses all or part of an interest or fee charge (reason required, Σ waived ≤ charged); a waiver counts toward the past-due minimum.
+- **Decline order**: account_closed, charged_off, collateral_not_confirmed, currency_not_supported, payment_returned | over_limit, past_due, card_frozen, velocity_limit_exceeded, purchase_limit_exceeded, insufficient_credit.
+
+**Implementation rulings.**
+- Catch-ups of one account serialize on a **lease** in its `billing_accounts` row (autocommit UPDATE, 2-minute expiry). Two earlier designs, a row lock held in a transaction, waiting or `NOWAIT`, pinned a pool connection per catch-up and deadlocked the pool under concurrency (found by tests and by the 1000-VU load).
+- Charge-off waits (`operation_in_flight`, retried) while any authorization is pending or has an operation in flight, so no capture lands after the collateral is applied; its amount is fixed once so retries post the same journal.
+- Migrations: accounts `000012`–`000013`, ledger `000004`, billing `000001`–`000003`.
+
+**Sprint 4 final review fixes (2026-10-25).**
+- **On-time payments that settle after a close count.** A payment received before a close but posted after it (or still pending) is not in that statement's balance, so it now pays that statement's minimum and grace, unless it already sits in the previous statement's on-time window (`engine.anchor`). Before, it fell outside every window: late fee, lost grace, possible block.
+- **Late fee capped at the unpaid minimum** (spec I-2), e.g. 1.00 when 24.00 of 25.00 was paid.
+- **Due date is not a past-due day** for interest (spec B-6).
+- **Clock advance idempotent inside accounts** (`clock_advances`, migration `000014`): the gateway releases an idempotency key on a 5xx, so a retry no longer advances twice.
+

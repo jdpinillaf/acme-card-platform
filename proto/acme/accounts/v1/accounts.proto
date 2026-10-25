@@ -30,6 +30,44 @@ service AccountsService {
   // ReturnPayment is driven by the bank webhook within the return window. Idempotent on return_ref.
   rpc ReturnPayment(ReturnPaymentRequest) returns (PaymentResponse);
   rpc ListPayments(ListPaymentsRequest) returns (ListPaymentsResponse);
+
+  // Billing support (Sprint 4).
+  // AdvanceClock moves the account's simulated clock forward (dev only; gated at the gateway).
+  rpc AdvanceClock(AdvanceClockRequest) returns (GetAccountResponse);
+  // SetDelinquency sets none | past_due; charged_off is reached only through ChargeOff.
+  rpc SetDelinquency(SetDelinquencyRequest) returns (GetAccountResponse);
+  // ChargeOff applies collateral to the debt and blocks the card permanently. Idempotent.
+  rpc ChargeOff(ChargeOffRequest) returns (GetAccountResponse);
+  // CheckExposure restricts the card (over_limit) when holds + receivable exceed the limit.
+  rpc CheckExposure(CheckExposureRequest) returns (GetAccountResponse);
+  // ListAccountIDs pages through active and charged-off accounts for the billing sweep.
+  rpc ListAccountIDs(ListAccountIDsRequest) returns (ListAccountIDsResponse);
+}
+
+message AdvanceClockRequest {
+  string account_id = 1;
+  int32 days = 2;
+  acme.common.v1.RequestMeta meta = 3;
+}
+message SetDelinquencyRequest {
+  string account_id = 1;
+  string stage = 2;
+  acme.common.v1.RequestMeta meta = 3;
+}
+message ChargeOffRequest {
+  string account_id = 1;
+  acme.common.v1.RequestMeta meta = 2;
+}
+message CheckExposureRequest {
+  string account_id = 1;
+  acme.common.v1.RequestMeta meta = 2;
+}
+message ListAccountIDsRequest {
+  string after_id = 1;
+  int32 limit = 2;
+}
+message ListAccountIDsResponse {
+  repeated string ids = 1;
 }
 
 enum PaymentStatus {
@@ -53,6 +91,10 @@ message Payment {
   google.protobuf.Timestamp created_at = 7;
   google.protobuf.Timestamp settled_at = 8;
   google.protobuf.Timestamp returned_at = 9;
+  // received_at is account time at creation; billing judges on-time payments by it.
+  google.protobuf.Timestamp received_at = 10;
+  // settle_effective_at is the business date the settlement posts with (set at reserve).
+  google.protobuf.Timestamp settle_effective_at = 11;
 }
 
 message PaymentResponse {
@@ -226,6 +268,10 @@ message Account {
   int64 credit_balance_minor = 13;
   // System restriction (e.g. "payment_returned"); empty when none.
   string restricted_reason = 14;
+  // Sprint 4: account (simulated) time, activation time and delinquency stage (none | past_due | charged_off).
+  google.protobuf.Timestamp account_time = 15;
+  google.protobuf.Timestamp activated_at = 16;
+  string delinquency = 17;
 }
 
 message Deposit {

@@ -80,5 +80,5 @@ func (s *Service) withAvailable(ctx context.Context, acc accountRow) (*accountsv
 	if err != nil {
 		return nil, err
 	}
-	return &accountsv1.GetAccountResponse{Account: acc.proto(avail)}, nil
+	return &accountsv1.GetAccountResponse{Account: s.accountProto(acc, avail)}, nil
 }

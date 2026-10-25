@@ -57,3 +57,19 @@ func (c inproc) PostPayment(ctx context.Context, r *ledgerv1.PostPaymentRequest,
 func (c inproc) PostPaymentReturn(ctx context.Context, r *ledgerv1.PostPaymentReturnRequest, _ ...grpc.CallOption) (*ledgerv1.PostJournalResponse, error) {
 	return c.s.PostPaymentReturn(ctx, r)
 }
+
+func (c inproc) PostCharge(ctx context.Context, r *ledgerv1.PostChargeRequest, _ ...grpc.CallOption) (*ledgerv1.PostJournalResponse, error) {
+	return c.s.PostCharge(ctx, r)
+}
+
+func (c inproc) PostCollateralApplication(ctx context.Context, r *ledgerv1.PostCollateralApplicationRequest, _ ...grpc.CallOption) (*ledgerv1.PostJournalResponse, error) {
+	return c.s.PostCollateralApplication(ctx, r)
+}
+
+func (c inproc) SealPeriod(ctx context.Context, r *ledgerv1.SealPeriodRequest, _ ...grpc.CallOption) (*ledgerv1.SealPeriodResponse, error) {
+	return c.s.SealPeriod(ctx, r)
+}
+
+func (c inproc) ListEntries(ctx context.Context, r *ledgerv1.ListEntriesRequest, _ ...grpc.CallOption) (*ledgerv1.ListEntriesResponse, error) {
+	return c.s.ListEntries(ctx, r)
+}

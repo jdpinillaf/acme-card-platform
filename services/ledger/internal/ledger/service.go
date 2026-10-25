@@ -104,12 +104,19 @@ func postJournalTx(ctx context.Context, tx pgx.Tx, req *ledgerv1.PostJournalRequ
 				actor = &m.Actor
 			}
 		}
+		var effective *time.Time
+		if m := req.Meta; m != nil && m.EffectiveAt != nil {
+			t := m.EffectiveAt.AsTime()
+			effective = &t
+		}
+		// The business date never falls inside a period billing has already sealed (closed).
 		var postedAt time.Time
 		err := tx.QueryRow(ctx, `
-			INSERT INTO journal_entries (id, account_id, reference, entry_type, postings_hash, idempotency_key_hash, actor)
-			VALUES ($1,$2,$3,$4,$5,$6,$7)
+			INSERT INTO journal_entries (id, account_id, reference, entry_type, postings_hash, idempotency_key_hash, actor, effective_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7, GREATEST(coalesce($8::timestamptz, now()),
+				coalesce((SELECT sealed_through FROM account_seals WHERE account_id=$2), '-infinity')))
 			ON CONFLICT (reference) DO NOTHING
-			RETURNING posted_at`, id, req.AccountId, req.Reference, req.EntryType, hash, keyHash, actor).Scan(&postedAt)
+			RETURNING posted_at`, id, req.AccountId, req.Reference, req.EntryType, hash, keyHash, actor, effective).Scan(&postedAt)
 		if errors.Is(err, pgx.ErrNoRows) {
 			// Someone else owns this reference (we waited for them to commit). Replay.
 			var existingID uuid.UUID

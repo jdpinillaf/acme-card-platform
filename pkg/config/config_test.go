@@ -107,3 +107,21 @@ func TestLoadReadsNetworkWebhookSecret(t *testing.T) {
 		t.Fatalf("%v %q", err, c.NetworkWebhookSecret)
 	}
 }
+
+func TestLoadBillingDefaultsAndDevClock(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://x")
+	t.Setenv("BILLING_APR_BPS", "")
+	t.Setenv("DEV_CLOCK_ENABLED", "")
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.BillingAPRBps != 2280 || c.StatementsBucket != "acme-card-statements-dev" || c.BillingFixedAmounts == "" || c.DevClockEnabled {
+		t.Fatalf("billing defaults: %+v", c)
+	}
+	t.Setenv("DEV_CLOCK_ENABLED", "1")
+	t.Setenv("BILLING_APR_BPS", "1999")
+	if c, _ = Load(); !c.DevClockEnabled || c.BillingAPRBps != 1999 {
+		t.Fatalf("overrides: %+v", c)
+	}
+}

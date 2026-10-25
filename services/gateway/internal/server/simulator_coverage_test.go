@@ -28,7 +28,7 @@ func TestEveryRouteHasASimulatorAction(t *testing.T) {
 	for _, a := range actions {
 		covered[a.Method+" "+a.Route] = true
 	}
-	h := New(Deps{Accounts: &fakeAccounts{}, JWTSecret: jwtSecret, BankSecret: []byte("b"), NetworkSecret: []byte("n"), Rejections: &nopRejections{}, DisableStateful: true})
+	h := New(Deps{Accounts: &fakeAccounts{}, JWTSecret: jwtSecret, BankSecret: []byte("b"), NetworkSecret: []byte("n"), Rejections: &nopRejections{}, DisableStateful: true, DevClock: true})
 	routes := map[string]bool{}
 	err = chi.Walk(h.(chi.Routes), func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
 		if route == "/healthz" || route == "/readyz" {

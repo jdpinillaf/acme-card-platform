@@ -38,6 +38,14 @@ type Config struct {
 
 	AccountsGRPCAddr string
 	LedgerGRPCAddr   string
+	BillingGRPCAddr  string
+
+	// Billing (Sprint 4).
+	StatementsBucket    string
+	BillingAPRBps       int
+	BillingFixedAmounts string
+	// DevClockEnabled exposes the simulated-clock route at the gateway (dev only).
+	DevClockEnabled bool
 
 	AWSRegion        string
 	AWSEndpointURL   string
@@ -60,6 +68,10 @@ func Load() (Config, error) {
 		NetworkWebhookSecret: os.Getenv("NETWORK_WEBHOOK_SECRET"),
 		AccountsGRPCAddr:     getenv("ACCOUNTS_GRPC_ADDR", "localhost:9001"),
 		LedgerGRPCAddr:       getenv("LEDGER_GRPC_ADDR", "localhost:9002"),
+		BillingGRPCAddr:      getenv("BILLING_GRPC_ADDR", "localhost:9004"),
+		StatementsBucket:     getenv("STATEMENTS_BUCKET", "acme-card-statements-dev"),
+		BillingFixedAmounts:  getenv("BILLING_FIXED_AMOUNTS", "USD:2500,EUR:2500,MXN:45000,COP:10000000"),
+		DevClockEnabled:      os.Getenv("DEV_CLOCK_ENABLED") == "1",
 		AWSRegion:            getenv("AWS_REGION", "us-east-1"),
 		AWSEndpointURL:       os.Getenv("AWS_ENDPOINT_URL"),
 		SNSTopicARN:          os.Getenv("SNS_TOPIC_ARN"),
@@ -86,6 +98,9 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if c.RateLimitPerMinute, err = getInt("RATE_LIMIT_PER_MINUTE", 60); err != nil {
+		return Config{}, err
+	}
+	if c.BillingAPRBps, err = getInt("BILLING_APR_BPS", 2280); err != nil {
 		return Config{}, err
 	}
 	for _, raw := range strings.Split(os.Getenv("TRUSTED_PROXY_CIDRS"), ",") {

@@ -106,3 +106,29 @@ func TestMiddlewareAndRequireAccount(t *testing.T) {
 		t.Fatalf("garbage token must be 401, got %d", w.Code)
 	}
 }
+
+func TestRequireRole(t *testing.T) {
+	h := Middleware(secret)(RequireRole(RoleSupport)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(204) })))
+	call := func(tok string) int {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest("POST", "/", nil)
+		r.Header.Set("Authorization", "Bearer "+tok)
+		h.ServeHTTP(w, r)
+		return w.Code
+	}
+	customer, _ := Sign(secret, "cust-1", []string{"acc-1"}, time.Minute)
+	if c := call(customer); c != 403 {
+		t.Fatalf("customer token: %d want 403", c)
+	}
+	support, err := SignWithRole(secret, "agent-7", nil, RoleSupport, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c := call(support); c != 204 {
+		t.Fatalf("support token: %d want 204", c)
+	}
+	claims, err := Parse(secret, support)
+	if err != nil || claims.Role != RoleSupport || claims.Subject != "agent-7" {
+		t.Fatalf("claims %+v %v", claims, err)
+	}
+}

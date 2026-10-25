@@ -26,6 +26,14 @@ service LedgerService {
   rpc PostPayment(PostPaymentRequest) returns (PostJournalResponse);
   // PostPaymentReturn reverses a returned payment (receivable goes back up). Idempotent on reference.
   rpc PostPaymentReturn(PostPaymentReturnRequest) returns (PostJournalResponse);
+  // PostCharge posts interest, fees and their waivers against receivable (Sprint 4). Idempotent on reference.
+  rpc PostCharge(PostChargeRequest) returns (PostJournalResponse);
+  // PostCollateralApplication applies held collateral to receivable at charge-off. Idempotent on reference.
+  rpc PostCollateralApplication(PostCollateralApplicationRequest) returns (PostJournalResponse);
+  // SealPeriod raises the account's sealed_through watermark; later postings never get an earlier effective_at.
+  rpc SealPeriod(SealPeriodRequest) returns (SealPeriodResponse);
+  // ListEntries lists an account's journal entries by effective_at, ordered (effective_at, id).
+  rpc ListEntries(ListEntriesRequest) returns (ListEntriesResponse);
 }
 
 message PostPaymentRequest {
@@ -46,6 +54,58 @@ enum HoldRelease {
   HOLD_RELEASE_UNSPECIFIED = 0;
   HOLD_RELEASE_RELEASED = 1;
   HOLD_RELEASE_EXPIRED = 2;
+}
+
+enum ChargeKind {
+  CHARGE_KIND_UNSPECIFIED = 0;
+  CHARGE_KIND_INTEREST = 1;
+  CHARGE_KIND_FEE = 2;
+  CHARGE_KIND_INTEREST_WAIVER = 3;
+  CHARGE_KIND_FEE_WAIVER = 4;
+}
+
+message PostChargeRequest {
+  string account_id = 1;
+  string reference = 2;
+  ChargeKind kind = 3;
+  int64 amount_minor = 4;
+  acme.common.v1.RequestMeta meta = 5;
+}
+
+message PostCollateralApplicationRequest {
+  string account_id = 1;
+  string reference = 2;
+  int64 amount_minor = 3;
+  acme.common.v1.RequestMeta meta = 4;
+}
+
+message SealPeriodRequest {
+  string account_id = 1;
+  google.protobuf.Timestamp sealed_through = 2;
+}
+message SealPeriodResponse {
+  google.protobuf.Timestamp sealed_through = 1;
+}
+
+message ListEntriesRequest {
+  string account_id = 1;
+  // Half-open [effective_from, effective_to); either may be unset.
+  google.protobuf.Timestamp effective_from = 2;
+  google.protobuf.Timestamp effective_to = 3;
+  string page_token = 4;
+  int32 page_size = 5;
+}
+message JournalEntry {
+  string id = 1;
+  string reference = 2;
+  string entry_type = 3;
+  google.protobuf.Timestamp effective_at = 4;
+  // Signed receivable movement: debit +, credit -.
+  int64 receivable_delta_minor = 5;
+}
+message ListEntriesResponse {
+  repeated JournalEntry entries = 1;
+  string next_page_token = 2;
 }
 
 message PlaceHoldRequest {
@@ -92,6 +152,8 @@ enum SubAccount {
   SUB_ACCOUNT_COLLATERAL_HELD = 2;
   SUB_ACCOUNT_CREDIT_AVAILABLE = 3;
   SUB_ACCOUNT_RECEIVABLE = 4;
+  SUB_ACCOUNT_INTEREST_INCOME = 5;
+  SUB_ACCOUNT_FEE_INCOME = 6;
 }
 
 enum Side {
