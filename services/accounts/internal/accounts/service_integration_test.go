@@ -268,3 +268,65 @@ func TestCreateDepositDedupesOnIdempotencyKeyHash(t *testing.T) {
 		t.Fatalf("absurd amount must be rejected: %v", err)
 	}
 }
+
+// ledgerMatchesAccounts asserts a journal entry exists for a deposit iff the deposit is settled,
+// and that the account limit equals the ledger collateral.
+func (f *fixture) ledgerMatchesAccounts(t *testing.T, accID, depID string) {
+	t.Helper()
+	var status string
+	if err := f.pool.QueryRow(context.Background(), `SELECT status FROM deposits WHERE id=$1`, depID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	journals := f.count(t, f.ledger, `SELECT count(*) FROM journal_entries WHERE reference=$1`, "deposit:"+depID)
+	if (status == "settled") != (journals == 1) {
+		t.Fatalf("deposit %s status=%s but journal entries=%d", depID, status, journals)
+	}
+	var limit, coll int64
+	_ = f.pool.QueryRow(context.Background(), `SELECT credit_limit_minor FROM accounts WHERE id=$1`, accID).Scan(&limit)
+	_ = f.ledger.QueryRow(context.Background(), `SELECT -raw_balance_minor FROM balances WHERE account_id=$1 AND sub_account='collateral_held'`, accID).Scan(&coll)
+	if limit != coll {
+		t.Fatalf("account limit %d != ledger collateral %d", limit, coll)
+	}
+}
+
+func TestSettleWithReusedExternalRefPostsNothing(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	acc := f.open(t, "cust-ref")
+	d1, d2 := f.deposit(t, acc.Id, 1_000), f.deposit(t, acc.Id, 2_000)
+	if _, err := f.svc.SettleDeposit(ctx, settled(d1, "bank-dup")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.svc.SettleDeposit(ctx, settled(d2, "bank-dup")); status.Code(err) != codes.AlreadyExists {
+		t.Fatalf("reused ref: %v", err)
+	}
+	f.ledgerMatchesAccounts(t, acc.Id, d2.Id)
+	g, _ := f.svc.GetAccount(ctx, &accountsv1.GetAccountRequest{AccountId: acc.Id})
+	if g.Account.AvailableCreditMinor != 1_000 {
+		t.Fatalf("available=%d want 1000", g.Account.AvailableCreditMinor)
+	}
+}
+
+func TestConcurrentSettledAndFailedWebhooksStayConsistent(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	acc := f.open(t, "cust-split")
+	for i := 0; i < 25; i++ {
+		dep := f.deposit(t, acc.Id, 100)
+		fail := settled(dep, "bank-f-"+dep.Id)
+		fail.Status = accountsv1.DepositStatus_DEPOSIT_STATUS_FAILED
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		for _, req := range []*accountsv1.SettleDepositRequest{settled(dep, "bank-s-"+dep.Id), fail} {
+			wg.Add(1)
+			go func(r *accountsv1.SettleDepositRequest) {
+				defer wg.Done()
+				<-start
+				_, _ = f.svc.SettleDeposit(ctx, r) // one of them must lose; either outcome is fine if consistent
+			}(req)
+		}
+		close(start)
+		wg.Wait()
+		f.ledgerMatchesAccounts(t, acc.Id, dep.Id)
+	}
+}

@@ -123,7 +123,7 @@ func (s *Service) GetAccount(ctx context.Context, req *accountsv1.GetAccountRequ
 	if err != nil {
 		return nil, err
 	}
-	avail, err := s.available(ctx, acc.ID)
+	avail, err := s.available(ctx, acc)
 	if err != nil {
 		return nil, err
 	}
@@ -209,9 +209,15 @@ func (s *Service) loadDeposit(ctx context.Context, q pgx.Tx, id string) (deposit
 	return d, err
 }
 
-// SettleDeposit applies the bank's settlement. Flow: validate → post ledger journal (idempotent
-// on the deposit id) → lock deposit+account, apply limit/state, emit events. Concurrent or
-// repeated webhooks replay; a crash between ledger and accounts is healed by the next retry.
+// SettleDeposit applies the bank's settlement as a three-step saga:
+//
+//  1. reserve: lock the deposit, validate, move pending → settling and claim external_ref (commit);
+//  2. post the ledger journal (idempotent on "deposit:<id>");
+//  3. finalize: settling → settled, raise collateral/limit, activate, emit events (commit).
+//
+// A concurrent "failed" notice is refused while settling, so the ledger can never hold collateral
+// that accounts does not. A crash after step 1 or 2 is healed by the bank retrying the same webhook,
+// which resumes the saga. Repeated webhooks after completion replay.
 func (s *Service) SettleDeposit(ctx context.Context, req *accountsv1.SettleDepositRequest) (*accountsv1.SettleDepositResponse, error) {
 	if _, err := uuid.Parse(req.DepositId); err != nil {
 		return nil, grpcx.Error(codes.InvalidArgument, "invalid_deposit", "deposit_id must be a uuid")
@@ -223,60 +229,38 @@ func (s *Service) SettleDeposit(ctx context.Context, req *accountsv1.SettleDepos
 		return nil, grpcx.Error(codes.InvalidArgument, "invalid_status", "status must be settled or failed")
 	}
 
-	// Pre-check outside the lock so the ledger call is only made for legitimate settlements.
-	var dep depositRow
-	var acc accountRow
+	// Step 1: reserve (or finish a FAILED notice outright).
+	var (
+		dep  depositRow
+		acc  accountRow
+		resp *accountsv1.SettleDepositResponse
+	)
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		var err error
 		if dep, err = s.loadDeposit(ctx, tx, req.DepositId); err != nil {
 			return err
 		}
-		acc, err = s.load(ctx, tx, dep.AccountID, false)
-		return err
-	})
-	if err != nil {
-		return nil, internal(err)
-	}
-	if resp, done, err := s.terminal(ctx, dep, acc, req); done {
-		return resp, err
-	}
-	if req.AmountMinor != dep.Amount {
-		return nil, grpcx.Error(codes.InvalidArgument, "amount_mismatch", "settled amount differs from deposit amount")
-	}
-	if req.Currency != dep.Currency {
-		return nil, grpcx.Error(codes.InvalidArgument, "currency_mismatch", "settled currency differs from deposit currency")
-	}
-
-	var journalID string
-	if req.Status == accountsv1.DepositStatus_DEPOSIT_STATUS_SETTLED {
-		if _, err := s.ledger.OpenLedger(ctx, &ledgerv1.OpenLedgerRequest{AccountId: acc.ID, Currency: acc.Currency}); err != nil {
-			return nil, err
-		}
-		jr, err := s.ledger.PostJournal(ctx, &ledgerv1.PostJournalRequest{
-			AccountId: acc.ID, Reference: "deposit:" + dep.ID, EntryType: "collateral_deposit_settled", Meta: req.Meta,
-			Postings: []*ledgerv1.Posting{
-				{SubAccount: ledgerv1.SubAccount_SUB_ACCOUNT_CASH_CLEARING, Side: ledgerv1.Side_SIDE_DEBIT, AmountMinor: dep.Amount},
-				{SubAccount: ledgerv1.SubAccount_SUB_ACCOUNT_COLLATERAL_HELD, Side: ledgerv1.Side_SIDE_CREDIT, AmountMinor: dep.Amount},
-			},
-		})
-		if err != nil {
-			return nil, err
-		}
-		journalID = jr.JournalEntryId
-	}
-
-	var resp *accountsv1.SettleDepositResponse
-	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		var err error
-		if dep, err = s.loadDeposit(ctx, tx, req.DepositId); err != nil {
+		if acc, err = s.load(ctx, tx, dep.AccountID, false); err != nil {
 			return err
 		}
-		if acc, err = s.load(ctx, tx, dep.AccountID, true); err != nil {
+		switch dep.Status {
+		case "settled", "failed":
+			resp, err = s.replayOrConflict(ctx, dep, acc, req)
 			return err
+		case "settling":
+			if req.Status == accountsv1.DepositStatus_DEPOSIT_STATUS_SETTLED && dep.ExternalRef != nil && *dep.ExternalRef == req.ExternalRef {
+				return nil // resume the saga
+			}
+			return grpcx.Error(codes.FailedPrecondition, "deposit_settling", "deposit settlement already in progress")
 		}
-		if r, done, err := s.terminal(ctx, dep, acc, req); done {
-			resp = r
-			return err
+		if acc.State == StateClosed {
+			return grpcx.Error(codes.FailedPrecondition, "account_closed", "account is closed")
+		}
+		if req.AmountMinor != dep.Amount {
+			return grpcx.Error(codes.InvalidArgument, "amount_mismatch", "settled amount differs from deposit amount")
+		}
+		if req.Currency != dep.Currency {
+			return grpcx.Error(codes.InvalidArgument, "currency_mismatch", "settled currency differs from deposit currency")
 		}
 		if req.Status == accountsv1.DepositStatus_DEPOSIT_STATUS_FAILED {
 			if err := tx.QueryRow(ctx, `UPDATE deposits SET status='failed', external_ref=$2, settled_at=now() WHERE id=$1 RETURNING settled_at`, dep.ID, req.ExternalRef).Scan(&dep.SettledAt); err != nil {
@@ -288,20 +272,64 @@ func (s *Service) SettleDeposit(ctx context.Context, req *accountsv1.SettleDepos
 			if err := outbox.Enqueue(ctx, tx, ev); err != nil {
 				return err
 			}
-			resp = &accountsv1.SettleDepositResponse{Deposit: dep.proto(), Account: acc.proto(acc.CreditLimit)}
+			avail, err := s.available(ctx, acc)
+			if err != nil {
+				return err
+			}
+			resp = &accountsv1.SettleDepositResponse{Deposit: dep.proto(), Account: acc.proto(avail)}
 			return nil
 		}
+		_, err = tx.Exec(ctx, `UPDATE deposits SET status='settling', external_ref=$2 WHERE id=$1`, dep.ID, req.ExternalRef)
+		return err
+	})
+	if err != nil {
+		return nil, mapSettleErr(err)
+	}
+	if resp != nil {
+		return resp, nil
+	}
 
+	// Step 2: ledger (idempotent on the deposit reference).
+	if _, err := s.ledger.OpenLedger(ctx, &ledgerv1.OpenLedgerRequest{AccountId: acc.ID, Currency: acc.Currency}); err != nil {
+		return nil, err
+	}
+	jr, err := s.ledger.PostJournal(ctx, &ledgerv1.PostJournalRequest{
+		AccountId: acc.ID, Reference: "deposit:" + dep.ID, EntryType: "collateral_deposit_settled", Meta: req.Meta,
+		Postings: []*ledgerv1.Posting{
+			{SubAccount: ledgerv1.SubAccount_SUB_ACCOUNT_CASH_CLEARING, Side: ledgerv1.Side_SIDE_DEBIT, AmountMinor: dep.Amount},
+			{SubAccount: ledgerv1.SubAccount_SUB_ACCOUNT_COLLATERAL_HELD, Side: ledgerv1.Side_SIDE_CREDIT, AmountMinor: dep.Amount},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Step 3: finalize.
+	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		var err error
+		if dep, err = s.loadDeposit(ctx, tx, req.DepositId); err != nil {
+			return err
+		}
+		if acc, err = s.load(ctx, tx, dep.AccountID, true); err != nil {
+			return err
+		}
+		if dep.Status == "settled" { // a concurrent resumer finished first
+			resp, err = s.replayOrConflict(ctx, dep, acc, req)
+			return err
+		}
+		if dep.Status != "settling" {
+			return status.Errorf(codes.Internal, "deposit %s in unexpected state %s after ledger post", dep.ID, dep.Status)
+		}
 		next, err := Transition(acc.State, EventCollateralConfirmed)
 		if err != nil {
 			return grpcx.Error(codes.FailedPrecondition, "account_closed", "account is closed")
 		}
 		before := acc
-		if err := tx.QueryRow(ctx, `UPDATE deposits SET status='settled', external_ref=$2, journal_entry_id=$3, settled_at=now() WHERE id=$1 RETURNING settled_at`,
-			dep.ID, req.ExternalRef, journalID).Scan(&dep.SettledAt); err != nil {
+		if err := tx.QueryRow(ctx, `UPDATE deposits SET status='settled', journal_entry_id=$2, settled_at=now() WHERE id=$1 RETURNING settled_at`,
+			dep.ID, jr.JournalEntryId).Scan(&dep.SettledAt); err != nil {
 			return err
 		}
-		dep.Status, dep.ExternalRef = "settled", &req.ExternalRef
+		dep.Status = "settled"
 		acc, err = scanAccount(tx.QueryRow(ctx, `
 			UPDATE accounts SET collateral_minor = collateral_minor + $2, credit_limit_minor = collateral_minor + $2,
 			       state = $3, version = version + 1, updated_at = now()
@@ -311,7 +339,7 @@ func (s *Service) SettleDeposit(ctx context.Context, req *accountsv1.SettleDepos
 		}
 		confirmed := event("collateral.confirmed", "deposit", dep.ID, req.Meta)
 		confirmed.Before = snapshot(before)
-		confirmed.After = snapshot(map[string]any{"account": acc, "deposit_id": dep.ID, "external_ref": req.ExternalRef, "journal_entry_id": journalID})
+		confirmed.After = snapshot(map[string]any{"account": acc, "deposit_id": dep.ID, "external_ref": req.ExternalRef, "journal_entry_id": jr.JournalEntryId})
 		evs := []events.Event{confirmed}
 		if before.State != acc.State {
 			activated := event("card.activated", "account", acc.ID, req.Meta)
@@ -321,44 +349,41 @@ func (s *Service) SettleDeposit(ctx context.Context, req *accountsv1.SettleDepos
 		if err := outbox.Enqueue(ctx, tx, evs...); err != nil {
 			return err
 		}
-		resp = &accountsv1.SettleDepositResponse{Deposit: dep.proto(), Account: acc.proto(0)}
+		avail, err := s.available(ctx, acc)
+		if err != nil {
+			return err
+		}
+		resp = &accountsv1.SettleDepositResponse{Deposit: dep.proto(), Account: acc.proto(avail)}
 		return nil
 	})
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && pgErr.Code == uniqueViolation {
-		return nil, grpcx.Error(codes.AlreadyExists, "external_ref_reused", "external_ref already used by another deposit")
-	}
 	if err != nil {
-		return nil, internal(err)
-	}
-	if resp.Account.AvailableCreditMinor == 0 && !resp.Replayed && resp.Deposit.Status == accountsv1.DepositStatus_DEPOSIT_STATUS_SETTLED {
-		if resp.Account.AvailableCreditMinor, err = s.available(ctx, acc.ID); err != nil {
-			return nil, err
-		}
+		return nil, mapSettleErr(err)
 	}
 	return resp, nil
 }
 
-// terminal handles deposits that are no longer pending (replay or conflict) and closed accounts.
-func (s *Service) terminal(ctx context.Context, dep depositRow, acc accountRow, req *accountsv1.SettleDepositRequest) (*accountsv1.SettleDepositResponse, bool, error) {
-	if dep.Status != "pending" {
-		same := dep.ExternalRef != nil && *dep.ExternalRef == req.ExternalRef && depositStatusProto(dep.Status) == req.Status
-		if !same {
-			if dep.Status == "failed" {
-				return nil, true, grpcx.Error(codes.FailedPrecondition, "deposit_failed", "deposit already failed")
-			}
-			return nil, true, grpcx.Error(codes.AlreadyExists, "deposit_already_settled", "deposit already settled with a different external_ref")
-		}
-		avail, err := s.available(ctx, acc.ID)
-		if err != nil {
-			return nil, true, err
-		}
-		return &accountsv1.SettleDepositResponse{Deposit: dep.proto(), Account: acc.proto(avail), Replayed: true}, true, nil
+func mapSettleErr(err error) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == uniqueViolation {
+		return grpcx.Error(codes.AlreadyExists, "external_ref_reused", "external_ref already used by another deposit")
 	}
-	if acc.State == StateClosed {
-		return nil, true, grpcx.Error(codes.FailedPrecondition, "account_closed", "account is closed")
+	return internal(err)
+}
+
+// replayOrConflict answers a webhook for a deposit that already reached a terminal state.
+func (s *Service) replayOrConflict(ctx context.Context, dep depositRow, acc accountRow, req *accountsv1.SettleDepositRequest) (*accountsv1.SettleDepositResponse, error) {
+	same := dep.ExternalRef != nil && *dep.ExternalRef == req.ExternalRef && depositStatusProto(dep.Status) == req.Status
+	if !same {
+		if dep.Status == "failed" {
+			return nil, grpcx.Error(codes.FailedPrecondition, "deposit_failed", "deposit already failed")
+		}
+		return nil, grpcx.Error(codes.AlreadyExists, "deposit_already_settled", "deposit already settled with a different external_ref")
 	}
-	return nil, false, nil
+	avail, err := s.available(ctx, acc)
+	if err != nil {
+		return nil, err
+	}
+	return &accountsv1.SettleDepositResponse{Deposit: dep.proto(), Account: acc.proto(avail), Replayed: true}, nil
 }
 
 type querier interface {
@@ -380,9 +405,9 @@ func (s *Service) load(ctx context.Context, q querier, id string, lock bool) (ac
 	return acc, err
 }
 
-// available = collateral_held − receivable, straight from the ledger (source of truth).
-func (s *Service) available(ctx context.Context, accountID string) (int64, error) {
-	b, err := s.ledger.GetBalances(ctx, &ledgerv1.GetBalancesRequest{AccountId: accountID})
+// available = collateral_held − receivable from the ledger, never above the account's credit limit.
+func (s *Service) available(ctx context.Context, acc accountRow) (int64, error) {
+	b, err := s.ledger.GetBalances(ctx, &ledgerv1.GetBalancesRequest{AccountId: acc.ID})
 	if status.Code(err) == codes.NotFound {
 		return 0, nil
 	}
@@ -398,7 +423,7 @@ func (s *Service) available(ctx context.Context, accountID string) (int64, error
 			recv = x.AmountMinor
 		}
 	}
-	return max(coll-recv, 0), nil
+	return min(max(coll-recv, 0), acc.CreditLimit), nil
 }
 
 func stateProto(s State) accountsv1.AccountState {
@@ -416,6 +441,8 @@ func stateProto(s State) accountsv1.AccountState {
 func depositStatusProto(s string) accountsv1.DepositStatus {
 	switch s {
 	case "pending":
+		return accountsv1.DepositStatus_DEPOSIT_STATUS_PENDING
+	case "settling": // externally still pending until the ledger post is finalized
 		return accountsv1.DepositStatus_DEPOSIT_STATUS_PENDING
 	case "settled":
 		return accountsv1.DepositStatus_DEPOSIT_STATUS_SETTLED
