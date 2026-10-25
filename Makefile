@@ -20,7 +20,7 @@ test-integration:
 	go test -race -count=1 -tags=integration -timeout=10m ./tests/integration/...
 
 load:
-	$(COMPOSE) --profile load run --rm k6 run /scripts/sprint1.js
+	$(COMPOSE) --profile load run --rm k6 run /scripts/flows.js
 	$(MAKE) load-verify
 
 load-verify:

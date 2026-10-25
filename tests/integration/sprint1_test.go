@@ -43,8 +43,9 @@ import (
 )
 
 var (
-	jwtSecret  = []byte("integration-secret-integration-secret")
-	bankSecret = []byte("bank-integration-secret")
+	jwtSecret     = []byte("integration-secret-integration-secret")
+	bankSecret    = []byte("bank-integration-secret")
+	networkSecret = []byte("network-integration-secret")
 )
 
 type stack struct {
@@ -106,6 +107,7 @@ func startStack(t *testing.T) *stack {
 		Accounts:         accountsv1.NewAccountsServiceClient(accountsConn),
 		JWTSecret:        jwtSecret,
 		BankSecret:       bankSecret,
+		NetworkSecret:    networkSecret,
 		WebhookTolerance: 5 * time.Minute,
 		Rejections:       gatewaytest.NewRejectionLog(s.gateway),
 		RequestTimeout:   10 * time.Second,
