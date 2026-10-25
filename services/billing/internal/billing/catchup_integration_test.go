@@ -185,7 +185,8 @@ func TestInterestAfterGraceLost(t *testing.T) {
 	}
 	rr := engine.Replay(es, c1, c2)
 	facts := []engine.StatementFacts{{Cycle: 1, Close: c1, Due: engine.DueDate(c1), Minimum: ss[0].MinimumDueMinor, NewBalance: ss[0].NewBalanceMinor}}
-	pastDue := func(day time.Time) bool { return engine.Delinquency(facts, nil, day.Add(dayDur)).DPD >= 1 }
+	// A day is past due when DPD ≥ 1 at its start: the due date itself is not (spec B-6).
+	pastDue := func(day time.Time) bool { return engine.Delinquency(facts, nil, day).DPD >= 1 }
 	want := engine.Interest(rr.Days, 2280, false, pastDue)
 	if want == 0 || s2.InterestMinor != want || s2.FeesMinor != 2500 {
 		t.Fatalf("statement 2 interest=%d fees=%d want interest %d", s2.InterestMinor, s2.FeesMinor, want)
@@ -496,5 +497,73 @@ func TestConcurrentCatchUpsOfDistinctAccountsOnSmallPool(t *testing.T) {
 		if len(f.statements(t, id)) != 1 {
 			t.Fatalf("account %s missing its statement", id)
 		}
+	}
+}
+
+// Review C1: pay in full the day before the close, the bank settles after it → no fee, grace
+// kept (no interest next cycle), never past due.
+func TestPaymentBeforeCloseSettledAfterIsOnTime(t *testing.T) {
+	f := setup(t)
+	acc := f.activeAccount(t, 200000)
+	f.purchase(t, acc.Id, 12000)
+	c1 := f.closeN(t, acc, 1)
+	f.advanceTo(t, acc.Id, c1.Add(-dayDur))
+	p := f.createPayment(t, acc.Id, 12000)
+	f.advanceTo(t, acc.Id, c1)
+	f.bank(t, p, accountsv1.PaymentStatus_PAYMENT_STATUS_SETTLED)
+	f.advanceTo(t, acc.Id, f.closeN(t, acc, 2).Add(20*dayDur))
+	if n := len(f.charges(t, acc.Id, "")); n != 0 {
+		t.Fatalf("charges for an on-time full payment: %+v", f.charges(t, acc.Id, ""))
+	}
+	if a := f.account(t, acc.Id); a.Delinquency != "none" {
+		t.Fatalf("stage=%s", a.Delinquency)
+	}
+	f.assertReconciles(t, acc.Id)
+}
+
+// Review I1: the late fee is capped at the unpaid part of the minimum.
+func TestLateFeeCappedAtShortfall(t *testing.T) {
+	f := setup(t)
+	acc := f.activeAccount(t, 200000)
+	f.purchase(t, acc.Id, 100000)
+	c1 := f.closeN(t, acc, 1)
+	f.advanceTo(t, acc.Id, c1)
+	f.pay(t, acc.Id, 2400) // minimum is 2500
+	f.advanceTo(t, acc.Id, engine.OnTimeCutoff(engine.DueDate(c1)))
+	fees := f.charges(t, acc.Id, "fee")
+	if len(fees) != 1 || fees[0].AmountMinor != 100 {
+		t.Fatalf("fee: %+v want 100", fees)
+	}
+}
+
+// Review M6: on the due date itself the account is not yet past due, so that day's interest base
+// is principal only even when interest and fees are outstanding (spec B-6).
+func TestDueDateIsNotAPastDueDay(t *testing.T) {
+	f := setup(t)
+	acc := f.activeAccount(t, 500000)
+	f.purchase(t, acc.Id, 300000)
+	c1, c2, c3 := f.closeN(t, acc, 1), f.closeN(t, acc, 2), f.closeN(t, acc, 3)
+	f.advanceTo(t, acc.Id, c1)
+	f.pay(t, acc.Id, 3000) // statement 1 minimum paid on time (grace lost: statement 2 has interest)
+	f.advanceTo(t, acc.Id, c3) // statement 2 minimum missed: on due date 2 interest is outstanding
+	ss := f.statements(t, acc.Id)
+	if ss[1].InterestMinor == 0 {
+		t.Fatal("fixture: statement 2 must carry interest")
+	}
+	var es []engine.Entry
+	for _, e := range f.entries(t, acc.Id) {
+		if e.Reference != "interest:"+acc.Id+":3" {
+			es = append(es, e)
+		}
+	}
+	credits := []engine.Credit{{ReceivedAt: c1, PostedAt: c1, Amount: 3000}}
+	var facts []engine.StatementFacts
+	for _, s := range ss[:2] {
+		facts = append(facts, engine.StatementFacts{Cycle: int(s.Cycle), Close: s.PeriodEnd.AsTime(), Due: s.DueDate.AsTime(), Minimum: s.MinimumDueMinor, NewBalance: s.NewBalanceMinor})
+	}
+	pastDue := func(day time.Time) bool { return engine.Delinquency(facts, credits, day).DPD >= 1 }
+	want := engine.Interest(engine.Replay(es, c2, c3).Days, 2280, false, pastDue)
+	if ss[2].InterestMinor != want {
+		t.Fatalf("statement 3 interest=%d want %d", ss[2].InterestMinor, want)
 	}
 }

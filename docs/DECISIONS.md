@@ -180,3 +180,10 @@ Append-only. One entry per decision. Format: context → decision → consequenc
 - Catch-ups of one account serialize on a **lease** in its `billing_accounts` row (autocommit UPDATE, 2-minute expiry). Two earlier designs, a row lock held in a transaction, waiting or `NOWAIT`, pinned a pool connection per catch-up and deadlocked the pool under concurrency (found by tests and by the 1000-VU load).
 - Charge-off waits (`operation_in_flight`, retried) while any authorization is pending or has an operation in flight, so no capture lands after the collateral is applied; its amount is fixed once so retries post the same journal.
 - Migrations: accounts `000012`–`000013`, ledger `000004`, billing `000001`–`000003`.
+
+**Sprint 4 final review fixes (2026-10-25).**
+- **On-time payments that settle after a close count.** A payment received before a close but posted after it (or still pending) is not in that statement's balance, so it now pays that statement's minimum and grace, unless it already sits in the previous statement's on-time window (`engine.anchor`). Before, it fell outside every window: late fee, lost grace, possible block.
+- **Late fee capped at the unpaid minimum** (spec I-2), e.g. 1.00 when 24.00 of 25.00 was paid.
+- **Due date is not a past-due day** for interest (spec B-6).
+- **Clock advance idempotent inside accounts** (`clock_advances`, migration `000014`): the gateway releases an idempotency key on a 5xx, so a retry no longer advances twice.
+

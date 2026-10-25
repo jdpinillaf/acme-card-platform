@@ -4,6 +4,7 @@ package accounts
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +12,8 @@ import (
 	"google.golang.org/grpc/status"
 
 	accountsv1 "github.com/acme/acme-card/gen/go/acme/accounts/v1"
+	commonv1 "github.com/acme/acme-card/gen/go/acme/common/v1"
+	"github.com/acme/acme-card/pkg/grpcx"
 )
 
 const day = 24 * time.Hour
@@ -161,5 +164,30 @@ func TestActivatedAtSetOnActivation(t *testing.T) {
 	r2, err := f.svc.SettleDeposit(context.Background(), settled(f.deposit(t, acc.Id, 500), "bank-clk6b"))
 	if err != nil || !r2.Account.ActivatedAt.AsTime().Equal(t0.Add(4*day)) {
 		t.Fatalf("activated_at moved: %v %v", err, r2.Account.ActivatedAt)
+	}
+}
+
+// Review I2: the gateway releases an idempotency key on a 5xx (e.g. the catch-up after the advance
+// timed out), so a retry with the same key reaches accounts again and must not advance twice.
+func TestAdvanceClockIdempotentOnKeyHash(t *testing.T) {
+	f, _ := txFixture(t)
+	acc := f.activeAccount(t, "cust-clk7", 1000)
+	key := strings.Repeat("d", 64)
+	req := func(days int32) (*accountsv1.GetAccountResponse, error) {
+		return f.svc.AdvanceClock(context.Background(), &accountsv1.AdvanceClockRequest{AccountId: acc.Id, Days: days,
+			Meta: &commonv1.RequestMeta{IdempotencyKeyHash: key}})
+	}
+	if _, err := req(30); err != nil {
+		t.Fatal(err)
+	}
+	r, err := req(30)
+	if err != nil || !r.Account.AccountTime.AsTime().Equal(t0.Add(30*day)) {
+		t.Fatalf("retry advanced again: %v %v", err, r)
+	}
+	if _, err := req(31); grpcx.Reason(err) != "idempotency_key_reuse" {
+		t.Fatalf("same key, different days: %v", err)
+	}
+	if f.events(t, "account.clock_advanced") != 1 {
+		t.Fatal("one advance event")
 	}
 }

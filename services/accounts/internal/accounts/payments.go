@@ -75,7 +75,7 @@ func (p paymentRow) proto() *accountsv1.Payment {
 	return &accountsv1.Payment{Id: p.ID, AccountId: p.AccountID, Amount: &commonv1.Money{AmountMinor: p.Amount, Currency: p.Currency},
 		Status: paymentStatusProto[p.Status], ExternalRef: strOr(p.ExternalRef), ReturnRef: strOr(p.ReturnRef),
 		CreatedAt: timestamppb.New(p.CreatedAt), SettledAt: tsp(p.SettledAt), ReturnedAt: tsp(p.ReturnedAt),
-		ReceivedAt: timestamppb.New(p.ReceivedAt)}
+		ReceivedAt: timestamppb.New(p.ReceivedAt), SettleEffectiveAt: tsp(p.SettleAt)}
 }
 
 func (s *Service) paymentResponse(ctx context.Context, p paymentRow, replayed bool) (*accountsv1.PaymentResponse, error) {

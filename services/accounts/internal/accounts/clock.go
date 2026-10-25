@@ -59,6 +59,24 @@ func (s *Service) AdvanceClock(ctx context.Context, req *accountsv1.AdvanceClock
 		if before.State == StateClosed {
 			return grpcx.Error(codes.FailedPrecondition, "account_closed", "account is closed")
 		}
+		if key := req.GetMeta().GetIdempotencyKeyHash(); key != "" {
+			tag, err := tx.Exec(ctx, `INSERT INTO clock_advances (idempotency_key_hash, account_id, days) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`, key, before.ID, req.Days)
+			if err != nil {
+				return err
+			}
+			if tag.RowsAffected() == 0 { // a retry of an advance that already committed
+				var acc0 string
+				var days int32
+				if err := tx.QueryRow(ctx, `SELECT account_id::text, days FROM clock_advances WHERE idempotency_key_hash=$1`, key).Scan(&acc0, &days); err != nil {
+					return err
+				}
+				if acc0 != before.ID || days != req.Days {
+					return grpcx.Error(codes.AlreadyExists, "idempotency_key_reuse", "idempotency key already used for a different advance")
+				}
+				acc = before
+				return nil
+			}
+		}
 		acc, err = scanAccount(tx.QueryRow(ctx, `UPDATE accounts SET clock_offset_seconds = clock_offset_seconds + $2, version = version + 1, updated_at = now()
 			WHERE id = $1 RETURNING `+accountCols, before.ID, int64(req.Days)*86400))
 		if err != nil {

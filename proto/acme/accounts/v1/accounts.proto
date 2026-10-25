@@ -93,6 +93,8 @@ message Payment {
   google.protobuf.Timestamp returned_at = 9;
   // received_at is account time at creation; billing judges on-time payments by it.
   google.protobuf.Timestamp received_at = 10;
+  // settle_effective_at is the business date the settlement posts with (set at reserve).
+  google.protobuf.Timestamp settle_effective_at = 11;
 }
 
 message PaymentResponse {

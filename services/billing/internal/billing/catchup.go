@@ -204,9 +204,10 @@ func (r *run) delinquencyAt(ctx context.Context, t time.Time) error {
 		return nil
 	}
 	d := engine.Delinquency(r.facts, r.credits, t)
-	for _, cycle := range d.Missed {
+	for _, m := range d.Missed {
+		cycle := m.Cycle
 		f := r.facts[cycle-1]
-		amount := min(r.s.cfg.Fixed[r.acc.Currency], f.Minimum)
+		amount := min(r.s.cfg.Fixed[r.acc.Currency], m.Shortfall) // capped at the unpaid minimum (spec I-2)
 		if amount <= 0 {
 			continue
 		}
@@ -247,15 +248,11 @@ func (r *run) delinquencyAt(ctx context.Context, t time.Time) error {
 func (r *run) close(ctx context.Context, n int) error {
 	acc := r.acc.Id
 	prevClose, closeAt := engine.CycleClose(r.act, n-1), engine.CycleClose(r.act, n)
-	var prev *engine.StatementFacts
-	if len(r.facts) > 0 {
-		prev = &r.facts[len(r.facts)-1]
-	}
 	if err := r.reloadEntries(ctx); err != nil {
 		return err
 	}
 	balanceOnly := r.chargedOff
-	grace := engine.Grace(prev, r.credits)
+	grace := engine.Grace(r.facts, r.credits)
 	interestRef := fmt.Sprintf("interest:%s:%d", acc, n)
 	if !balanceOnly {
 		var es []engine.Entry
@@ -265,7 +262,8 @@ func (r *run) close(ctx context.Context, n int) error {
 			}
 		}
 		facts := r.facts
-		pastDue := func(d time.Time) bool { return engine.Delinquency(facts, r.credits, d.Add(day)).DPD >= 1 }
+		// A day is past due when DPD ≥ 1 at its start; the due date itself is not (spec B-6).
+		pastDue := func(d time.Time) bool { return engine.Delinquency(facts, r.credits, d).DPD >= 1 }
 		if interest := engine.Interest(engine.Replay(es, prevClose, closeAt).Days, r.s.cfg.APRBps, grace, pastDue); interest > 0 {
 			posted, err := r.s.postCharge(ctx, acc, "interest", n, interestRef, interest, closeAt.Add(-time.Second))
 			if err != nil {

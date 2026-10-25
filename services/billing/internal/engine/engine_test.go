@@ -170,20 +170,20 @@ func TestGrace(t *testing.T) {
 	if !Grace(nil, nil) {
 		t.Fatal("first cycle has grace")
 	}
-	if !Grace(&s, []Credit{{ReceivedAt: cut.Add(-time.Second), Amount: 50000}}) {
+	if !Grace([]StatementFacts{s}, []Credit{{ReceivedAt: cut.Add(-time.Second), Amount: 50000}}) {
 		t.Fatal("paid in full by due")
 	}
-	if Grace(&s, []Credit{{ReceivedAt: cut.Add(-time.Second), Amount: 49999}}) {
+	if Grace([]StatementFacts{s}, []Credit{{ReceivedAt: cut.Add(-time.Second), Amount: 49999}}) {
 		t.Fatal("short by one")
 	}
-	if Grace(&s, []Credit{{ReceivedAt: cut, Amount: 50000}}) {
+	if Grace([]StatementFacts{s}, []Credit{{ReceivedAt: cut, Amount: 50000}}) {
 		t.Fatal("received after the due date")
 	}
-	if !Grace(&s, []Credit{{ReceivedAt: s.Close.Add(time.Hour), Amount: 50000, Pending: true}}) {
+	if !Grace([]StatementFacts{s}, []Credit{{ReceivedAt: s.Close.Add(time.Hour), Amount: 50000, Pending: true}}) {
 		t.Fatal("pending counts as paid")
 	}
 	zero := stmt(1, d(2027, 2, 10), 0, 0)
-	if !Grace(&zero, nil) {
+	if !Grace([]StatementFacts{zero}, nil) {
 		t.Fatal("zero balance keeps grace")
 	}
 }
@@ -192,7 +192,7 @@ func TestDelinquency(t *testing.T) {
 	s1 := stmt(1, d(2027, 2, 10), 5000, 100000)
 	now := s1.Due.Add(24*time.Hour + 14*24*time.Hour)
 	r := Delinquency([]StatementFacts{s1}, nil, now)
-	if r.DPD != 15 || r.PastDue != 5000 || len(r.Missed) != 1 || r.Missed[0] != 1 {
+	if r.DPD != 15 || r.PastDue != 5000 || len(r.Missed) != 1 || r.Missed[0].Cycle != 1 || r.Missed[0].Shortfall != 5000 {
 		t.Fatalf("missed: %+v", r)
 	}
 	if r := Delinquency([]StatementFacts{s1}, nil, s1.Due.Add(24*time.Hour-time.Second)); r.DPD != 0 || len(r.Missed) != 0 {
@@ -242,5 +242,54 @@ func TestRenderStatementDeterministic(t *testing.T) {
 	doc.NewBalanceMinor = 101
 	if _, h3 := RenderStatement(doc); h3 == h1 {
 		t.Fatal("different docs, same hash")
+	}
+}
+
+// C1: a payment received before a close but posted after it is not in that statement's balance,
+// so it must count toward that statement's minimum and grace (as if received at the close).
+func TestPaymentReceivedBeforeClosePostedAfterCounts(t *testing.T) {
+	s1 := stmt(1, d(2027, 2, 10), 2500, 12000)
+	before := s1.Close.Add(-time.Hour)
+	now := s1.Due.Add(24*time.Hour + 20*24*time.Hour)
+	settledLate := []Credit{{ReceivedAt: before, PostedAt: s1.Close.Add(2 * time.Hour), Amount: 12000}}
+	if r := Delinquency([]StatementFacts{s1}, settledLate, now); r.DPD != 0 || r.PastDue != 0 || len(r.Missed) != 0 {
+		t.Fatalf("settled after the close: %+v", r)
+	}
+	if !Grace([]StatementFacts{s1}, settledLate) {
+		t.Fatal("paid in full (posted after the close) keeps grace")
+	}
+	stillPending := []Credit{{ReceivedAt: before, Amount: 12000, Pending: true}}
+	if r := Delinquency([]StatementFacts{s1}, stillPending, now); r.DPD != 0 || len(r.Missed) != 0 {
+		t.Fatalf("pending across the close: %+v", r)
+	}
+	// Posted before the close it is already in the balance: it does not pay statement 1's minimum.
+	reflected := []Credit{{ReceivedAt: before, PostedAt: before.Add(time.Minute), Amount: 1000}}
+	if r := Delinquency([]StatementFacts{s1}, reflected, now); r.PastDue != 2500 {
+		t.Fatalf("reflected payment counted twice: %+v", r)
+	}
+}
+
+// I1: the late fee is capped at the unpaid part of the minimum.
+func TestMissedReportsShortfall(t *testing.T) {
+	s1 := stmt(1, d(2027, 2, 10), 2500, 100000)
+	paid := []Credit{{ReceivedAt: s1.Close.Add(24 * time.Hour), PostedAt: s1.Close.Add(25 * time.Hour), Amount: 2400}}
+	r := Delinquency([]StatementFacts{s1}, paid, s1.Due.Add(48*time.Hour))
+	if len(r.Missed) != 1 || r.Missed[0].Cycle != 1 || r.Missed[0].Shortfall != 100 {
+		t.Fatalf("missed: %+v", r.Missed)
+	}
+}
+
+// A payment received inside statement 1's on-time window that is still pending at close 2 pays
+// statement 1; it must not be moved to statement 2's window.
+func TestPendingPaymentInPreviousWindowStaysThere(t *testing.T) {
+	s1 := stmt(1, d(2027, 2, 10), 2500, 100000)
+	s2 := stmt(2, d(2027, 3, 10), 5000, 101000)
+	pending := []Credit{{ReceivedAt: s1.Close.Add(time.Hour), Amount: 2500, Pending: true}}
+	r := Delinquency([]StatementFacts{s1, s2}, pending, s1.Due.Add(24*time.Hour+20*24*time.Hour))
+	if r.DPD != 0 || len(r.Missed) != 0 {
+		t.Fatalf("statement 1 was paid on time (pending): %+v", r)
+	}
+	if !Grace([]StatementFacts{s1}, []Credit{{ReceivedAt: s1.Close.Add(-time.Hour), Amount: 100000, Pending: true}}) {
+		t.Fatal("full payment before close 1, pending across it, keeps grace")
 	}
 }

@@ -224,13 +224,11 @@ func (s *Service) GetSummary(ctx context.Context, req *billingv1.GetSummaryReque
 	}
 	sum.CycleStart = timestamppb.New(engine.CycleClose(act, len(sts)))
 	sum.CycleEnd = timestamppb.New(engine.CycleClose(act, len(sts)+1))
-	var prev *engine.StatementFacts
 	if len(sts) > 0 {
 		last := sts[len(sts)-1]
 		sum.LastStatement, sum.MinimumDueMinor, sum.DueDate = last.proto(), last.Minimum, tsp(last.DueDate)
-		prev = &facts[len(facts)-1]
 	}
-	sum.Grace = engine.Grace(prev, credits)
+	sum.Grace = engine.Grace(facts, credits)
 	if acc.Delinquency != "charged_off" {
 		d := engine.Delinquency(facts, credits, now)
 		sum.PastDueMinor, sum.Dpd = d.PastDue, int32(d.DPD)
@@ -257,6 +255,9 @@ func (s *Service) credits(ctx context.Context, accountID string) ([]engine.Credi
 		}
 		for _, p := range r.Payments {
 			c := engine.Credit{ReceivedAt: p.ReceivedAt.AsTime(), Amount: p.Amount.AmountMinor}
+			if p.SettleEffectiveAt != nil && p.Status != accountsv1.PaymentStatus_PAYMENT_STATUS_SETTLING {
+				c.PostedAt = p.SettleEffectiveAt.AsTime()
+			}
 			switch p.Status {
 			case accountsv1.PaymentStatus_PAYMENT_STATUS_PENDING, accountsv1.PaymentStatus_PAYMENT_STATUS_SETTLING:
 				c.Pending = true
@@ -281,6 +282,7 @@ func (s *Service) credits(ctx context.Context, accountID string) ([]engine.Credi
 		if err := rows.Scan(&c.ReceivedAt, &c.Amount); err != nil {
 			return nil, internal(err)
 		}
+		c.PostedAt = c.ReceivedAt // waivers post at their own business date
 		out = append(out, c)
 	}
 	return out, internal0(rows.Err())
