@@ -128,3 +128,32 @@ func TestCheckpointSignAndLink(t *testing.T) {
 		t.Fatal("forged signature accepted")
 	}
 }
+
+func TestQueryEventsFilters(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	f.record(t, "ledger", seqs(30)...)
+	r, err := f.svc.QueryEvents(ctx, &auditv1.QueryEventsRequest{Filter: &auditv1.EventFilter{AccountId: "ledger-7"}})
+	if err != nil || len(r.Events) != 1 || r.Events[0].AggregateId != "ledger-7" || r.Events[0].Hash == "" {
+		t.Fatalf("by account: %v %+v", err, r)
+	}
+	var all []*auditv1.AuditEvent
+	req := &auditv1.QueryEventsRequest{Filter: &auditv1.EventFilter{EventType: "x.happened"}, PageSize: 7}
+	for {
+		page, err := f.svc.QueryEvents(ctx, req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		all = append(all, page.Events...)
+		if page.NextPageToken == "" {
+			break
+		}
+		req.PageToken = page.NextPageToken
+	}
+	if len(all) != 30 || all[0].ChainSeq != 1 || all[29].ChainSeq != 30 {
+		t.Fatalf("paged: %d", len(all))
+	}
+	if r, _ := f.svc.QueryEvents(ctx, &auditv1.QueryEventsRequest{Filter: &auditv1.EventFilter{Actor: "nobody"}}); len(r.Events) != 0 {
+		t.Fatal("actor filter")
+	}
+}
