@@ -16,6 +16,7 @@ func TestTransitions(t *testing.T) {
 		{StatePendingCollateral, EventCancel, StateCancelled},
 		{StateActive, EventRequestClose, StateClosing},
 		{StateClosing, EventCloseCompleted, StateClosed},
+		{StateClosing, EventCollateralConfirmed, StateClosing},
 	}
 	for _, c := range ok {
 		got, err := Transition(c.from, c.ev)
@@ -30,7 +31,6 @@ func TestTransitions(t *testing.T) {
 		{StateActive, EventCancel},
 		{StatePendingCollateral, EventRequestClose},
 		{StateActive, EventCloseCompleted},
-		{StateClosing, EventCollateralConfirmed},
 		{StateClosing, EventCancel},
 	}
 	for _, c := range bad {

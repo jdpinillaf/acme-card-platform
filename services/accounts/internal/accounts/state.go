@@ -46,7 +46,9 @@ func Transition(from State, ev Event) (State, error) {
 		return "", fmt.Errorf("%w: unknown state %q", ErrInvalidTransition, from)
 	}
 	switch {
-	case ev == EventCollateralConfirmed && from != StateClosing:
+	case ev == EventCollateralConfirmed && from == StateClosing:
+		return StateClosing, nil // a deposit settling at the close request still lands (review C1)
+	case ev == EventCollateralConfirmed:
 		return StateActive, nil
 	case ev == EventCancel && from == StatePendingCollateral:
 		return StateCancelled, nil

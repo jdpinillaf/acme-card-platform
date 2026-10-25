@@ -128,8 +128,10 @@ func (s *Service) CreatePayment(ctx context.Context, req *accountsv1.CreatePayme
 			return err
 		}
 		switch locked.State {
-		case StateClosed:
+		case StateCancelled:
 			return grpcx.Error(codes.FailedPrecondition, "account_closed", "account is closed")
+		// closing and closed accounts accept payments while debt is owed (ADR-020); the cap below
+		// answers nothing_to_pay otherwise (review C2)
 		case StatePendingCollateral:
 			return grpcx.Error(codes.FailedPrecondition, "collateral_not_confirmed", "account is not active yet")
 		}

@@ -15,6 +15,7 @@ import (
 	accountsv1 "github.com/acme/acme-card/gen/go/acme/accounts/v1"
 	billingv1 "github.com/acme/acme-card/gen/go/acme/billing/v1"
 	commonv1 "github.com/acme/acme-card/gen/go/acme/common/v1"
+	ledgerv1 "github.com/acme/acme-card/gen/go/acme/ledger/v1"
 	"github.com/acme/acme-card/pkg/clock"
 	"github.com/acme/acme-card/pkg/grpcx"
 	"github.com/acme/acme-card/pkg/secretbox"
@@ -253,5 +254,60 @@ func TestCaptureRacingFinalStatement(t *testing.T) {
 	var capturedAt time.Time
 	if err := f.ledger.QueryRow(context.Background(), `SELECT posted_at FROM journal_entries WHERE reference=$1`, "capture:"+a.Id).Scan(&capturedAt); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Review C1: a deposit settling when the close is requested finishes; the saga waits for it.
+func TestCloseWhileDepositSettling(t *testing.T) {
+	f, _, _ := closeFixture(t)
+	ctx := context.Background()
+	acc := f.activeAccount(t, "cust-cl11", 1000)
+	d := f.deposit(t, acc.Id, 500)
+	if _, err := f.pool.Exec(ctx, `UPDATE deposits SET status='settling', external_ref='bank-cl11', settling_at=now(), effective_at=now() WHERE id=$1`, d.Id); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.close(t, acc.Id); got.CloseStage != "in_flight" {
+		t.Fatalf("waits for the settling deposit: %s", got.CloseStage)
+	}
+	r, err := f.svc.SettleDeposit(ctx, settled(d, "bank-cl11"))
+	if err != nil {
+		t.Fatalf("finishing the settling deposit on a closing account: %v", err)
+	}
+	if r.Account.State != accountsv1.AccountState_ACCOUNT_STATE_CLOSING || r.Account.CollateralMinor != 1500 {
+		t.Fatalf("after settlement: %+v", r.Account)
+	}
+	if got := f.step(t, acc.Id); got.CloseStage != "payout" {
+		t.Fatalf("saga after the deposit: %s", got.CloseStage)
+	}
+	if po := f.openPayout(t, acc.Id); po.Amount.AmountMinor != 1500 {
+		t.Fatalf("payout=%d want 1500", po.Amount.AmountMinor)
+	}
+}
+
+// Review C2: debt left on a closed account can be paid through the normal payment flow, and the
+// customer can open a new account afterwards.
+func TestPayLeftoverDebtOnClosedAccountThenReopen(t *testing.T) {
+	f, _, _ := closeFixture(t)
+	ctx := context.Background()
+	acc := f.withDebt(t, "cust-cl12", 400, 400)
+	if _, err := f.ledgerClient.PostCharge(ctx, &ledgerv1.PostChargeRequest{AccountId: acc.Id, Reference: "late_fee:cl12:1",
+		Kind: ledgerv1.ChargeKind_CHARGE_KIND_FEE, AmountMinor: 600}); err != nil {
+		t.Fatal(err)
+	}
+	f.close(t, acc.Id)
+	f.advance(t, acc.Id, 23)
+	got := f.step(t, acc.Id)
+	if got.State != accountsv1.AccountState_ACCOUNT_STATE_CLOSED || got.OutstandingMinor != 600 {
+		t.Fatalf("closed owing 600: %+v", got)
+	}
+	p, err := f.createPayment(acc.Id, 600, nil)
+	if err != nil {
+		t.Fatalf("paying the leftover debt: %v", err)
+	}
+	if _, err := f.svc.SettlePayment(ctx, settlePay(p.Payment, "bank-cl12", paySettled)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.svc.CreateAccount(ctx, &accountsv1.CreateAccountRequest{CustomerId: "cust-cl12", Currency: "USD"}); err != nil {
+		t.Fatalf("reopen after paying: %v", err)
 	}
 }
