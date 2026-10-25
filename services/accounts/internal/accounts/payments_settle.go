@@ -3,6 +3,7 @@ package accounts
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -189,7 +190,8 @@ func (s *Service) resolvePayments(ctx context.Context, cutoff time.Time) error {
 			_, err = s.ReturnPayment(ctx, &accountsv1.ReturnPaymentRequest{PaymentId: p.ID, ReturnRef: strOr(p.ReturnRef), AmountMinor: p.Amount, Meta: meta})
 		}
 		if err != nil && status.Code(err) != codes.FailedPrecondition {
-			return err
+			// One stuck payment must not stall the rest of the pass (review I4): log and move on.
+			slog.ErrorContext(ctx, "resuming payment failed; retried next pass", "payment_id", p.ID, "status", p.Status, "err", err)
 		}
 	}
 	return nil

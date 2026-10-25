@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	accountsv1 "github.com/acme/acme-card/gen/go/acme/accounts/v1"
 	ledgerv1 "github.com/acme/acme-card/gen/go/acme/ledger/v1"
@@ -187,5 +189,46 @@ func TestLateSettlementAfterExpiryIsApplied(t *testing.T) {
 	_, _ = f.svc.ExpirePayments(ctx, 100)
 	if _, err := f.svc.SettlePayment(ctx, settlePay(fail.Payment, "bank-late2", payFailed)); grpcx.Reason(err) != "payment_expired" {
 		t.Fatalf("a failed notice for an expired intent stays refused: %v", err)
+	}
+}
+
+// brokenPaymentLedger fails PostPayment for one reference, always (a persistent ledger error).
+type brokenPaymentLedger struct {
+	ledgerv1.LedgerServiceClient
+	brokenRef string
+}
+
+func (l *brokenPaymentLedger) PostPayment(ctx context.Context, r *ledgerv1.PostPaymentRequest, o ...grpc.CallOption) (*ledgerv1.PostJournalResponse, error) {
+	if r.Reference == l.brokenRef {
+		return nil, status.Error(codes.Internal, "simulated persistent ledger failure")
+	}
+	return l.LedgerServiceClient.PostPayment(ctx, r, o...)
+}
+
+// Review I4: one payment that keeps failing must not stop the rest of the reconciler pass.
+func TestReconcilerContinuesPastAFailingPayment(t *testing.T) {
+	f, c, fl := flakyFixture(t)
+	ctx := context.Background()
+	a1 := f.withDebt(t, "cust-rc1", 1000, 300)
+	a2 := f.withDebt(t, "cust-rc2", 1000, 300)
+	p1, _ := f.createPayment(a1.Id, 300, nil)
+	p2, _ := f.createPayment(a2.Id, 300, nil)
+	fl.failPayment.Store(true)
+	_, _ = f.svc.SettlePayment(ctx, settlePay(p1.Payment, "bank-rc1", paySettled)) // stuck settling
+	fl.failPayment.Store(true)
+	_, _ = f.svc.SettlePayment(ctx, settlePay(p2.Payment, "bank-rc2", paySettled)) // stuck settling
+	fl.failPlace.Store(true)
+	_, _ = f.svc.Authorize(ctx, authReq(a2.Id, "net-rc-pending", 10)) // stuck pending authorization
+
+	broken := &brokenPaymentLedger{LedgerServiceClient: f.ledgerClient, brokenRef: "payment:" + p1.Payment.Id}
+	f.svc = NewService(f.pool, broken, WithClock(c))
+	c.Advance(PendingTimeout + time.Second)
+	_ = f.svc.ResolvePending(ctx)
+
+	var st2, auth string
+	_ = f.pool.QueryRow(ctx, `SELECT status FROM payments WHERE id=$1`, p2.Payment.Id).Scan(&st2)
+	_ = f.pool.QueryRow(ctx, `SELECT status FROM authorizations WHERE network_ref='net-rc-pending'`).Scan(&auth)
+	if st2 != "settled" || auth != "failed" {
+		t.Fatalf("other work must still be resolved: payment2=%s pending-auth=%s", st2, auth)
 	}
 }

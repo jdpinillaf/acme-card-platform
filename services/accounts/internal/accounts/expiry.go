@@ -83,9 +83,12 @@ func (s *Service) expireOne(ctx context.Context) (done bool, err error) {
 //     the network or bank asked for them and every ledger step is idempotent.
 func (s *Service) ResolvePending(ctx context.Context) error {
 	cutoff := s.clock.Now().Add(-PendingTimeout)
-	if err := s.resolvePayments(ctx, cutoff); err != nil {
-		return err
-	}
+	// Payments run last and never abort the pass (review I4).
+	defer func() {
+		if err := s.resolvePayments(ctx, cutoff); err != nil {
+			slog.ErrorContext(ctx, "payment reconciliation failed", "err", err)
+		}
+	}()
 
 	rows, err := s.pool.Query(ctx, `SELECT `+authCols+` FROM authorizations WHERE status='pending' AND created_at < $1 LIMIT 100`, cutoff)
 	if err != nil {
