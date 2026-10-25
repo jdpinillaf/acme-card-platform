@@ -8,9 +8,11 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 
 	accountsv1 "github.com/acme/acme-card/gen/go/acme/accounts/v1"
 	commonv1 "github.com/acme/acme-card/gen/go/acme/common/v1"
+	"github.com/acme/acme-card/pkg/grpcx"
 	"github.com/acme/acme-card/pkg/webhook"
 )
 
@@ -125,5 +127,31 @@ func TestDeclinePaymentReturnedJSON(t *testing.T) {
 	w := do(newTxServer(f, &nopRejections{}), "POST", "/v1/network/authorizations", authBody, netSigned("/v1/network/authorizations", authBody, networkSecret))
 	if !strings.Contains(w.Body.String(), `"decline_reason":"payment_returned"`) {
 		t.Fatalf("%s", w.Body.String())
+	}
+}
+
+type erroringPay struct {
+	fakePay
+	err error
+}
+
+func (f *erroringPay) SettlePayment(context.Context, *accountsv1.SettlePaymentRequest, ...grpc.CallOption) (*accountsv1.PaymentResponse, error) {
+	return nil, f.err
+}
+
+func (f *erroringPay) ReturnPayment(context.Context, *accountsv1.ReturnPaymentRequest, ...grpc.CallOption) (*accountsv1.PaymentResponse, error) {
+	return nil, f.err
+}
+
+// Anchor reuse with a different payload is 422, like idempotency_key_reuse and network_ref_reuse.
+func TestReferenceReuseIs422(t *testing.T) {
+	for _, reason := range []string{"external_ref_reused", "return_ref_reused"} {
+		f := &erroringPay{err: grpcx.Error(codes.AlreadyExists, reason, "x")}
+		h := New(Deps{Accounts: f, JWTSecret: jwtSecret, BankSecret: []byte("bank"), NetworkSecret: networkSecret, WebhookTolerance: 300e9, Rejections: &nopRejections{}, RequestTimeout: 1e9, DisableStateful: true})
+		body := `{"payment_id":"` + payID + `","external_ref":"b-1","amount_minor":500,"currency":"USD","status":"settled"}`
+		w := do(h, "POST", "/v1/webhooks/bank/payments", body, bankSigned("/v1/webhooks/bank/payments", body))
+		if w.Code != 422 || errCode(t, w) != reason {
+			t.Errorf("%s: %d %s", reason, w.Code, w.Body.String())
+		}
 	}
 }

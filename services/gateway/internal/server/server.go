@@ -449,7 +449,8 @@ func writeGRPCError(w http.ResponseWriter, r *http.Request, err error) {
 	}
 	// Reusing an idempotency anchor with a different payload is a semantic error, like
 	// idempotency_key_reuse: 422 (spec C-4, ADR-004).
-	if reason == "network_ref_reuse" {
+	switch reason {
+	case "network_ref_reuse", "external_ref_reused", "return_ref_reused":
 		httpStatus = http.StatusUnprocessableEntity
 	}
 	msg := st.Message()
