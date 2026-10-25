@@ -155,9 +155,8 @@ func (s *Service) Authorize(ctx context.Context, req *accountsv1.AuthorizeReques
 	now := s.clock.Now()
 
 	var (
-		row      authRow
-		final    *accountsv1.AuthorizationResponse
-		replayed bool
+		row   authRow
+		final *accountsv1.AuthorizationResponse
 	)
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		id := uuid.Must(uuid.NewV7()).String()
@@ -176,7 +175,6 @@ func (s *Service) Authorize(ctx context.Context, req *accountsv1.AuthorizeReques
 			if existing.RequestHash != reqHash {
 				return grpcx.Error(codes.AlreadyExists, "network_ref_reuse", "network_ref already used for a different authorization")
 			}
-			replayed = true
 			if existing.Status != "pending" {
 				final = &accountsv1.AuthorizationResponse{Authorization: existing.proto(), Replayed: true}
 			}
@@ -215,11 +213,11 @@ func (s *Service) Authorize(ctx context.Context, req *accountsv1.AuthorizeReques
 	if final != nil {
 		return final, nil
 	}
-	return s.finishAuthorization(ctx, row, replayed, req.Meta)
+	return s.finishAuthorization(ctx, row, req.Meta)
 }
 
 // finishAuthorization places the hold and finalizes a pending authorization.
-func (s *Service) finishAuthorization(ctx context.Context, a authRow, replayed bool, meta *commonv1.RequestMeta) (*accountsv1.AuthorizationResponse, error) {
+func (s *Service) finishAuthorization(ctx context.Context, a authRow, meta *commonv1.RequestMeta) (*accountsv1.AuthorizationResponse, error) {
 	hold, err := s.ledger.PlaceHold(ctx, &ledgerv1.PlaceHoldRequest{
 		AccountId: a.AccountID, Reference: "auth:" + a.NetworkRef, AmountMinor: a.Amount, Currency: a.Currency, Meta: meta})
 	if err != nil {
@@ -252,7 +250,9 @@ func (s *Service) finishAuthorization(ctx context.Context, a authRow, replayed b
 		}
 		ev := event(typ, "authorization", after.ID, meta)
 		ev.After = snapshot(after)
-		resp = &accountsv1.AuthorizationResponse{Authorization: after.proto(), Replayed: replayed}
+		// Whoever performs the transition answers fresh; every other copy is a replay. This keeps
+		// "exactly one non-replayed response" even when a duplicate finalizes before the original.
+		resp = &accountsv1.AuthorizationResponse{Authorization: after.proto()}
 		return outbox.Enqueue(ctx, tx, ev)
 	})
 	if err != nil {

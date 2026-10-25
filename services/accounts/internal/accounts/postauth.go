@@ -134,7 +134,7 @@ func (s *Service) reserveOp(ctx context.Context, authID string, o opReq) (a auth
 }
 
 // finishOp drives the reserved op against the ledger (idempotent) and finalizes the row.
-func (s *Service) finishOp(ctx context.Context, a authRow, o opReq, meta *commonv1.RequestMeta, replayed bool) (*accountsv1.AuthorizationResponse, error) {
+func (s *Service) finishOp(ctx context.Context, a authRow, o opReq, meta *commonv1.RequestMeta) (*accountsv1.AuthorizationResponse, error) {
 	var err error
 	if o.op == "capture" {
 		_, err = s.ledger.CaptureHold(ctx, &ledgerv1.CaptureHoldRequest{
@@ -169,7 +169,7 @@ func (s *Service) finishOp(ctx context.Context, a authRow, o opReq, meta *common
 		if err != nil {
 			return err
 		}
-		resp = &accountsv1.AuthorizationResponse{Authorization: after.proto(), Replayed: replayed}
+		resp = &accountsv1.AuthorizationResponse{Authorization: after.proto()}
 		return s.emitAuth(ctx, tx, typ, cur, after, meta)
 	})
 	if err != nil {
@@ -182,14 +182,14 @@ func (s *Service) runOp(ctx context.Context, authID string, o opReq, meta *commo
 	if o.ref == "" {
 		return nil, grpcx.Error(codes.InvalidArgument, "invalid_network_ref", "network_ref is required")
 	}
-	a, final, resumed, err := s.reserveOp(ctx, authID, o)
+	a, final, _, err := s.reserveOp(ctx, authID, o)
 	if err != nil {
 		return nil, mapNetErr(err)
 	}
 	if final {
 		return &accountsv1.AuthorizationResponse{Authorization: a.proto(), Replayed: true}, nil
 	}
-	return s.finishOp(ctx, a, o, meta, resumed)
+	return s.finishOp(ctx, a, o, meta)
 }
 
 // Capture posts the purchase (amount ≤ authorized, exactly once) and frees the rest of the hold.
