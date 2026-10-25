@@ -82,3 +82,7 @@ Verbatim log of the prompts that drive this project, one section per session. Ne
 ### Prompt 3 (user)
 
 > Ok, tambien hay que agregar una pantalla en nextJs sencilla para simular los flujos y poder hacer todos los testeos correspondinetes
+
+### Prompt 4 (user)
+
+> Continua
