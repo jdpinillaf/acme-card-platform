@@ -55,3 +55,20 @@ func TestEvaluateDeclinePrecedence(t *testing.T) {
 		t.Fatalf("all cleared: got %s", got)
 	}
 }
+
+func TestEvaluateDeclinePaymentReturnedPrecedence(t *testing.T) {
+	in := okInput()
+	in.Restricted, in.Frozen = true, true
+	if got := EvaluateDecline(in); got != DeclinePaymentReturned {
+		t.Fatalf("restricted+frozen: got %s want payment_returned", got)
+	}
+	in.State = StateClosed
+	if got := EvaluateDecline(in); got != DeclineAccountClosed {
+		t.Fatalf("closed wins: got %s", got)
+	}
+	in = okInput()
+	in.Restricted, in.Currency = true, "COP"
+	if got := EvaluateDecline(in); got != DeclineCurrencyNotSupported {
+		t.Fatalf("currency before restriction: got %s", got)
+	}
+}

@@ -37,6 +37,7 @@ var declineProto = map[DeclineReason]commonv1.DeclineReason{
 	DeclineAccountClosed:          commonv1.DeclineReason_DECLINE_REASON_ACCOUNT_CLOSED,
 	DeclineCollateralNotConfirmed: commonv1.DeclineReason_DECLINE_REASON_COLLATERAL_NOT_CONFIRMED,
 	DeclineCurrencyNotSupported:   commonv1.DeclineReason_DECLINE_REASON_CURRENCY_NOT_SUPPORTED,
+	DeclinePaymentReturned:        commonv1.DeclineReason_DECLINE_REASON_PAYMENT_RETURNED,
 	DeclineCardFrozen:             commonv1.DeclineReason_DECLINE_REASON_CARD_FROZEN,
 	DeclineVelocity:               commonv1.DeclineReason_DECLINE_REASON_VELOCITY_LIMIT_EXCEEDED,
 	DeclinePurchaseLimit:          commonv1.DeclineReason_DECLINE_REASON_PURCHASE_LIMIT_EXCEEDED,
@@ -192,7 +193,7 @@ func (s *Service) Authorize(ctx context.Context, req *accountsv1.AuthorizeReques
 		if err != nil {
 			return err
 		}
-		reason := EvaluateDecline(DeclineInput{State: acc.State, Frozen: acc.Frozen, AccountCurrency: acc.Currency, Currency: req.Currency,
+		reason := EvaluateDecline(DeclineInput{State: acc.State, Frozen: acc.Frozen, Restricted: acc.Restricted != nil, AccountCurrency: acc.Currency, Currency: req.Currency,
 			VelocityOK: velocityOK, PurchaseLimit: acc.PurchaseLimit, Amount: req.AmountMinor})
 		if reason == "" {
 			row = inserted
