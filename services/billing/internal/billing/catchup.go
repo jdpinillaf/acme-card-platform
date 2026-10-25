@@ -2,14 +2,12 @@ package billing
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	accountsv1 "github.com/acme/acme-card/gen/go/acme/accounts/v1"
@@ -40,29 +38,35 @@ func (s *Service) CatchUp(ctx context.Context, req *billingv1.CatchUpRequest) (*
 	return &billingv1.CatchUpResponse{StatementsGenerated: int32(n)}, nil
 }
 
-// lockPoll is how long a catch-up waits before retrying a busy account lock.
+// lockPoll is how long a catch-up waits before retrying a busy account lease.
 const lockPoll = 20 * time.Millisecond
 
-// lockAccount takes the account's billing_accounts row lock. It never waits while holding a pool
-// connection (FOR UPDATE NOWAIT, then retry after releasing it): the holder needs further
-// connections for its writes, so waiters parked on connections would starve it (deadlock).
-func (s *Service) lockAccount(ctx context.Context, accountID string) (pgx.Tx, error) {
+// leaseTTL bounds how long a crashed catch-up keeps its account; every effect is idempotent, so a
+// takeover after expiry is safe.
+const leaseTTL = 2 * time.Minute
+
+// acquireLease takes the account's catch-up lease with one autocommit UPDATE. Nothing pins a pool
+// connection while the catch-up runs: a lock held through a transaction made every catch-up need
+// two connections at once, which deadlocked the pool under load (same account or not).
+func (s *Service) acquireLease(ctx context.Context, accountID string) (release func(), err error) {
 	if _, err := s.pool.Exec(ctx, `INSERT INTO billing_accounts (account_id) VALUES ($1) ON CONFLICT DO NOTHING`, accountID); err != nil {
 		return nil, internal(err)
 	}
+	owner := uuid.New()
 	for {
-		tx, err := s.pool.Begin(ctx)
+		tag, err := s.pool.Exec(ctx, `UPDATE billing_accounts SET lease_owner=$2, lease_until=now() + $3::interval, updated_at=now()
+			WHERE account_id=$1 AND (lease_until IS NULL OR lease_until < now())`, accountID, owner, leaseTTL.String())
 		if err != nil {
 			return nil, internal(err)
 		}
-		_, err = tx.Exec(ctx, `SELECT 1 FROM billing_accounts WHERE account_id=$1 FOR UPDATE NOWAIT`, accountID)
-		if err == nil {
-			return tx, nil
-		}
-		_ = tx.Rollback(context.WithoutCancel(ctx))
-		var pgErr *pgconn.PgError
-		if !errors.As(err, &pgErr) || pgErr.Code != "55P03" { // lock_not_available
-			return nil, internal(err)
+		if tag.RowsAffected() == 1 {
+			return func() {
+				ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+				defer cancel()
+				if _, err := s.pool.Exec(ctx, `UPDATE billing_accounts SET lease_until=NULL, lease_owner=NULL WHERE account_id=$1 AND lease_owner=$2`, accountID, owner); err != nil {
+					slog.WarnContext(ctx, "billing lease release failed; it expires on its own", "account_id", accountID, "err", err)
+				}
+			}, nil
 		}
 		select {
 		case <-ctx.Done():
@@ -92,11 +96,11 @@ type run struct {
 // charge-off due up to account time (spec C-9). Concurrent catch-ups of one account serialize on
 // its billing_accounts row; every effect is idempotent on a deterministic reference.
 func (s *Service) CatchUpAccount(ctx context.Context, accountID string) (int, error) {
-	tx, err := s.lockAccount(ctx, accountID)
+	release, err := s.acquireLease(ctx, accountID)
 	if err != nil {
 		return 0, err
 	}
-	defer tx.Rollback(context.WithoutCancel(ctx))
+	defer release()
 	acc, err := s.account(ctx, accountID)
 	if err != nil {
 		return 0, err
@@ -118,10 +122,7 @@ func (s *Service) CatchUpAccount(ctx context.Context, accountID string) (int, er
 	if err := r.execute(ctx); err != nil {
 		return r.generated, err
 	}
-	if _, err := tx.Exec(ctx, `UPDATE billing_accounts SET updated_at=now() WHERE account_id=$1`, accountID); err != nil {
-		return r.generated, internal(err)
-	}
-	return r.generated, internal0(tx.Commit(ctx))
+	return r.generated, nil
 }
 
 func (r *run) load(ctx context.Context) error {

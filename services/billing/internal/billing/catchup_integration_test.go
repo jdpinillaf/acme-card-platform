@@ -458,3 +458,43 @@ func TestConcurrentCatchUpsOnSmallPool(t *testing.T) {
 		t.Fatalf("statements=%d", n)
 	}
 }
+
+// Catch-ups of many different accounts must not starve the pool either: each one needs a second
+// connection for its writes, so a lock that pins a connection deadlocks once concurrency ≥ pool.
+func TestConcurrentCatchUpsOfDistinctAccountsOnSmallPool(t *testing.T) {
+	f := setup(t)
+	var ids []string
+	for i := 0; i < 24; i++ {
+		acc := f.activeAccount(t, 1000)
+		if _, err := f.accounts.AdvanceClock(context.Background(), &accountsv1.AdvanceClockRequest{AccountId: acc.Id, Days: 40}); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, acc.Id)
+	}
+	cfg := f.pool.Config().Copy()
+	cfg.MaxConns = 4
+	small, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(small.Close)
+	svc := NewService(small, f.ledger, f.accounts, f.store, f.svc.cfg)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	var wg sync.WaitGroup
+	for _, id := range ids {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := svc.CatchUpAccount(ctx, id); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	for _, id := range ids {
+		if len(f.statements(t, id)) != 1 {
+			t.Fatalf("account %s missing its statement", id)
+		}
+	}
+}
