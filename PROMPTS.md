@@ -74,3 +74,11 @@ Verbatim log of the prompts that drive this project, one section per session. Ne
 - JWT issuer: **dev-only token CLI**.
 - Rate limit backend: **Postgres**.
 - Collateral top-ups after activation: **yes**, limit grows.
+
+### Prompt 2 (user)
+
+> tenemos ya el plan paso ap aso con los test?
+
+### Prompt 3 (user)
+
+> Ok, tambien hay que agregar una pantalla en nextJs sencilla para simular los flujos y poder hacer todos los testeos correspondinetes

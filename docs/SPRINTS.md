@@ -12,6 +12,7 @@ Monorepo layout, docker-compose (Postgres, LocalStack), Makefile, proto + buf, s
 - `GET /v1/accounts/{id}`; `GET /healthz`, `GET /readyz`.
 - Gateway middleware chain: strict JSON → JWT → rate limit → idempotency → audit.
 - Events: `account.opened`, `collateral.deposit_created`, `collateral.confirmed`, `card.activated`.
+- `web/` — minimal Next.js (App Router) simulator: mint dev JWT, create account, create deposit, fire signed bank webhook, inspect account, replay the same Idempotency-Key and see the replay flag. Secrets stay in server route handlers.
 - Tests: state machine, money, idempotency (50 concurrent same key → 1 effect), webhook signature, ledger balance invariant, audit append-only, k6 1000 VUs.
 
 ## Sprint 2 — Authorizations, captures, reversals, refunds

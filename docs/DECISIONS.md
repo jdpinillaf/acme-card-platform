@@ -34,3 +34,7 @@ Append-only. One entry per decision. Format: context → decision → consequenc
 
 ## ADR-010 — Multi-currency = one account per (customer, currency) (2026-10-25)
 **Decision.** A customer may hold several accounts, one per currency. All postings inside an account share its currency. Top-ups after activation raise the limit.
+
+## ADR-011 — Next.js flow simulator (2026-10-25)
+**Context.** Manual and exploratory testing of the flows needs a UI; curl alone is slow for demos.
+**Decision.** `web/` is a single-page Next.js (App Router, TypeScript) app. Browser talks only to its own route handlers (`/api/*`), which hold `JWT_HS256_SECRET` and `BANK_WEBHOOK_SECRET`, mint tokens, sign webhooks and forward to the gateway. It ships in docker-compose as `web` on port 3000. It is a dev tool, not a customer product.
