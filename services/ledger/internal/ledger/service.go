@@ -229,6 +229,7 @@ func (s *Service) GetBalances(ctx context.Context, req *ledgerv1.GetBalancesRequ
 			recv = b.AmountMinor
 		}
 	}
+	resp.ReceivableMinor = recv
 	resp.AvailableMinor = availableOf(coll, resp.HoldsMinor, recv)
 	return resp, nil
 }

@@ -112,3 +112,19 @@ Append-only. One entry per decision. Format: context → decision → consequenc
 **Deferred.**
 - `GetBalances` reads balances and holds in two statements, so available credit can be briefly overstated for display.
 - Replays return the current state rather than a stored original response.
+
+## ADR-017 — Security/optimization audit fixes (2026-10-25)
+**Context.** An audit of the running stack (68 black-box probes, fault injection, SQL invariants) confirmed four defects:
+- H1: the gateway stored and replayed 5xx/504 responses for the key TTL, so a retry after a transient outage could never succeed with the same key.
+- H2: a reserved capture/reversal/refund the ledger refused permanently (e.g. hold expired by the ledger safety net) stayed `pending_op` forever: follow-ups answered `operation_in_progress` and the reconciler retried every minute.
+- H3: `ResolvePending` released the hold before failing the authorization; a late duplicate finalizing in between could leave an approved authorization with no hold.
+- H4: an idempotency claim kept its transaction (and a pool connection) open for the whole request; 60 slow requests starved the gateway pool, including routes that only needed the rate limiter.
+
+**Decision.**
+- Idempotency claims are committed `in_progress` rows with a `lease_until` and an `owner` (migration `gateway/000003`). No transaction stays open while the handler runs. Duplicates poll the row (holding a goroutine, not a connection) up to the wait timeout, then answer 409 `request_in_progress`. A row whose lease expired is taken over by the next identical request; `Complete`/`Abort` are guarded by `owner`, so a stale owner cannot overwrite a takeover. This supersedes the row-lock design of ADR-004.
+- 5xx responses are not stored: the claim is aborted and the retry runs the handler again. Downstream operations are idempotent on their own anchors (deposit key hash, `external_ref`, `network_ref`, journal references), so a retry after a timeout whose effect did land resolves to that effect. 2xx and 4xx are stored and replayed as before. ADR-004's "always stored" is withdrawn for 5xx.
+- A ledger error with code `FailedPrecondition`, `InvalidArgument`, `OutOfRange`, `NotFound` or `AlreadyExists` is terminal for a reserved operation: the authorization becomes `failed` with its pending op cleared (event `authorization.failed`); a refund becomes `failed` (migration `accounts/000008`, event `refund.failed`) and stops counting toward the cap. The caller still receives the ledger's reason.
+- `ResolvePending` fails stale pending authorizations first and releases holds second. `hold_released_at` records the release so a crash between the two steps is retried on the next pass.
+- Query optimizations: the rate limiter is one statement (`INSERT … ON CONFLICT DO UPDATE … WHERE`, exact under concurrency); `GetBalances` reads balances and holds in one statement (closes the ADR-016 deferral); settlement never calls the ledger while holding deposit/account locks; `Authorize` no longer pre-loads the account nor re-reads the row it just inserted (an unknown card surfaces as the foreign-key violation, mapped to `card_not_found`).
+
+**Consequences.** A request whose handler outlives the lease (30 s, three times the gateway timeout) loses its claim and its result is discarded (`ErrClaimLost` logged). Concurrent duplicates cost one cheap primary-key read every 25 ms while they wait.

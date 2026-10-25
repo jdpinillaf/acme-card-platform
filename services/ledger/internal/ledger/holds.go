@@ -19,8 +19,8 @@ import (
 	"github.com/acme/acme-card/pkg/outbox"
 )
 
-// exposure returns credit limit (= collateral held) and current exposure
-// (Σ active holds + max(receivable, 0)). Caller must hold the account mutex.
+// exposure returns the credit limit (= collateral held), Σ active holds and the signed receivable
+// (negative = credit balance). Caller must hold the account mutex.
 func exposure(ctx context.Context, tx pgx.Tx, accountID string) (limit, holds, receivable int64, err error) {
 	err = tx.QueryRow(ctx, `
 		SELECT
@@ -31,10 +31,10 @@ func exposure(ctx context.Context, tx pgx.Tx, accountID string) (limit, holds, r
 	return
 }
 
-// availableOf applies the strict-limit rule: a credit balance (negative receivable) never adds
-// spending power.
+// availableOf applies the signed rule (ADR-017): a credit balance (negative receivable) is spent
+// before the credit line, so it adds spending power; exposure never exceeds the limit.
 func availableOf(limit, holds, receivable int64) int64 {
-	return max(0, limit-max(receivable, 0)-holds)
+	return max(0, limit-receivable-holds)
 }
 
 func holdEvent(typ, holdID, accountID string, meta *commonv1.RequestMeta, after map[string]any) events.Event {
@@ -47,7 +47,7 @@ func holdEvent(typ, holdID, accountID string, meta *commonv1.RequestMeta, after 
 	return ev
 }
 
-// PlaceHold reserves credit if Σ active holds + max(receivable,0) + amount ≤ limit.
+// PlaceHold reserves credit if Σ active holds + receivable + amount ≤ limit (receivable signed).
 func (s *Service) PlaceHold(ctx context.Context, req *ledgerv1.PlaceHoldRequest) (*ledgerv1.PlaceHoldResponse, error) {
 	if req.Reference == "" || req.AmountMinor <= 0 {
 		return nil, grpcx.Error(codes.InvalidArgument, "invalid_hold", "reference and a positive amount are required")
@@ -81,7 +81,7 @@ func (s *Service) PlaceHold(ctx context.Context, req *ledgerv1.PlaceHoldRequest)
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
-		if holds+max(receivable, 0)+req.AmountMinor > limit {
+		if holds+receivable+req.AmountMinor > limit {
 			resp = &ledgerv1.PlaceHoldResponse{Approved: false, AvailableMinor: availableOf(limit, holds, receivable)}
 			return nil
 		}

@@ -199,29 +199,56 @@ func TestReleaseHoldReplayAndConflict(t *testing.T) {
 	}
 }
 
-func TestRefundCanMakeReceivableNegativeButNotRaiseAvailable(t *testing.T) {
+func refundFixture(t *testing.T, s *Service, acc, ref string, amt int64) {
+	t.Helper()
+	if _, err := s.PostRefund(context.Background(), &ledgerv1.PostRefundRequest{AccountId: acc, Reference: ref, AmountMinor: amt}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Sprint 3 (ADR-017) supersedes the Sprint 2 strict-limit rule: a credit balance is spendable.
+func TestCreditBalanceIsSpendable(t *testing.T) {
 	s := newService(t)
 	acc := funded(t, s, 1000)
 	_, _ = hold(s, acc, "h", 200)
 	_, _ = capture(s, "h", "cap", 200)
-	refund := func(ref string, amt int64) {
-		if _, err := s.PostRefund(context.Background(), &ledgerv1.PostRefundRequest{AccountId: acc, Reference: ref, AmountMinor: amt}); err != nil {
-			t.Fatal(err)
-		}
+	refundFixture(t, s, acc, "rf-1", 200)
+	refundFixture(t, s, acc, "rf-2", 700) // ledger-level fixture: credit balance 700
+	if b := balances(t, s, acc); b[recv] != -700 {
+		t.Fatalf("receivable=%d want -700", b[recv])
 	}
-	refund("rf-1", 200)
-	refund("rf-1", 200) // replay
-	refund("rf-2", 100) // ledger-level fixture beyond capture (spec C-2): credit balance
-	if b := balances(t, s, acc); b[recv] != -100 {
-		t.Fatalf("receivable=%d want -100", b[recv])
+	if a, _ := avail(t, s, acc); a != 1700 {
+		t.Fatalf("available=%d want 1700 (credit balance is spendable)", a)
 	}
-	if a, _ := avail(t, s, acc); a != 1000 {
-		t.Fatalf("available=%d want 1000 (credit balance is not spendable)", a)
+	if r, _ := hold(s, acc, "big", 1700); !r.Approved {
+		t.Fatal("hold of 1700 must approve")
 	}
-	if r, _ := hold(s, acc, "big", 1001); r.Approved {
-		t.Fatal("hold above credit limit must decline even with a credit balance")
+	if r, _ := hold(s, acc, "one-more", 1); r.Approved {
+		t.Fatal("exposure would exceed the limit")
+	}
+	_, _ = release(s, "big", ledgerv1.HoldRelease_HOLD_RELEASE_RELEASED)
+	_, _ = hold(s, acc, "buy", 500)
+	if _, err := capture(s, "buy", "cap-buy", 500); err != nil {
+		t.Fatal(err)
+	}
+	if b := balances(t, s, acc); b[recv] != -200 {
+		t.Fatalf("receivable=%d want -200 (500 paid from the credit balance, nothing owed)", b[recv])
 	}
 	assertLedgerBalanced(t, s)
+}
+
+func TestHoldExpiryWithCreditBalance(t *testing.T) {
+	s := newService(t)
+	acc := funded(t, s, 1000)
+	refundFixture(t, s, acc, "rf", 300)
+	_, _ = hold(s, acc, "h", 500)
+	if a, _ := avail(t, s, acc); a != 800 {
+		t.Fatalf("available=%d want 800", a)
+	}
+	_, _ = release(s, "h", ledgerv1.HoldRelease_HOLD_RELEASE_EXPIRED)
+	if a, _ := avail(t, s, acc); a != 1300 {
+		t.Fatalf("available=%d want 1300", a)
+	}
 }
 
 func TestHoldOperationsAreEvented(t *testing.T) {

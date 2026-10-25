@@ -74,3 +74,12 @@ Re-run `make load` on an idle machine before using these numbers to gate anythin
 | Invariants after reconciler window | 16/16 checks, 0 violations; the 5 new cross-checks were verified to fire on deliberately corrupted data |
 
 The fix pass also raised throughput: before it, no locks were released during ledger calls (435 req/s, p95 863 ms in the short run); after it, 913 req/s and p95 664 ms in the same short run.
+
+## Audit fixes (2026-10-25, ADR-017)
+
+| Gate | Result |
+|---|---|
+| Unit (`make test`) | all packages pass with `-race` |
+| Integration, all tagged packages (`go test -tags=integration ./pkg/... ./services/...`) | pass; new tests: claim holds no pool connection, expired lease taken over, stale owner cannot complete, 5xx not stored / retry runs, 4xx replayed, capture on dead hold fails terminally, refused refund fails terminally, reconciler fails before releasing |
+| End to end (`make test-integration`) | pass |
+| Live probes after rebuild (`scratchpad/probe*.py`) | see below |
