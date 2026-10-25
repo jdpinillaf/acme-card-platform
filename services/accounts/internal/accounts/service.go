@@ -17,10 +17,12 @@ import (
 	accountsv1 "github.com/acme/acme-card/gen/go/acme/accounts/v1"
 	commonv1 "github.com/acme/acme-card/gen/go/acme/common/v1"
 	ledgerv1 "github.com/acme/acme-card/gen/go/acme/ledger/v1"
+	"github.com/acme/acme-card/pkg/clock"
 	"github.com/acme/acme-card/pkg/events"
 	"github.com/acme/acme-card/pkg/grpcx"
 	"github.com/acme/acme-card/pkg/money"
 	"github.com/acme/acme-card/pkg/outbox"
+	"github.com/acme/acme-card/pkg/ratelimit"
 )
 
 const uniqueViolation = "23505"
@@ -31,13 +33,31 @@ const MaxDepositMinor int64 = 1_000_000_000_000
 // Service implements accountsv1.AccountsServiceServer.
 type Service struct {
 	accountsv1.UnimplementedAccountsServiceServer
-	pool   *pgxpool.Pool
-	ledger ledgerv1.LedgerServiceClient
+	pool     *pgxpool.Pool
+	ledger   ledgerv1.LedgerServiceClient
+	clock    clock.Clock
+	velocity *ratelimit.Limiter
+}
+
+// Option configures the Service.
+type Option func(*Service)
+
+// WithClock injects the clock used for transaction timestamps, expiry and windows.
+func WithClock(c clock.Clock) Option { return func(s *Service) { s.clock = c } }
+
+// WithVelocity overrides the card velocity limit (default 10 attempts per minute).
+func WithVelocity(limit int, window time.Duration) Option {
+	return func(s *Service) { s.velocity = ratelimit.New(s.pool, limit, window) }
 }
 
 // NewService builds the accounts service.
-func NewService(pool *pgxpool.Pool, ledger ledgerv1.LedgerServiceClient) *Service {
-	return &Service{pool: pool, ledger: ledger}
+func NewService(pool *pgxpool.Pool, ledger ledgerv1.LedgerServiceClient, opts ...Option) *Service {
+	s := &Service{pool: pool, ledger: ledger, clock: clock.System{}}
+	s.velocity = ratelimit.New(pool, VelocityLimit, VelocityWindow)
+	for _, o := range opts {
+		o(s)
+	}
+	return s
 }
 
 type accountRow struct {
