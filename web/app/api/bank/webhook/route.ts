@@ -1,6 +1,7 @@
 // Simulated bank: signs a settlement webhook server-side (secret never leaves the server)
 // and sends it `repeat` times concurrently. `tamper` corrupts the signature, `stale` backdates it.
 import { env } from "@/lib/env.ts";
+import { simulatorGuard } from "@/lib/guard.ts";
 import { signWebhook } from "@/lib/crypto.ts";
 import { forward } from "@/lib/forward.ts";
 
@@ -16,6 +17,8 @@ type Body = {
 };
 
 export async function POST(request: Request) {
+  const blocked = simulatorGuard();
+  if (blocked) return blocked;
   const b = (await request.json()) as Body;
   const payload = JSON.stringify({
     deposit_id: b.deposit_id,

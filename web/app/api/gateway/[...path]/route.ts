@@ -1,11 +1,14 @@
 // Same-origin proxy to the gateway. Forwards only Authorization, Idempotency-Key and the body.
 // `x-sim-repeat: N` fires the same request N times concurrently (idempotency demos).
 import { env } from "@/lib/env.ts";
+import { simulatorGuard } from "@/lib/guard.ts";
 import { forward } from "@/lib/forward.ts";
 
 type Ctx = { params: Promise<{ path: string[] }> };
 
 async function handle(request: Request, ctx: Ctx) {
+  const blocked = simulatorGuard();
+  if (blocked) return blocked;
   const { path } = await ctx.params;
   const url = `${env.gatewayUrl}/${path.map(encodeURIComponent).join("/")}`;
   const headers: Record<string, string> = { "content-type": "application/json" };

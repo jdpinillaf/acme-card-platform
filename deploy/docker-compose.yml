@@ -25,7 +25,7 @@ services:
       POSTGRES_USER: acme
       POSTGRES_PASSWORD: acme
       POSTGRES_DB: acmecard
-    ports: ["5432:5432"]
+    ports: ["127.0.0.1:5432:5432"]
     volumes:
       - ./postgres-init.sql:/docker-entrypoint-initdb.d/01-schemas.sql:ro
       - pgdata:/var/lib/postgresql/data
@@ -42,7 +42,7 @@ services:
       SQS_ENDPOINT_STRATEGY: path
       AWS_DEFAULT_REGION: us-east-1
       DEBUG: 0
-    ports: ["4566:4566"]
+    ports: ["127.0.0.1:4566:4566"]
     volumes:
       - ./localstack/init-aws.sh:/etc/localstack/init/ready.d/init-aws.sh:ro
       - ./localstack/volume:/var/lib/localstack
@@ -86,9 +86,10 @@ services:
     build: { context: ../web }
     environment:
       GATEWAY_URL: http://lb:8080
+      SIMULATOR_ENABLED: "1" # dev only: the simulator mints tokens and signs bank webhooks
       JWT_HS256_SECRET: ${JWT_HS256_SECRET}
       BANK_WEBHOOK_SECRET: ${BANK_WEBHOOK_SECRET}
-    ports: ["${WEB_PORT:-3010}:3000"]
+    ports: ["127.0.0.1:${WEB_PORT:-3010}:3000"]
     depends_on: [lb]
 
   k6:
