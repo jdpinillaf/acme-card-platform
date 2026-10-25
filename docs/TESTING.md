@@ -7,6 +7,7 @@
 | Concurrency | `go test -race`, N goroutines | included in integration | Same `Idempotency-Key` ×50 → exactly one effect, identical responses |
 | Security | unit + integration | included | Bad/stale HMAC → 401; JWT without account in `authorized_accounts` → 403; unknown JSON field → 400 |
 | Audit | integration | included | Every mutation ≥1 `audit_events`; `UPDATE/DELETE audit_events` fails |
+| Customer journey | integration (`TestCustomerJourney`) | included in `make test-integration` | Sprints 1–4 lifecycle with per-step timings and intruder probes; results in `docs/testing/journey.md` |
 | Load | k6 (Docker) | `make load` | 1000 VUs mixed flow; zero duplicate journal entries per idempotency key; p95 reported |
 | Infra | terraform | `make tf-validate` | `terraform validate` passes for dev and prod |
 
