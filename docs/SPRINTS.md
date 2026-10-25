@@ -22,12 +22,13 @@ Monorepo layout, docker-compose (Postgres, LocalStack), Makefile, proto + buf, s
 - Credit balance when a refund exceeds what is owed.
 - Design: `docs/superpowers/specs/2026-10-25-sprint2-card-transactions-design.md`.
 
-## Sprint 3 — Repayments  ← next
-- `POST /v1/accounts/{id}/payments` (full/partial), payment intents, failed/returned payments.
-- Ledger `receivable → credit_available`.
-- Tests: concurrent payments same key → one posting; overpayment handling.
+## Sprint 3 — Repayments  ✓ done
+- Customer payment intents (min $1, capped at the outstanding debt) confirmed by an HMAC bank webhook bound to method and path; credit restored only on settlement; failed payments have no effect; unanswered intents expire after 7 days.
+- Returns within 5 days raise the debt; over the limit, the card is restricted (`payment_returned`) until exposure is back within it.
+- Credit balance is spendable on purchases (ADR-018); never paid out in cash.
+- Design: `docs/superpowers/specs/2026-10-25-sprint3-repayments-design.md`. Results: `docs/testing/sprint3.md`.
 
-## Sprint 4 — Statements, interest, late fees
+## Sprint 4 — Statements, interest, late fees  ← next
 - `billing` service: billing cycles, statement generation (S3 object), minimum payment, interest accrual (daily, integer math), late fee on missed due date.
 - Tests: deterministic accrual fixtures; statement totals reconcile with ledger.
 

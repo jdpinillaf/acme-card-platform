@@ -128,3 +128,23 @@ Append-only. One entry per decision. Format: context → decision → consequenc
 - Query optimizations: the rate limiter is one statement (`INSERT … ON CONFLICT DO UPDATE … WHERE`, exact under concurrency); `GetBalances` reads balances and holds in one statement (closes the ADR-016 deferral); settlement never calls the ledger while holding deposit/account locks; `Authorize` no longer pre-loads the account nor re-reads the row it just inserted (an unknown card surfaces as the foreign-key violation, mapped to `card_not_found`).
 
 **Consequences.** A request whose handler outlives the lease (30 s, three times the gateway timeout) loses its claim and its result is discarded (`ErrClaimLost` logged). Concurrent duplicates cost one cheap primary-key read every 25 ms while they wait.
+
+## ADR-018 — Repayments, spendable credit balance, accepted return risk (2026-10-25)
+**Context.** Sprint 3 adds customer repayments. In the Sprint 3 discovery the user redefined the credit balance.
+
+**Decision.**
+- **Spendable credit balance (supersedes the ADR-014 strict limit).** A credit balance (negative receivable) is spent before the credit line: 700 in favor plus a 500 purchase leaves 200 in favor and nothing owed. The ledger rule is signed: `Σ active holds + receivable + amount ≤ limit`; `available = max(0, limit − receivable − holds)` may exceed the credit limit. A credit balance is never paid out in cash.
+- **Payments copy the collateral-deposit flow.**
+  - The customer creates an intent: minimum 100 minor units, account currency, capped at `max(receivable,0) − Σ open payments`.
+  - The bank settles or fails it through a webhook bound to method and path, and settlement runs as reserve → ledger → finalize.
+  - Credit is restored only on settlement, and intents with no answer expire after 7 days.
+- **Returns: accepted risk.**
+  - Within 5 days of settlement a return re-raises the debt, which may exceed the collateral; the bank accepts that exposure.
+  - The card is then restricted (`payment_returned`, a system restriction the customer cannot lift, evaluated after `currency_not_supported`). The restriction lifts right after a payment settles, or within a minute via the sweep, once exposure is back within the limit.
+  - Purchases can never push exposure over the limit.
+
+**Implementation rulings.**
+- The payments migration is `000009`, because `000008` belongs to the audit session.
+- The restriction is re-evaluated after the finalize commit, never with a ledger call inside accounts locks.
+- The idempotency invariant follows the audit session's lease design.
+- The k6 flow retries lease-based `409 request_in_progress`.

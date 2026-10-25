@@ -147,3 +147,7 @@ Sprint 2 implemented on branch `sprint-2` from `docs/superpowers/plans/2026-10-2
 ### Prompt 14 (user)
 
 > Vamos con el plan
+
+## Sprint 3 delivery notes (2026-10-25)
+
+Sprint 3 implemented on branch `sprint-3` from `docs/superpowers/plans/2026-10-25-sprint3-repayments.md`. Results in `docs/testing/sprint3.md`, decisions in ADR-018. Another Claude session (security/optimization audit) worked in the same checkout; its decisions are ADR-017.

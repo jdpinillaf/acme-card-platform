@@ -67,8 +67,19 @@ curl localhost:8088/v1/accounts/<account_id> -H "Authorization: Bearer $T"
 
 Customer controls (JWT): `POST /v1/accounts/{id}/freeze|unfreeze`, `PUT /v1/accounts/{id}/limits`, `GET /v1/accounts/{id}/transactions`.
 
+### Repayments (Sprint 3)
+
+| Route | Who | Result |
+|---|---|---|
+| `POST /v1/accounts/{id}/payments` `{amount_minor}` | customer (JWT + Idempotency-Key) | 201 pending; min 100, at most the outstanding debt |
+| `GET /v1/accounts/{id}/payments` | customer | newest first |
+| `POST /v1/webhooks/bank/payments` | bank (HMAC bound to method + path) | settled restores credit; failed changes nothing |
+| `POST /v1/webhooks/bank/payments/{id}/return` | bank | within 5 days; over the limit the card is restricted (`payment_returned`) |
+
+Account JSON shows `outstanding_minor`, `credit_balance_minor` and `restricted_reason`. A credit balance is spent on purchases first.
+
 ## Docs
 - `docs/DECISIONS.md` — architecture decisions (ADRs)
 - `docs/SPRINTS.md` — sprint plan
-- `docs/TESTING.md` — test gates and latest results
+- `docs/TESTING.md` — test gates (Sprint 3 results in `docs/testing/sprint3.md`) and latest results
 - `PROMPTS.md` — verbatim prompt log
