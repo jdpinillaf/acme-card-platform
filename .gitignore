@@ -26,3 +26,4 @@ crash.log
 
 # localstack
 /deploy/localstack/volume/
+.gstack/

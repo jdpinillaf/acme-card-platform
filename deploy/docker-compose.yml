@@ -80,6 +80,16 @@ services:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on: [gateway]
 
+  # Flow simulator (Next.js). Secrets stay in its server route handlers.
+  web:
+    build: { context: ../web }
+    environment:
+      GATEWAY_URL: http://lb:8080
+      JWT_HS256_SECRET: ${JWT_HS256_SECRET}
+      BANK_WEBHOOK_SECRET: ${BANK_WEBHOOK_SECRET}
+    ports: ["${WEB_PORT:-3010}:3000"]
+    depends_on: [lb]
+
   k6:
     image: grafana/k6:0.54.0
     profiles: ["load"]
