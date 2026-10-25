@@ -57,7 +57,18 @@ type stack struct {
 	statements                                billingtest.Store
 }
 
-func startStack(t *testing.T) *stack {
+// stackConfig tunes the in-process stack; the zero value is the default stack.
+type stackConfig struct {
+	RateLimitPerMinute int                   // 0 → 100,000
+	Accounts           []accountstest.Option // extra accounts-service options
+}
+
+// destinationKey is the integration stack's payout-destination key (dev only).
+var destinationKey = bytes.Repeat([]byte{42}, 32)
+
+func startStack(t *testing.T) *stack { return startStackWith(t, stackConfig{}) }
+
+func startStackWith(t *testing.T, cfg stackConfig) *stack {
 	t.Helper()
 	dsn := testutil.StartPostgres(t)
 	aws := testutil.StartLocalStack(t)
@@ -104,13 +115,27 @@ func startStack(t *testing.T) *stack {
 		return conn
 	}
 	ledgerConn := serve(func(g *grpc.Server) { ledgerv1.RegisterLedgerServiceServer(g, ledgertest.NewServer(s.ledger)) })
+	// accounts ↔ billing call each other: reserve billing's address first (gRPC dials lazily).
+	billingLis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	billingConn, err := grpcx.Dial(billingLis.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { billingConn.Close() })
+	accOpts := append([]accountstest.Option{accountstest.WithDestinationKey(destinationKey),
+		accountstest.WithBilling(billingv1.NewBillingServiceClient(billingConn))}, cfg.Accounts...)
 	accountsConn := serve(func(g *grpc.Server) {
-		accountsv1.RegisterAccountsServiceServer(g, accountstest.NewServer(s.accounts, ledgerv1.NewLedgerServiceClient(ledgerConn)))
+		accountsv1.RegisterAccountsServiceServer(g, accountstest.NewServer(s.accounts, ledgerv1.NewLedgerServiceClient(ledgerConn), accOpts...))
 	})
 
 	billingSrv, store := billingtest.NewServer(s.billing, ledgerv1.NewLedgerServiceClient(ledgerConn), accountsv1.NewAccountsServiceClient(accountsConn))
 	s.statements = store
-	billingConn := serve(func(g *grpc.Server) { billingv1.RegisterBillingServiceServer(g, billingSrv) })
+	go func() {
+		_ = grpcx.ServeListener(ctx, billingLis, func(g *grpc.Server) { billingv1.RegisterBillingServiceServer(g, billingSrv) })
+	}()
 
 	srv := httptest.NewServer(gatewaytest.NewHandler(gatewaytest.Deps{
 		Accounts:         accountsv1.NewAccountsServiceClient(accountsConn),
@@ -123,7 +148,7 @@ func startStack(t *testing.T) *stack {
 		Rejections:       gatewaytest.NewRejectionLog(s.gateway),
 		RequestTimeout:   10 * time.Second,
 		Idempotency:      idempotency.NewStore(s.gateway, 24*time.Hour),
-		Limiter:          gatewaytest.NewLimiter(s.gateway, 100_000),
+		Limiter:          gatewaytest.NewLimiter(s.gateway, rateLimit(cfg)),
 		AuditSink:        s.gateway,
 		Ready:            []func(context.Context) error{s.gateway.Ping},
 	}))
@@ -346,4 +371,11 @@ func TestSprint1EndToEnd(t *testing.T) {
 			t.Fatal("audit DELETE must fail")
 		}
 	})
+}
+
+func rateLimit(cfg stackConfig) int {
+	if cfg.RateLimitPerMinute == 0 {
+		return 100_000
+	}
+	return cfg.RateLimitPerMinute
 }

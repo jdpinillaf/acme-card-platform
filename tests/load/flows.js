@@ -1,4 +1,4 @@
-// k6 load test — Sprints 1 to 4. Simulates up to 1000 concurrent customers through the load balancer:
+// k6 load test — Sprints 1 to 5. Simulates up to 1000 concurrent customers through the load balancer:
 // open account → create deposit (sent twice with the same Idempotency-Key) → bank webhook
 // (sent twice, concurrently) → read account. Asserts idempotent replays and final state.
 import http from "k6/http";
@@ -18,6 +18,8 @@ const wrongState = new Counter("wrong_final_state");
 const wrongBalance = new Counter("wrong_available_after_transactions");
 const statementsSeen = new Counter("statements_generated");
 const wrongBilling = new Counter("wrong_billing_state");
+const accountsClosed = new Counter("accounts_closed");
+const wrongClose = new Counter("wrong_close_state");
 
 // STRESS=1 removes think time (closed-loop saturation); latency is then reported, not gated.
 const STRESS = __ENV.STRESS === "1";
@@ -47,6 +49,7 @@ export const options = {
     wrong_final_state: ["count==0"],
     wrong_available_after_transactions: ["count==0"],
     wrong_billing_state: ["count==0"],
+    wrong_close_state: ["count==0"],
     checks: ["rate>0.99"],
     // Per-endpoint breakdown (reporting only).
     "http_req_duration{name:/v1/accounts}": ["p(95)<100000"],
@@ -55,6 +58,7 @@ export const options = {
     "http_req_duration{name:/v1/accounts/:id}": ["p(95)<100000"],
     "http_req_duration{name:/v1/network/authorizations}": ["p(95)<100000"],
     "http_req_duration{name:/v1/dev/accounts/:id/clock/advance}": ["p(95)<100000"],
+    "http_req_duration{name:/v1/accounts/:id/close}": ["p(95)<100000"],
   },
 };
 
@@ -273,5 +277,44 @@ export default function () {
     "late fee only when the minimum was missed": () => (minimum > 0 && !payMinimum) === (fees === 1) && fees <= 1,
   })) {
     wrongBilling.add(1);
+  }
+
+  // Sprint 5: one virtual user in five closes its account on its first iteration (later iterations
+  // would not fit the 65 s return-window wait inside the test). The close runs the final statement; the
+  // clock passes its due date (debt comes out of the collateral); the load project shortens the
+  // payment return window (RETURN_WINDOW=1m) so the payout can be created; the bank fetches the
+  // instruction and settles it; the account must end closed with nothing held.
+  if (__ITER !== 0 || __VU % 5 !== 0) return;
+  think();
+  const close = http.post(`${BASE}/v1/accounts/${acc}/close`, JSON.stringify({ destination: { bank_code: "BANK001", account_number: "000123456789", holder_name: "Load Tester" } }), {
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${tok}`, "Idempotency-Key": uuid() }, tags: { name: "/v1/accounts/:id/close" },
+  });
+  if (!check(close, { "close accepted": (r) => r.status === 202 })) return;
+  if (advance(25).status !== 200) return;
+  sleep(65); // the shortened payment return window
+  if (advance(1).status !== 200) return; // runs the close saga up to the payout
+  const pos = http.get(`${BASE}/v1/accounts/${acc}/payouts`, { headers: { Authorization: `Bearer ${tok}` }, tags: { name: "/v1/accounts/:id/payouts" } });
+  const po = pos.status === 200 ? pos.json("payouts").find((p) => p.status === "pending") : undefined;
+  if (po) {
+    const ipath = `/v1/bank/payout-instructions/${po.attempt_id}`;
+    const its = String(Math.floor(Date.now() / 1000));
+    const isig = crypto.hmac("sha256", BANK_SECRET, `${its}.GET ${ipath}.`, "hex");
+    const ins = http.get(`${BASE}${ipath}`, { headers: { "X-Acme-Timestamp": its, "X-Acme-Signature": isig }, tags: { name: "/v1/bank/payout-instructions/:id" } });
+    if (!check(ins, { "payout instruction": (r) => r.status === 200 && r.json("account_number") === "000123456789" })) return;
+    const ppath = "/v1/webhooks/bank/payouts";
+    const pbody = JSON.stringify({ attempt_id: po.attempt_id, amount_minor: po.amount_minor, currency: "USD", destination_last4: "6789", status: "settled" });
+    const pts = String(Math.floor(Date.now() / 1000));
+    const psig = crypto.hmac("sha256", BANK_SECRET, `${pts}.POST ${ppath}.${pbody}`, "hex");
+    const st = http.post(`${BASE}${ppath}`, pbody, { headers: { "Content-Type": "application/json", "X-Acme-Timestamp": pts, "X-Acme-Signature": psig }, tags: { name: ppath } });
+    if (!check(st, { "payout settled": (r) => r.status === 200 })) return;
+  }
+  const done = http.get(`${BASE}/v1/accounts/${acc}`, { headers: { Authorization: `Bearer ${tok}` }, tags: { name: "/v1/accounts/:id" } });
+  if (check(done, {
+    "account closed": (r) => r.json("state") === "closed",
+    "nothing left held": (r) => r.json("collateral_minor") === 0 && r.json("credit_balance_minor") === 0,
+  })) {
+    accountsClosed.add(1);
+  } else {
+    wrongClose.add(1);
   }
 }
