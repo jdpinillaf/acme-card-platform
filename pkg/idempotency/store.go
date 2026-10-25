@@ -7,11 +7,18 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // ErrKeyReuseMismatch is returned when a key is reused with a different request fingerprint.
 var ErrKeyReuseMismatch = errors.New("idempotency: key reused with a different request")
+
+// ErrInProgress is returned when a duplicate waited longer than the wait timeout for the
+// original request to finish. The caller should retry later with the same key.
+var ErrInProgress = errors.New("idempotency: request with this key is still in progress")
+
+const lockNotAvailable = "55P03"
 
 // finishTimeout bounds Complete/Abort, which run detached from the request context.
 const finishTimeout = 5 * time.Second
@@ -25,13 +32,20 @@ type Result struct {
 
 // Store persists idempotency keys in the gateway schema.
 type Store struct {
-	pool *pgxpool.Pool
-	ttl  time.Duration
+	pool        *pgxpool.Pool
+	ttl         time.Duration
+	waitTimeout time.Duration
 }
 
 // NewStore builds a Store with the given key TTL.
 func NewStore(pool *pgxpool.Pool, ttl time.Duration) *Store {
-	return &Store{pool: pool, ttl: ttl}
+	return &Store{pool: pool, ttl: ttl, waitTimeout: 5 * time.Second}
+}
+
+// WithWaitTimeout bounds how long a duplicate blocks (holding a pool connection) on the original.
+func (s *Store) WithWaitTimeout(d time.Duration) *Store {
+	s.waitTimeout = d
+	return s
 }
 
 // Claim is held by the request that must actually do the work. Exactly one of Complete or Abort
@@ -48,6 +62,11 @@ func (s *Store) Acquire(ctx context.Context, keyHash, requestHash string) (*Clai
 	if err != nil {
 		return nil, nil, fmt.Errorf("idempotency: begin: %w", err)
 	}
+	// Bound duplicate waiters so a slow downstream cannot pin the whole pool.
+	if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL lock_timeout = '%dms'", s.waitTimeout.Milliseconds())); err != nil {
+		_ = tx.Rollback(ctx)
+		return nil, nil, fmt.Errorf("idempotency: lock_timeout: %w", err)
+	}
 	// Insert first. If another transaction is inserting the same key, this statement blocks on the
 	// primary key until that transaction commits or rolls back.
 	tag, err := tx.Exec(ctx, `
@@ -56,6 +75,9 @@ func (s *Store) Acquire(ctx context.Context, keyHash, requestHash string) (*Clai
 		ON CONFLICT (key_hash) DO NOTHING`, keyHash, requestHash, s.ttl)
 	if err != nil {
 		_ = tx.Rollback(ctx)
+		if isLockTimeout(err) {
+			return nil, nil, ErrInProgress
+		}
 		return nil, nil, fmt.Errorf("idempotency: insert: %w", err)
 	}
 	if tag.RowsAffected() == 1 {
@@ -76,6 +98,9 @@ func (s *Store) Acquire(ctx context.Context, keyHash, requestHash string) (*Clai
 		Scan(&storedReq, &status, &code, &body, &outcome)
 	if err != nil {
 		_ = tx.Rollback(ctx)
+		if isLockTimeout(err) {
+			return nil, nil, ErrInProgress
+		}
 		return nil, nil, fmt.Errorf("idempotency: select: %w", err)
 	}
 	if storedReq != requestHash {
@@ -139,4 +164,9 @@ func (s *Store) Sweep(ctx context.Context, now time.Time) (int64, error) {
 		return 0, fmt.Errorf("idempotency: sweep: %w", err)
 	}
 	return tag.RowsAffected(), nil
+}
+
+func isLockTimeout(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == lockNotAvailable
 }

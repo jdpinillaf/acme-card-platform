@@ -15,8 +15,13 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Connect opens a pgx pool whose search_path is pinned to the service schema.
+// Connect opens a 20-connection pgx pool whose search_path is pinned to the service schema.
 func Connect(ctx context.Context, dsn, schema string) (*pgxpool.Pool, error) {
+	return ConnectN(ctx, dsn, schema, 20)
+}
+
+// ConnectN is Connect with an explicit pool size (e.g. a tiny dedicated pool for readiness probes).
+func ConnectN(ctx context.Context, dsn, schema string, maxConns int32) (*pgxpool.Pool, error) {
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("db: parse dsn: %w", err)
@@ -25,7 +30,7 @@ func Connect(ctx context.Context, dsn, schema string) (*pgxpool.Pool, error) {
 		cfg.ConnConfig.RuntimeParams = map[string]string{}
 	}
 	cfg.ConnConfig.RuntimeParams["search_path"] = schema
-	cfg.MaxConns = 20
+	cfg.MaxConns = maxConns
 	cfg.MaxConnLifetime = 30 * time.Minute
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {

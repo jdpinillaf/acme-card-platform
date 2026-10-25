@@ -50,6 +50,14 @@ func main() {
 		os.Exit(1)
 	}
 	defer pool.Close()
+	// Readiness gets its own tiny pool so a saturated request pool does not fail /readyz on every
+	// replica at once (which would make the load balancer drop all targets).
+	probePool, err := db.ConnectN(ctx, cfg.DatabaseURL, "gateway", 2)
+	if err != nil {
+		log.Error("db probe pool", "err", err)
+		os.Exit(1)
+	}
+	defer probePool.Close()
 	clients, err := awsx.New(ctx, cfg.AWSRegion, cfg.AWSEndpointURL)
 	if err != nil {
 		log.Error("aws", "err", err)
@@ -80,7 +88,7 @@ func main() {
 		AuditSink:        pool,
 		TrustedProxies:   cfg.TrustedProxies,
 		Ready: []func(context.Context) error{
-			pool.Ping,
+			probePool.Ping,
 			func(ctx context.Context) error {
 				res, err := grpc_health_v1.NewHealthClient(conn).Check(ctx, &grpc_health_v1.HealthCheckRequest{})
 				if err != nil {

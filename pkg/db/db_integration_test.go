@@ -49,3 +49,15 @@ func TestMigrateIntoSchemaAndConnect(t *testing.T) {
 		t.Fatalf("schema_migrations in %q, want accounts", mig)
 	}
 }
+
+func TestConnectNSizesPool(t *testing.T) {
+	dsn := testutil.StartPostgres(t)
+	pool, err := ConnectN(context.Background(), dsn, "gateway", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	if got := pool.Config().MaxConns; got != 2 {
+		t.Fatalf("MaxConns=%d want 2", got)
+	}
+}

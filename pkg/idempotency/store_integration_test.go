@@ -146,3 +146,23 @@ func TestSweepDeletesExpiredOnly(t *testing.T) {
 		t.Fatal("fresh key must survive sweep")
 	}
 }
+
+func TestDuplicateWaiterGivesUpAfterWaitTimeout(t *testing.T) {
+	s := newStore(t).WithWaitTimeout(200 * time.Millisecond)
+	ctx := context.Background()
+	kh, rh := KeyHash("sub", "slow"), RequestHash("POST", "/x", nil)
+	claim, _, err := s.Acquire(ctx, kh, rh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer claim.Abort(ctx)
+
+	start := time.Now()
+	_, _, err = s.Acquire(ctx, kh, rh)
+	if !errors.Is(err, ErrInProgress) {
+		t.Fatalf("want ErrInProgress, got %v", err)
+	}
+	if waited := time.Since(start); waited > 2*time.Second {
+		t.Fatalf("waiter held for %v; must give up near the wait timeout", waited)
+	}
+}

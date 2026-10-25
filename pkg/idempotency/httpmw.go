@@ -76,6 +76,10 @@ func Middleware(store *Store, subject SubjectFunc) func(http.Handler) http.Handl
 			case errors.Is(err, ErrKeyReuseMismatch):
 				httpx.WriteError(w, http.StatusUnprocessableEntity, "idempotency_key_reuse", "Idempotency-Key was already used with a different request")
 				return
+			case errors.Is(err, ErrInProgress):
+				w.Header().Set("Retry-After", "1")
+				httpx.WriteError(w, http.StatusConflict, "request_in_progress", "a request with this Idempotency-Key is still being processed; retry later")
+				return
 			case err != nil:
 				slog.ErrorContext(r.Context(), "idempotency acquire failed", "err", err)
 				httpx.WriteError(w, http.StatusServiceUnavailable, "idempotency_unavailable", "could not acquire idempotency key")
