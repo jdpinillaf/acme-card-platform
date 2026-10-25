@@ -3,5 +3,9 @@ modules:
   - path: proto
 lint:
   use: [STANDARD]
+  except:
+    # Several RPCs deliberately return the same entity envelope (e.g. AuthorizationResponse).
+    - RPC_REQUEST_RESPONSE_UNIQUE
+    - RPC_RESPONSE_STANDARD_NAME
 breaking:
   use: [FILE]

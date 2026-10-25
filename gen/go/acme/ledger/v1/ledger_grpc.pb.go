@@ -22,6 +22,10 @@ const (
 	LedgerService_OpenLedger_FullMethodName  = "/acme.ledger.v1.LedgerService/OpenLedger"
 	LedgerService_PostJournal_FullMethodName = "/acme.ledger.v1.LedgerService/PostJournal"
 	LedgerService_GetBalances_FullMethodName = "/acme.ledger.v1.LedgerService/GetBalances"
+	LedgerService_PlaceHold_FullMethodName   = "/acme.ledger.v1.LedgerService/PlaceHold"
+	LedgerService_CaptureHold_FullMethodName = "/acme.ledger.v1.LedgerService/CaptureHold"
+	LedgerService_ReleaseHold_FullMethodName = "/acme.ledger.v1.LedgerService/ReleaseHold"
+	LedgerService_PostRefund_FullMethodName  = "/acme.ledger.v1.LedgerService/PostRefund"
 )
 
 // LedgerServiceClient is the client API for LedgerService service.
@@ -36,6 +40,15 @@ type LedgerServiceClient interface {
 	PostJournal(ctx context.Context, in *PostJournalRequest, opts ...grpc.CallOption) (*PostJournalResponse, error)
 	// GetBalances returns current balances of all sub-accounts.
 	GetBalances(ctx context.Context, in *GetBalancesRequest, opts ...grpc.CallOption) (*GetBalancesResponse, error)
+	// PlaceHold reserves credit under the strict-limit rule. Idempotent on reference.
+	// Insufficient credit is approved=false, not an error.
+	PlaceHold(ctx context.Context, in *PlaceHoldRequest, opts ...grpc.CallOption) (*PlaceHoldResponse, error)
+	// CaptureHold turns an active hold into receivable (amount <= hold) and frees the rest.
+	CaptureHold(ctx context.Context, in *CaptureHoldRequest, opts ...grpc.CallOption) (*PostJournalResponse, error)
+	// ReleaseHold ends an active hold without posting (reversal or expiry).
+	ReleaseHold(ctx context.Context, in *ReleaseHoldRequest, opts ...grpc.CallOption) (*ReleaseHoldResponse, error)
+	// PostRefund credits the receivable (may go negative: credit balance). Idempotent on reference.
+	PostRefund(ctx context.Context, in *PostRefundRequest, opts ...grpc.CallOption) (*PostJournalResponse, error)
 }
 
 type ledgerServiceClient struct {
@@ -76,6 +89,46 @@ func (c *ledgerServiceClient) GetBalances(ctx context.Context, in *GetBalancesRe
 	return out, nil
 }
 
+func (c *ledgerServiceClient) PlaceHold(ctx context.Context, in *PlaceHoldRequest, opts ...grpc.CallOption) (*PlaceHoldResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PlaceHoldResponse)
+	err := c.cc.Invoke(ctx, LedgerService_PlaceHold_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *ledgerServiceClient) CaptureHold(ctx context.Context, in *CaptureHoldRequest, opts ...grpc.CallOption) (*PostJournalResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PostJournalResponse)
+	err := c.cc.Invoke(ctx, LedgerService_CaptureHold_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *ledgerServiceClient) ReleaseHold(ctx context.Context, in *ReleaseHoldRequest, opts ...grpc.CallOption) (*ReleaseHoldResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReleaseHoldResponse)
+	err := c.cc.Invoke(ctx, LedgerService_ReleaseHold_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *ledgerServiceClient) PostRefund(ctx context.Context, in *PostRefundRequest, opts ...grpc.CallOption) (*PostJournalResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PostJournalResponse)
+	err := c.cc.Invoke(ctx, LedgerService_PostRefund_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // LedgerServiceServer is the server API for LedgerService service.
 // All implementations must embed UnimplementedLedgerServiceServer
 // for forward compatibility.
@@ -88,6 +141,15 @@ type LedgerServiceServer interface {
 	PostJournal(context.Context, *PostJournalRequest) (*PostJournalResponse, error)
 	// GetBalances returns current balances of all sub-accounts.
 	GetBalances(context.Context, *GetBalancesRequest) (*GetBalancesResponse, error)
+	// PlaceHold reserves credit under the strict-limit rule. Idempotent on reference.
+	// Insufficient credit is approved=false, not an error.
+	PlaceHold(context.Context, *PlaceHoldRequest) (*PlaceHoldResponse, error)
+	// CaptureHold turns an active hold into receivable (amount <= hold) and frees the rest.
+	CaptureHold(context.Context, *CaptureHoldRequest) (*PostJournalResponse, error)
+	// ReleaseHold ends an active hold without posting (reversal or expiry).
+	ReleaseHold(context.Context, *ReleaseHoldRequest) (*ReleaseHoldResponse, error)
+	// PostRefund credits the receivable (may go negative: credit balance). Idempotent on reference.
+	PostRefund(context.Context, *PostRefundRequest) (*PostJournalResponse, error)
 	mustEmbedUnimplementedLedgerServiceServer()
 }
 
@@ -106,6 +168,18 @@ func (UnimplementedLedgerServiceServer) PostJournal(context.Context, *PostJourna
 }
 func (UnimplementedLedgerServiceServer) GetBalances(context.Context, *GetBalancesRequest) (*GetBalancesResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetBalances not implemented")
+}
+func (UnimplementedLedgerServiceServer) PlaceHold(context.Context, *PlaceHoldRequest) (*PlaceHoldResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method PlaceHold not implemented")
+}
+func (UnimplementedLedgerServiceServer) CaptureHold(context.Context, *CaptureHoldRequest) (*PostJournalResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CaptureHold not implemented")
+}
+func (UnimplementedLedgerServiceServer) ReleaseHold(context.Context, *ReleaseHoldRequest) (*ReleaseHoldResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ReleaseHold not implemented")
+}
+func (UnimplementedLedgerServiceServer) PostRefund(context.Context, *PostRefundRequest) (*PostJournalResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method PostRefund not implemented")
 }
 func (UnimplementedLedgerServiceServer) mustEmbedUnimplementedLedgerServiceServer() {}
 func (UnimplementedLedgerServiceServer) testEmbeddedByValue()                       {}
@@ -182,6 +256,78 @@ func _LedgerService_GetBalances_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
+func _LedgerService_PlaceHold_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PlaceHoldRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LedgerServiceServer).PlaceHold(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LedgerService_PlaceHold_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LedgerServiceServer).PlaceHold(ctx, req.(*PlaceHoldRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LedgerService_CaptureHold_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CaptureHoldRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LedgerServiceServer).CaptureHold(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LedgerService_CaptureHold_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LedgerServiceServer).CaptureHold(ctx, req.(*CaptureHoldRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LedgerService_ReleaseHold_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReleaseHoldRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LedgerServiceServer).ReleaseHold(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LedgerService_ReleaseHold_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LedgerServiceServer).ReleaseHold(ctx, req.(*ReleaseHoldRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _LedgerService_PostRefund_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PostRefundRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LedgerServiceServer).PostRefund(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: LedgerService_PostRefund_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LedgerServiceServer).PostRefund(ctx, req.(*PostRefundRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // LedgerService_ServiceDesc is the grpc.ServiceDesc for LedgerService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -200,6 +346,22 @@ var LedgerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetBalances",
 			Handler:    _LedgerService_GetBalances_Handler,
+		},
+		{
+			MethodName: "PlaceHold",
+			Handler:    _LedgerService_PlaceHold_Handler,
+		},
+		{
+			MethodName: "CaptureHold",
+			Handler:    _LedgerService_CaptureHold_Handler,
+		},
+		{
+			MethodName: "ReleaseHold",
+			Handler:    _LedgerService_ReleaseHold_Handler,
+		},
+		{
+			MethodName: "PostRefund",
+			Handler:    _LedgerService_PostRefund_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

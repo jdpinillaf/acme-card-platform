@@ -11,19 +11,18 @@ import (
 
 	"github.com/acme/acme-card/pkg/db"
 	"github.com/acme/acme-card/pkg/testutil"
-	"github.com/acme/acme-card/services/gateway/migrations"
 )
 
 func newLimiter(t *testing.T, limit int) *Limiter {
 	dsn := testutil.StartPostgres(t)
-	if err := db.Migrate(dsn, "gateway", migrations.FS, "."); err != nil {
-		t.Fatal(err)
-	}
 	pool, err := db.Connect(context.Background(), dsn, "gateway")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
+	if _, err := pool.Exec(context.Background(), Migration); err != nil {
+		t.Fatal(err)
+	}
 	return New(pool, limit, time.Minute)
 }
 

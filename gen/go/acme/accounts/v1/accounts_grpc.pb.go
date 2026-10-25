@@ -19,10 +19,17 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	AccountsService_CreateAccount_FullMethodName = "/acme.accounts.v1.AccountsService/CreateAccount"
-	AccountsService_GetAccount_FullMethodName    = "/acme.accounts.v1.AccountsService/GetAccount"
-	AccountsService_CreateDeposit_FullMethodName = "/acme.accounts.v1.AccountsService/CreateDeposit"
-	AccountsService_SettleDeposit_FullMethodName = "/acme.accounts.v1.AccountsService/SettleDeposit"
+	AccountsService_CreateAccount_FullMethodName    = "/acme.accounts.v1.AccountsService/CreateAccount"
+	AccountsService_GetAccount_FullMethodName       = "/acme.accounts.v1.AccountsService/GetAccount"
+	AccountsService_CreateDeposit_FullMethodName    = "/acme.accounts.v1.AccountsService/CreateDeposit"
+	AccountsService_SettleDeposit_FullMethodName    = "/acme.accounts.v1.AccountsService/SettleDeposit"
+	AccountsService_Authorize_FullMethodName        = "/acme.accounts.v1.AccountsService/Authorize"
+	AccountsService_Capture_FullMethodName          = "/acme.accounts.v1.AccountsService/Capture"
+	AccountsService_Reverse_FullMethodName          = "/acme.accounts.v1.AccountsService/Reverse"
+	AccountsService_Refund_FullMethodName           = "/acme.accounts.v1.AccountsService/Refund"
+	AccountsService_SetFrozen_FullMethodName        = "/acme.accounts.v1.AccountsService/SetFrozen"
+	AccountsService_SetPurchaseLimit_FullMethodName = "/acme.accounts.v1.AccountsService/SetPurchaseLimit"
+	AccountsService_ListTransactions_FullMethodName = "/acme.accounts.v1.AccountsService/ListTransactions"
 )
 
 // AccountsServiceClient is the client API for AccountsService service.
@@ -34,6 +41,15 @@ type AccountsServiceClient interface {
 	CreateDeposit(ctx context.Context, in *CreateDepositRequest, opts ...grpc.CallOption) (*CreateDepositResponse, error)
 	// SettleDeposit is driven by the bank webhook. Idempotent on external_ref.
 	SettleDeposit(ctx context.Context, in *SettleDepositRequest, opts ...grpc.CallOption) (*SettleDepositResponse, error)
+	// Card network messages. Idempotent on network_ref per message type.
+	Authorize(ctx context.Context, in *AuthorizeRequest, opts ...grpc.CallOption) (*AuthorizationResponse, error)
+	Capture(ctx context.Context, in *CaptureRequest, opts ...grpc.CallOption) (*AuthorizationResponse, error)
+	Reverse(ctx context.Context, in *ReverseRequest, opts ...grpc.CallOption) (*AuthorizationResponse, error)
+	Refund(ctx context.Context, in *RefundRequest, opts ...grpc.CallOption) (*RefundResponse, error)
+	// Customer controls.
+	SetFrozen(ctx context.Context, in *SetFrozenRequest, opts ...grpc.CallOption) (*GetAccountResponse, error)
+	SetPurchaseLimit(ctx context.Context, in *SetPurchaseLimitRequest, opts ...grpc.CallOption) (*GetAccountResponse, error)
+	ListTransactions(ctx context.Context, in *ListTransactionsRequest, opts ...grpc.CallOption) (*ListTransactionsResponse, error)
 }
 
 type accountsServiceClient struct {
@@ -84,6 +100,76 @@ func (c *accountsServiceClient) SettleDeposit(ctx context.Context, in *SettleDep
 	return out, nil
 }
 
+func (c *accountsServiceClient) Authorize(ctx context.Context, in *AuthorizeRequest, opts ...grpc.CallOption) (*AuthorizationResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AuthorizationResponse)
+	err := c.cc.Invoke(ctx, AccountsService_Authorize_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *accountsServiceClient) Capture(ctx context.Context, in *CaptureRequest, opts ...grpc.CallOption) (*AuthorizationResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AuthorizationResponse)
+	err := c.cc.Invoke(ctx, AccountsService_Capture_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *accountsServiceClient) Reverse(ctx context.Context, in *ReverseRequest, opts ...grpc.CallOption) (*AuthorizationResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AuthorizationResponse)
+	err := c.cc.Invoke(ctx, AccountsService_Reverse_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *accountsServiceClient) Refund(ctx context.Context, in *RefundRequest, opts ...grpc.CallOption) (*RefundResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RefundResponse)
+	err := c.cc.Invoke(ctx, AccountsService_Refund_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *accountsServiceClient) SetFrozen(ctx context.Context, in *SetFrozenRequest, opts ...grpc.CallOption) (*GetAccountResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetAccountResponse)
+	err := c.cc.Invoke(ctx, AccountsService_SetFrozen_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *accountsServiceClient) SetPurchaseLimit(ctx context.Context, in *SetPurchaseLimitRequest, opts ...grpc.CallOption) (*GetAccountResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetAccountResponse)
+	err := c.cc.Invoke(ctx, AccountsService_SetPurchaseLimit_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *accountsServiceClient) ListTransactions(ctx context.Context, in *ListTransactionsRequest, opts ...grpc.CallOption) (*ListTransactionsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListTransactionsResponse)
+	err := c.cc.Invoke(ctx, AccountsService_ListTransactions_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AccountsServiceServer is the server API for AccountsService service.
 // All implementations must embed UnimplementedAccountsServiceServer
 // for forward compatibility.
@@ -93,6 +179,15 @@ type AccountsServiceServer interface {
 	CreateDeposit(context.Context, *CreateDepositRequest) (*CreateDepositResponse, error)
 	// SettleDeposit is driven by the bank webhook. Idempotent on external_ref.
 	SettleDeposit(context.Context, *SettleDepositRequest) (*SettleDepositResponse, error)
+	// Card network messages. Idempotent on network_ref per message type.
+	Authorize(context.Context, *AuthorizeRequest) (*AuthorizationResponse, error)
+	Capture(context.Context, *CaptureRequest) (*AuthorizationResponse, error)
+	Reverse(context.Context, *ReverseRequest) (*AuthorizationResponse, error)
+	Refund(context.Context, *RefundRequest) (*RefundResponse, error)
+	// Customer controls.
+	SetFrozen(context.Context, *SetFrozenRequest) (*GetAccountResponse, error)
+	SetPurchaseLimit(context.Context, *SetPurchaseLimitRequest) (*GetAccountResponse, error)
+	ListTransactions(context.Context, *ListTransactionsRequest) (*ListTransactionsResponse, error)
 	mustEmbedUnimplementedAccountsServiceServer()
 }
 
@@ -114,6 +209,27 @@ func (UnimplementedAccountsServiceServer) CreateDeposit(context.Context, *Create
 }
 func (UnimplementedAccountsServiceServer) SettleDeposit(context.Context, *SettleDepositRequest) (*SettleDepositResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SettleDeposit not implemented")
+}
+func (UnimplementedAccountsServiceServer) Authorize(context.Context, *AuthorizeRequest) (*AuthorizationResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Authorize not implemented")
+}
+func (UnimplementedAccountsServiceServer) Capture(context.Context, *CaptureRequest) (*AuthorizationResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Capture not implemented")
+}
+func (UnimplementedAccountsServiceServer) Reverse(context.Context, *ReverseRequest) (*AuthorizationResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Reverse not implemented")
+}
+func (UnimplementedAccountsServiceServer) Refund(context.Context, *RefundRequest) (*RefundResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Refund not implemented")
+}
+func (UnimplementedAccountsServiceServer) SetFrozen(context.Context, *SetFrozenRequest) (*GetAccountResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SetFrozen not implemented")
+}
+func (UnimplementedAccountsServiceServer) SetPurchaseLimit(context.Context, *SetPurchaseLimitRequest) (*GetAccountResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SetPurchaseLimit not implemented")
+}
+func (UnimplementedAccountsServiceServer) ListTransactions(context.Context, *ListTransactionsRequest) (*ListTransactionsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListTransactions not implemented")
 }
 func (UnimplementedAccountsServiceServer) mustEmbedUnimplementedAccountsServiceServer() {}
 func (UnimplementedAccountsServiceServer) testEmbeddedByValue()                         {}
@@ -208,6 +324,132 @@ func _AccountsService_SettleDeposit_Handler(srv interface{}, ctx context.Context
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AccountsService_Authorize_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AuthorizeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AccountsServiceServer).Authorize(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AccountsService_Authorize_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AccountsServiceServer).Authorize(ctx, req.(*AuthorizeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AccountsService_Capture_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CaptureRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AccountsServiceServer).Capture(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AccountsService_Capture_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AccountsServiceServer).Capture(ctx, req.(*CaptureRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AccountsService_Reverse_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReverseRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AccountsServiceServer).Reverse(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AccountsService_Reverse_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AccountsServiceServer).Reverse(ctx, req.(*ReverseRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AccountsService_Refund_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RefundRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AccountsServiceServer).Refund(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AccountsService_Refund_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AccountsServiceServer).Refund(ctx, req.(*RefundRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AccountsService_SetFrozen_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetFrozenRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AccountsServiceServer).SetFrozen(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AccountsService_SetFrozen_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AccountsServiceServer).SetFrozen(ctx, req.(*SetFrozenRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AccountsService_SetPurchaseLimit_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetPurchaseLimitRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AccountsServiceServer).SetPurchaseLimit(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AccountsService_SetPurchaseLimit_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AccountsServiceServer).SetPurchaseLimit(ctx, req.(*SetPurchaseLimitRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AccountsService_ListTransactions_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListTransactionsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AccountsServiceServer).ListTransactions(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AccountsService_ListTransactions_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AccountsServiceServer).ListTransactions(ctx, req.(*ListTransactionsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AccountsService_ServiceDesc is the grpc.ServiceDesc for AccountsService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -230,6 +472,34 @@ var AccountsService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SettleDeposit",
 			Handler:    _AccountsService_SettleDeposit_Handler,
+		},
+		{
+			MethodName: "Authorize",
+			Handler:    _AccountsService_Authorize_Handler,
+		},
+		{
+			MethodName: "Capture",
+			Handler:    _AccountsService_Capture_Handler,
+		},
+		{
+			MethodName: "Reverse",
+			Handler:    _AccountsService_Reverse_Handler,
+		},
+		{
+			MethodName: "Refund",
+			Handler:    _AccountsService_Refund_Handler,
+		},
+		{
+			MethodName: "SetFrozen",
+			Handler:    _AccountsService_SetFrozen_Handler,
+		},
+		{
+			MethodName: "SetPurchaseLimit",
+			Handler:    _AccountsService_SetPurchaseLimit_Handler,
+		},
+		{
+			MethodName: "ListTransactions",
+			Handler:    _AccountsService_ListTransactions_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

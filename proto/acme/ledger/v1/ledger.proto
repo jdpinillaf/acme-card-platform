@@ -13,6 +13,59 @@ service LedgerService {
   rpc PostJournal(PostJournalRequest) returns (PostJournalResponse);
   // GetBalances returns current balances of all sub-accounts.
   rpc GetBalances(GetBalancesRequest) returns (GetBalancesResponse);
+  // PlaceHold reserves credit under the strict-limit rule. Idempotent on reference.
+  // Insufficient credit is approved=false, not an error.
+  rpc PlaceHold(PlaceHoldRequest) returns (PlaceHoldResponse);
+  // CaptureHold turns an active hold into receivable (amount <= hold) and frees the rest.
+  rpc CaptureHold(CaptureHoldRequest) returns (PostJournalResponse);
+  // ReleaseHold ends an active hold without posting (reversal or expiry).
+  rpc ReleaseHold(ReleaseHoldRequest) returns (ReleaseHoldResponse);
+  // PostRefund credits the receivable (may go negative: credit balance). Idempotent on reference.
+  rpc PostRefund(PostRefundRequest) returns (PostJournalResponse);
+}
+
+enum HoldRelease {
+  HOLD_RELEASE_UNSPECIFIED = 0;
+  HOLD_RELEASE_RELEASED = 1;
+  HOLD_RELEASE_EXPIRED = 2;
+}
+
+message PlaceHoldRequest {
+  string account_id = 1;
+  string reference = 2;
+  int64 amount_minor = 3;
+  string currency = 4;
+  acme.common.v1.RequestMeta meta = 5;
+}
+message PlaceHoldResponse {
+  string hold_id = 1;
+  bool approved = 2;
+  int64 available_minor = 3;
+  bool replayed = 4;
+}
+
+message CaptureHoldRequest {
+  string hold_reference = 1;
+  string journal_reference = 2;
+  int64 amount_minor = 3;
+  acme.common.v1.RequestMeta meta = 4;
+}
+
+message ReleaseHoldRequest {
+  string hold_reference = 1;
+  HoldRelease reason = 2;
+  acme.common.v1.RequestMeta meta = 3;
+}
+message ReleaseHoldResponse {
+  string status = 1;
+  bool replayed = 2;
+}
+
+message PostRefundRequest {
+  string account_id = 1;
+  string reference = 2;
+  int64 amount_minor = 3;
+  acme.common.v1.RequestMeta meta = 4;
 }
 
 enum SubAccount {
@@ -65,4 +118,7 @@ message Balance {
 message GetBalancesResponse {
   string currency = 1;
   repeated Balance balances = 2;
+  int64 holds_minor = 3;
+  // available = max(0, collateral_held - max(receivable, 0) - holds)
+  int64 available_minor = 4;
 }

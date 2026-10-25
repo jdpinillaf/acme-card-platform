@@ -13,6 +13,15 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// Migration is the DDL each service that uses a Limiter embeds in its own migrations.
+const Migration = `
+CREATE TABLE rate_limit_windows (
+    bucket       text        NOT NULL,
+    window_start timestamptz NOT NULL,
+    hits         integer     NOT NULL DEFAULT 0,
+    PRIMARY KEY (bucket, window_start)
+);`
+
 // Limiter allows `limit` hits per `window` per bucket.
 type Limiter struct {
 	pool   *pgxpool.Pool

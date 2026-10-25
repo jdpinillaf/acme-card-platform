@@ -21,7 +21,7 @@ import (
 	"github.com/acme/acme-card/pkg/idempotency"
 	"github.com/acme/acme-card/pkg/logging"
 	"github.com/acme/acme-card/pkg/outbox"
-	"github.com/acme/acme-card/services/gateway/internal/ratelimit"
+	"github.com/acme/acme-card/pkg/ratelimit"
 	"github.com/acme/acme-card/services/gateway/internal/server"
 	"github.com/acme/acme-card/services/gateway/migrations"
 )

@@ -33,3 +33,19 @@ func (c inproc) PostJournal(ctx context.Context, r *ledgerv1.PostJournalRequest,
 func (c inproc) GetBalances(ctx context.Context, r *ledgerv1.GetBalancesRequest, _ ...grpc.CallOption) (*ledgerv1.GetBalancesResponse, error) {
 	return c.s.GetBalances(ctx, r)
 }
+
+func (c inproc) PlaceHold(ctx context.Context, r *ledgerv1.PlaceHoldRequest, _ ...grpc.CallOption) (*ledgerv1.PlaceHoldResponse, error) {
+	return c.s.PlaceHold(ctx, r)
+}
+
+func (c inproc) CaptureHold(ctx context.Context, r *ledgerv1.CaptureHoldRequest, _ ...grpc.CallOption) (*ledgerv1.PostJournalResponse, error) {
+	return c.s.CaptureHold(ctx, r)
+}
+
+func (c inproc) ReleaseHold(ctx context.Context, r *ledgerv1.ReleaseHoldRequest, _ ...grpc.CallOption) (*ledgerv1.ReleaseHoldResponse, error) {
+	return c.s.ReleaseHold(ctx, r)
+}
+
+func (c inproc) PostRefund(ctx context.Context, r *ledgerv1.PostRefundRequest, _ ...grpc.CallOption) (*ledgerv1.PostJournalResponse, error) {
+	return c.s.PostRefund(ctx, r)
+}
