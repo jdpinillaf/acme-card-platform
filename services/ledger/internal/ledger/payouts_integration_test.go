@@ -44,7 +44,7 @@ func TestPostPayoutReleasesCollateralAndCredit(t *testing.T) {
 func TestPostPayoutRejectsMoreThanHeld(t *testing.T) {
 	s := newService(t)
 	acc := funded(t, s, 100000)
-	for _, c := range [][2]int64{{100001, 0}, {0, 1}, {0, 0}} {
+	for _, c := range [][2]int64{{100001, 0}, {0, 0}} {
 		_, err := payout(s, acc, "payout:x", c[0], c[1])
 		if code := status.Code(err); code != codes.FailedPrecondition && code != codes.InvalidArgument {
 			t.Fatalf("payout %v: %v", c, err)
@@ -69,5 +69,21 @@ func TestPostPayoutConcurrent50(t *testing.T) {
 	var n int
 	if err := s.pool.QueryRow(context.Background(), `SELECT count(*) FROM journal_entries WHERE reference='payout:c'`).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("entries=%d %v", n, err)
+	}
+}
+
+// Review I2: once the bank confirms a payout the money has left; a credit leg larger than the
+// current credit balance (a return shrank it meanwhile) is still recorded and leaves a debt.
+func TestPostPayoutRecordsConfirmedCreditBeyondBalance(t *testing.T) {
+	s := newService(t)
+	acc := funded(t, s, 1000)
+	if _, err := payout(s, acc, "payout:late", 0, 300); err != nil {
+		t.Fatalf("confirmed credit leg must post: %v", err)
+	}
+	if r := rawBalance(t, s, acc, "receivable"); r != 300 {
+		t.Fatalf("receivable=%d want 300 (debt)", r)
+	}
+	if _, err := payout(s, acc, "payout:over", 1001, 0); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("collateral leg stays bounded by what is held: %v", err)
 	}
 }

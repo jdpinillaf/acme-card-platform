@@ -14,7 +14,7 @@ import (
 
 // PostPayout releases money to the customer once the bank confirms a payout (Sprint 5): debit
 // collateral_held for the collateral part and debit receivable for the credit-balance part, credit
-// cash_clearing for the total. It never pays out more than is held.
+// cash_clearing for the total. It never pays out more collateral than is held.
 func (s *Service) PostPayout(ctx context.Context, req *ledgerv1.PostPayoutRequest) (*ledgerv1.PostJournalResponse, error) {
 	if req.Reference == "" || req.CollateralMinor < 0 || req.CreditMinor < 0 || req.CollateralMinor+req.CreditMinor == 0 {
 		return nil, grpcx.Error(codes.InvalidArgument, "invalid_payout", "reference and a positive amount are required")
@@ -38,8 +38,12 @@ func (s *Service) PostPayout(ctx context.Context, req *ledgerv1.PostPayoutReques
 				(SELECT raw_balance_minor FROM balances WHERE account_id=$1 AND sub_account='receivable')`, req.AccountId).Scan(&coll, &recv); err != nil {
 				return err
 			}
-			if req.CollateralMinor > coll || req.CreditMinor > max(-recv, 0) {
-				return grpcx.Error(codes.FailedPrecondition, "insufficient_funds", "payout exceeds held collateral or credit balance")
+			// The bank already sent the money: a credit leg larger than the current credit balance
+			// (a return shrank it meanwhile) is recorded and leaves a debt (review I2). Collateral
+			// can never go below zero.
+			_ = recv
+			if req.CollateralMinor > coll {
+				return grpcx.Error(codes.FailedPrecondition, "insufficient_funds", "payout exceeds held collateral")
 			}
 		}
 		var postings []*ledgerv1.Posting

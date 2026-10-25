@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"google.golang.org/grpc/codes"
 
@@ -32,6 +33,9 @@ const (
 	StagePayout          = "payout"
 	StageClosed          = "closed"
 )
+
+// errStale: the account changed between a ledger read and the lock; the step is retried.
+var errStale = errors.New("account changed concurrently")
 
 var (
 	bankCodeRE      = regexp.MustCompile(`^[A-Za-z0-9]{3,11}$`)
@@ -68,12 +72,18 @@ func (s *Service) CloseAccount(ctx context.Context, req *accountsv1.CloseAccount
 	if s.box == nil {
 		return nil, grpcx.Error(codes.FailedPrecondition, "close_unavailable", "payout destination encryption is not configured")
 	}
-	dest, err := validDestination(req.Destination)
-	if err != nil {
-		return nil, err
+	// Support (a reason is given) may close without a destination, e.g. to block a card at once;
+	// the payout then waits until one is supplied (spec C-2, review I6).
+	var dest destination
+	hasDest := req.Destination != nil
+	if hasDest || req.Reason == "" {
+		var err error
+		if dest, err = validDestination(req.Destination); err != nil {
+			return nil, err
+		}
 	}
 	var acc accountRow
-	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		before, err := s.load(ctx, tx, req.AccountId, true)
 		if err != nil {
 			return err
@@ -81,11 +91,24 @@ func (s *Service) CloseAccount(ctx context.Context, req *accountsv1.CloseAccount
 		acc = before
 		switch before.State {
 		case StateClosing:
-			var sealed string
+			var sealed *string
 			if err := tx.QueryRow(ctx, `SELECT destination_ciphertext FROM accounts WHERE id=$1`, before.ID).Scan(&sealed); err != nil {
 				return err
 			}
-			stored, err := s.openDestination(sealed)
+			if !hasDest {
+				return nil // replay of a close (or a support close) that adds no destination
+			}
+			if sealed == nil { // supplying the destination a support close left open
+				plain, _ := json.Marshal(dest)
+				enc, err := s.box.Seal(plain)
+				if err != nil {
+					return err
+				}
+				acc, err = scanAccount(tx.QueryRow(ctx, `UPDATE accounts SET destination_ciphertext=$2, destination_last4=$3, version=version+1, updated_at=now()
+					WHERE id=$1 RETURNING `+accountCols, before.ID, enc, secretbox.Last4(dest.AccountNumber)))
+				return err
+			}
+			stored, err := s.openDestination(*sealed)
 			if err != nil {
 				return err
 			}
@@ -102,10 +125,15 @@ func (s *Service) CloseAccount(ctx context.Context, req *accountsv1.CloseAccount
 		if err != nil {
 			return grpcx.Error(codes.FailedPrecondition, "not_closable", err.Error())
 		}
-		plain, _ := json.Marshal(dest)
-		sealed, err := s.box.Seal(plain)
-		if err != nil {
-			return err
+		var sealed, last4 *string
+		if hasDest {
+			plain, _ := json.Marshal(dest)
+			enc, err := s.box.Seal(plain)
+			if err != nil {
+				return err
+			}
+			l4 := secretbox.Last4(dest.AccountNumber)
+			sealed, last4 = &enc, &l4
 		}
 		if err := s.voidPendingDeposits(ctx, tx, before.ID, req.Meta); err != nil {
 			return err
@@ -117,7 +145,7 @@ func (s *Service) CloseAccount(ctx context.Context, req *accountsv1.CloseAccount
 		if acc, err = scanAccount(tx.QueryRow(ctx, `UPDATE accounts SET state=$2, close_stage=$3, close_stage_at=$4, close_requested_at=$5,
 			close_requested_by=$6, close_reason=nullif($7,''), destination_ciphertext=$8, destination_last4=$9, version=version+1, updated_at=now()
 			WHERE id=$1 RETURNING `+accountCols, before.ID, next, StageInFlight, s.clock.Now(), s.accountNow(before), actor, req.Reason, sealed,
-			secretbox.Last4(dest.AccountNumber))); err != nil {
+			last4)); err != nil {
 			return err
 		}
 		ev := event("account.close_requested", "account", acc.ID, req.Meta)
@@ -134,9 +162,37 @@ func (s *Service) CloseAccount(ctx context.Context, req *accountsv1.CloseAccount
 	return s.accountResponse(ctx, acc)
 }
 
-// AdvanceClose runs close-saga steps until one cannot progress yet.
+// closeLeaseTTL bounds how long a crashed runner keeps an account's saga.
+const closeLeaseTTL = 2 * time.Minute
+
+// acquireCloseLease makes this the account's only close-saga runner (autocommit UPDATE, no
+// connection held): concurrent runners could otherwise size payouts or collateral applications
+// from stale reads (review I3/I4). ok=false when another runner holds it.
+func (s *Service) acquireCloseLease(ctx context.Context, accountID string) (release func(), ok bool, err error) {
+	owner := uuid.New()
+	tag, err := s.pool.Exec(ctx, `UPDATE accounts SET close_lease_owner=$2, close_lease_until=$3, close_checked_at=$4
+		WHERE id=$1 AND (close_lease_until IS NULL OR close_lease_until < $4)`, accountID, owner, s.clock.Now().Add(closeLeaseTTL), s.clock.Now())
+	if err != nil || tag.RowsAffected() == 0 {
+		return nil, false, internal0(err)
+	}
+	return func() {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		_, _ = s.pool.Exec(ctx, `UPDATE accounts SET close_lease_until=NULL, close_lease_owner=NULL WHERE id=$1 AND close_lease_owner=$2`, accountID, owner)
+	}, true, nil
+}
+
+// AdvanceClose runs close-saga steps until one cannot progress yet. If another runner holds the
+// account it returns the current state; that runner (or the next sweep) continues.
 func (s *Service) AdvanceClose(ctx context.Context, req *accountsv1.AdvanceCloseRequest) (*accountsv1.GetAccountResponse, error) {
-	for i := 0; i < 8; i++ {
+	release, ok, err := s.acquireCloseLease(ctx, req.AccountId)
+	if err != nil {
+		return nil, err
+	}
+	if ok {
+		defer release()
+	}
+	for i := 0; ok && i < 8; i++ {
 		moved, err := s.closeStep(ctx, req.AccountId)
 		if err != nil {
 			return nil, err
@@ -221,7 +277,9 @@ func (s *Service) closeStep(ctx context.Context, accountID string) (bool, error)
 		}
 		return s.setStage(ctx, acc.ID, StageAwaitingDue, StageApplying, nil)
 	case StageApplying:
-		if err := s.applyCollateralAtClose(ctx, acc); err != nil {
+		if err := s.applyCollateralAtClose(ctx, acc); errors.Is(err, errStale) {
+			return false, nil
+		} else if err != nil {
 			return false, err
 		}
 		return s.setStage(ctx, acc.ID, StageApplying, StageAwaitingReturns, nil)
@@ -230,22 +288,35 @@ func (s *Service) closeStep(ctx context.Context, accountID string) (bool, error)
 		if err != nil {
 			return false, err
 		}
-		if v.Receivable > 0 && acc.Collateral > 0 { // a return re-raised the debt after the due date
+		if v.Receivable > 0 && acc.Collateral > 0 { // a return re-raised the debt
+			// Before the final due date the customer can still pay; after it the collateral covers
+			// the debt (review I5).
+			var due *time.Time
+			if err := s.pool.QueryRow(ctx, `SELECT final_due_at FROM accounts WHERE id=$1`, acc.ID).Scan(&due); err != nil {
+				return false, internal(err)
+			}
+			if due != nil && s.accountNow(acc).Before(due.Add(24*time.Hour)) && acc.Delinquency != DelinquencyChargedOff {
+				return s.setStage(ctx, acc.ID, StageAwaitingReturns, StageAwaitingDue, nil)
+			}
 			return s.setStage(ctx, acc.ID, StageAwaitingReturns, StageApplying, nil)
 		}
-		var open int
-		if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM payments WHERE account_id=$1 AND
-			(status='returning' OR (status='settled' AND settled_at > $2))`, acc.ID, s.clock.Now().Add(-s.returnWindow)).Scan(&open); err != nil {
-			return false, internal(err)
-		}
-		if open > 0 {
-			return false, nil
+		if open, err := s.paymentsUnsettled(ctx, s.pool, acc.ID); err != nil || open {
+			return false, err
 		}
 		return s.setStage(ctx, acc.ID, StageAwaitingReturns, StagePayout, nil)
 	case StagePayout:
 		return s.payoutStep(ctx, acc)
 	}
 	return false, nil
+}
+
+// paymentsUnsettled reports payments the bank can still change: pending or settling ones (review
+// I7), returns in progress, and settled ones inside their return window (U-1).
+func (s *Service) paymentsUnsettled(ctx context.Context, q querier, accountID string) (bool, error) {
+	var n int
+	err := q.QueryRow(ctx, `SELECT count(*) FROM payments WHERE account_id=$1 AND
+		(status IN ('pending','settling','returning') OR (status='settled' AND settled_at >= $2))`, accountID, s.clock.Now().Add(-s.returnWindow)).Scan(&n)
+	return n > 0, internal0(err)
 }
 
 // inFlight reports work that must finish before the final statement: authorizations not yet
@@ -296,7 +367,10 @@ func (s *Service) applyCollateralAtClose(ctx context.Context, acc accountRow) er
 	var seq int
 	var due *time.Time
 	err = s.pool.QueryRow(ctx, `UPDATE accounts SET close_apply_amount = coalesce(close_apply_amount, LEAST(GREATEST($2::bigint,0), collateral_minor))
-		WHERE id=$1 RETURNING close_apply_amount, close_apply_seq + 1, final_due_at`, acc.ID, v.Receivable).Scan(&amount, &seq, &due)
+		WHERE id=$1 AND close_stage='applying' AND version=$3 RETURNING close_apply_amount, close_apply_seq + 1, final_due_at`, acc.ID, v.Receivable, acc.Version).Scan(&amount, &seq, &due)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return errStale // the account changed since the ledger read; the next step re-reads
+	}
 	if err != nil {
 		return internal(err)
 	}
@@ -320,7 +394,8 @@ func (s *Service) applyCollateralAtClose(ctx context.Context, acc accountRow) er
 
 // AdvanceClosing runs the saga for every closing account (worker loop).
 func (s *Service) AdvanceClosing(ctx context.Context, batch int) error {
-	rows, err := s.pool.Query(ctx, `SELECT id::text FROM accounts WHERE state='closing' ORDER BY close_stage_at LIMIT $1`, batch)
+	// Round robin on the last check, so accounts parked for days never starve newer closes (review I1).
+	rows, err := s.pool.Query(ctx, `SELECT id::text FROM accounts WHERE state='closing' ORDER BY close_checked_at NULLS FIRST, close_stage_at LIMIT $1`, batch)
 	if err != nil {
 		return err
 	}
@@ -339,4 +414,17 @@ func (s *Service) AdvanceClosing(ctx context.Context, batch int) error {
 	}
 	s.additionalPayouts(ctx, batch)
 	return nil
+}
+
+// kickClose advances the saga of a closing account right after an event that may unblock it
+// (payment settled or returned, authorization resolved, refund posted); best effort, the sweep
+// remains the backstop.
+func (s *Service) kickClose(ctx context.Context, accountID string) {
+	var st State
+	if err := s.pool.QueryRow(ctx, `SELECT state FROM accounts WHERE id=$1`, accountID).Scan(&st); err != nil || st != StateClosing {
+		return
+	}
+	if _, err := s.AdvanceClose(ctx, &accountsv1.AdvanceCloseRequest{AccountId: accountID}); err != nil {
+		slog.WarnContext(ctx, "close saga kick deferred to the sweep", "account_id", accountID, "err", err)
+	}
 }

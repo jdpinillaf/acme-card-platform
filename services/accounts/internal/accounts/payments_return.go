@@ -38,6 +38,10 @@ func (s *Service) ReturnPayment(ctx context.Context, req *accountsv1.ReturnPayme
 			}
 			return nil // returned: replay; returning: resume
 		}
+		// Serializes with payout creation, which re-checks return windows under FOR UPDATE (review M1).
+		if _, err := tx.Exec(ctx, `SELECT 1 FROM accounts WHERE id=$1 FOR SHARE`, p.AccountID); err != nil {
+			return err
+		}
 		switch p.Status {
 		case "settled":
 		case "returning", "returned":
@@ -93,5 +97,6 @@ func (s *Service) ReturnPayment(ctx context.Context, req *accountsv1.ReturnPayme
 	}
 	// The return restricted the card fail-safe; lift it right away if exposure is within the limit.
 	s.liftQuietly(ctx, p.AccountID, req.Meta)
+	s.kickClose(ctx, p.AccountID)
 	return s.paymentResponse(ctx, p, replayed)
 }

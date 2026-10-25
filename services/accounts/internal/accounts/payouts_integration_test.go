@@ -10,6 +10,8 @@ import (
 	"time"
 
 	accountsv1 "github.com/acme/acme-card/gen/go/acme/accounts/v1"
+	commonv1 "github.com/acme/acme-card/gen/go/acme/common/v1"
+	ledgerv1 "github.com/acme/acme-card/gen/go/acme/ledger/v1"
 	"github.com/acme/acme-card/pkg/grpcx"
 )
 
@@ -180,9 +182,17 @@ func TestPayoutWaitsForReturnWindow(t *testing.T) {
 	if _, err := f.svc.ReturnPayment(ctx, &accountsv1.ReturnPaymentRequest{PaymentId: p.Payment.Id, ReturnRef: "ret-po5", AmountMinor: 30000}); err != nil {
 		t.Fatal(err)
 	}
-	got := f.step(t, acc.Id) // the return re-raised the debt after the due date: collateral covers it
+	// Review I5: the return came before the final due date, so the customer can still pay; the
+	// collateral is applied only once that due date passes.
+	got := f.step(t, acc.Id)
+	if got.CloseStage != "awaiting_due" || got.CollateralMinor != 100000 || got.OutstandingMinor != 30000 {
+		t.Fatalf("return before the due date: %+v", got)
+	}
+	f.advance(t, acc.Id, 23)
+	c.Advance(ReturnWindow) // and the returned payment's window is irrelevant now (returned)
+	got = f.step(t, acc.Id)
 	if got.CollateralMinor != 70000 || got.OutstandingMinor != 0 || got.CloseStage != "payout" {
-		t.Fatalf("after the return: %+v", got)
+		t.Fatalf("after the due date: %+v", got)
 	}
 	if po := f.openPayout(t, acc.Id); po.Amount.AmountMinor != 70000 {
 		t.Fatalf("payout=%d want 70000", po.Amount.AmountMinor)
@@ -256,5 +266,184 @@ func TestNothingToPayOut(t *testing.T) {
 	}
 	if r, _ := f.svc.ListPayouts(context.Background(), &accountsv1.ListPayoutsRequest{AccountId: acc.Id}); len(r.Payouts) != 0 {
 		t.Fatalf("payouts: %+v", r.Payouts)
+	}
+}
+
+// Review I7: with the collateral used up, a payment still waiting for the bank keeps the account
+// closing (no closed account with in-flight work).
+func TestPendingPaymentHoldsCloseAfterCollateralUsedUp(t *testing.T) {
+	f, _, _ := closeFixture(t)
+	ctx := context.Background()
+	acc := f.withDebt(t, "cust-po9", 400, 400)
+	if _, err := f.ledgerClient.PostCharge(ctx, &ledgerv1.PostChargeRequest{AccountId: acc.Id, Reference: "late_fee:po9:1",
+		Kind: ledgerv1.ChargeKind_CHARGE_KIND_FEE, AmountMinor: 600}); err != nil {
+		t.Fatal(err)
+	}
+	f.close(t, acc.Id)
+	f.advance(t, acc.Id, 23)
+	if _, err := f.pool.Exec(ctx, `UPDATE accounts SET close_stage='awaiting_due' WHERE id=$1`, acc.Id); err != nil { // before the step
+		t.Fatal(err)
+	}
+	if _, err := f.createPayment(acc.Id, 300, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.step(t, acc.Id); got.State == accountsv1.AccountState_ACCOUNT_STATE_CLOSED {
+		t.Fatalf("closed while a payment is pending: %+v", got)
+	}
+}
+
+// Review I4: concurrent saga runners apply the collateral once.
+func TestConcurrentRunnersApplyCollateralOnce(t *testing.T) {
+	f, _, _ := closeFixture(t)
+	acc := f.withDebt(t, "cust-po10", 100000, 30000)
+	f.close(t, acc.Id)
+	f.advance(t, acc.Id, 23)
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = f.svc.AdvanceClose(context.Background(), &accountsv1.AdvanceCloseRequest{AccountId: acc.Id})
+		}()
+	}
+	wg.Wait()
+	f.step(t, acc.Id)
+	if n := f.count(t, f.ledger, `SELECT count(*) FROM journal_entries WHERE account_id=$1 AND entry_type='collateral_applied'`, acc.Id); n != 1 {
+		t.Fatalf("collateral applications=%d", n)
+	}
+	if n := f.count(t, f.pool, `SELECT count(*) FROM payouts WHERE account_id=$1`, acc.Id); n != 1 {
+		t.Fatalf("payouts=%d", n)
+	}
+}
+
+// Review I3: a runner holding a stale read never creates a second payout after the first settled.
+func TestConcurrentRunnersAndSettleNeverPayTwice(t *testing.T) {
+	f, clk, _ := closeFixture(t)
+	ctx := context.Background()
+	acc := f.withDebt(t, "cust-po11", 100000, 1000)
+	var authID string
+	if err := f.pool.QueryRow(ctx, `SELECT id::text FROM authorizations WHERE account_id=$1 AND status='captured'`, acc.Id).Scan(&authID); err != nil {
+		t.Fatal(err)
+	}
+	p, _ := f.createPayment(acc.Id, 1000, nil)
+	if _, err := f.svc.SettlePayment(ctx, settlePay(p.Payment, "bank-po11", paySettled)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.refund(authID, "rf-po11", 700); err != nil {
+		t.Fatal(err)
+	}
+	f.close(t, acc.Id)
+	clk.Advance(ReturnWindow + time.Hour)
+	f.step(t, acc.Id)
+	po := f.openPayout(t, acc.Id)
+	var wg sync.WaitGroup
+	wg.Add(11)
+	go func() { defer wg.Done(); _, _ = f.settlePayout(po, payoutSettled) }()
+	for i := 0; i < 10; i++ {
+		go func() {
+			defer wg.Done()
+			_, _ = f.svc.AdvanceClose(ctx, &accountsv1.AdvanceCloseRequest{AccountId: acc.Id})
+		}()
+	}
+	wg.Wait()
+	f.step(t, acc.Id)
+	var paid int64
+	if err := f.pool.QueryRow(ctx, `SELECT coalesce(sum(collateral_minor+credit_minor),0) FROM payouts WHERE account_id=$1 AND status IN ('pending','settling','settled')`, acc.Id).Scan(&paid); err != nil {
+		t.Fatal(err)
+	}
+	if paid != 100700 {
+		t.Fatalf("paid out %d want 100700 once", paid)
+	}
+}
+
+// Review I2: an additional payout waits for the return window like the close payout.
+func TestAdditionalPayoutWaitsForReturnWindow(t *testing.T) {
+	f, clk, _ := closeFixture(t)
+	ctx := context.Background()
+	acc := f.withDebt(t, "cust-po12", 400, 400)
+	var authID string
+	if err := f.pool.QueryRow(ctx, `SELECT id::text FROM authorizations WHERE account_id=$1 AND status='captured'`, acc.Id).Scan(&authID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.ledgerClient.PostCharge(ctx, &ledgerv1.PostChargeRequest{AccountId: acc.Id, Reference: "late_fee:po12:1",
+		Kind: ledgerv1.ChargeKind_CHARGE_KIND_FEE, AmountMinor: 600}); err != nil {
+		t.Fatal(err)
+	}
+	f.close(t, acc.Id)
+	f.advance(t, acc.Id, 23)
+	if got := f.step(t, acc.Id); got.State != accountsv1.AccountState_ACCOUNT_STATE_CLOSED {
+		t.Fatalf("fixture: %+v", got)
+	}
+	p, err := f.createPayment(acc.Id, 600, nil) // pays the leftover debt
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.svc.SettlePayment(ctx, settlePay(p.Payment, "bank-po12", paySettled)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.refund(authID, "rf-po12", 100); err != nil { // → credit balance 100
+		t.Fatal(err)
+	}
+	if err := f.svc.AdvanceClosing(ctx, 10); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.count(t, f.pool, `SELECT count(*) FROM payouts WHERE account_id=$1`, acc.Id); n != 0 {
+		t.Fatalf("additional payout created inside the return window: %d", n)
+	}
+	clk.Advance(ReturnWindow + time.Hour)
+	if err := f.svc.AdvanceClosing(ctx, 10); err != nil {
+		t.Fatal(err)
+	}
+	if po := f.openPayout(t, acc.Id); po.Amount.AmountMinor != 100 {
+		t.Fatalf("additional payout: %+v", po)
+	}
+}
+
+// Review I6: support can close without a destination (e.g. fraud); the payout waits until one is given.
+func TestSupportCloseWithoutDestination(t *testing.T) {
+	f, _, _ := closeFixture(t)
+	ctx := context.Background()
+	acc := f.activeAccount(t, "cust-po13", 1000)
+	r, err := f.svc.CloseAccount(ctx, &accountsv1.CloseAccountRequest{AccountId: acc.Id, Reason: "fraud review", Meta: &commonv1.RequestMeta{Actor: "agent-1"}})
+	if err != nil || r.Account.State != accountsv1.AccountState_ACCOUNT_STATE_CLOSING {
+		t.Fatalf("support close without destination: %v %+v", err, r)
+	}
+	if got := f.step(t, acc.Id); got.CloseStage != "payout" || got.DestinationLast4 != "" {
+		t.Fatalf("stage=%s last4=%q", got.CloseStage, got.DestinationLast4)
+	}
+	if n := f.count(t, f.pool, `SELECT count(*) FROM payouts WHERE account_id=$1`, acc.Id); n != 0 {
+		t.Fatal("no payout without a destination")
+	}
+	if _, err := f.svc.CloseAccount(ctx, &accountsv1.CloseAccountRequest{AccountId: acc.Id, Destination: dest}); err != nil {
+		t.Fatalf("customer supplies the destination: %v", err)
+	}
+	if po := f.openPayout(t, acc.Id); po.Amount.AmountMinor != 1000 || po.DestinationLast4 != "6789" {
+		t.Fatalf("payout: %+v", po)
+	}
+	if _, err := f.svc.CloseAccount(ctx, &accountsv1.CloseAccountRequest{AccountId: acc.Id}); grpcx.Reason(err) != "invalid_destination" {
+		t.Fatalf("customer close without destination: %v", err)
+	}
+}
+
+// Review I1: parked closes never starve newer ones in the sweep.
+func TestSweepRotatesParkedCloses(t *testing.T) {
+	f, _, _ := closeFixture(t)
+	ctx := context.Background()
+	parked := f.withDebt(t, "cust-po14", 1000, 500)
+	f.close(t, parked.Id) // parks in awaiting_due for 21 days
+	fresh := f.activeAccount(t, "cust-po15", 1000)
+	a := f.authorize(t, fresh.Id, "net-po15", 100).Authorization
+	f.close(t, fresh.Id) // in_flight until the authorization resolves
+	if _, err := f.reverse(a.Id, "rev-po15"); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if err := f.svc.AdvanceClosing(ctx, 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, _ := f.svc.GetAccount(ctx, &accountsv1.GetAccountRequest{AccountId: fresh.Id})
+	if got.Account.CloseStage == "in_flight" {
+		t.Fatalf("newer close starved behind a parked one: %s", got.Account.CloseStage)
 	}
 }

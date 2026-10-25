@@ -208,7 +208,9 @@ func TestListEntriesOrderAndRange(t *testing.T) {
 	acc := funded(t, s, 100000)
 	t1 := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
 	t2, t3 := t1.Add(24*time.Hour), t1.Add(48*time.Hour)
-	at := func(when time.Time) *commonv1.RequestMeta { return &commonv1.RequestMeta{EffectiveAt: timestamppb.New(when)} }
+	at := func(when time.Time) *commonv1.RequestMeta {
+		return &commonv1.RequestMeta{EffectiveAt: timestamppb.New(when)}
+	}
 	if _, err := s.PostCharge(context.Background(), &ledgerv1.PostChargeRequest{AccountId: acc, Reference: "e3", Kind: ledgerv1.ChargeKind_CHARGE_KIND_FEE, AmountMinor: 3, Meta: at(t3)}); err != nil {
 		t.Fatal(err)
 	}

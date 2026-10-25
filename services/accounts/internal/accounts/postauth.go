@@ -218,6 +218,7 @@ func (s *Service) finishOp(ctx context.Context, a authRow, o opReq, meta *common
 	if err != nil {
 		return nil, internal(err)
 	}
+	s.kickClose(ctx, a.AccountID)
 	return resp, nil
 }
 

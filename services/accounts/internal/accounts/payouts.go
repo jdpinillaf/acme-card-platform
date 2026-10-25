@@ -103,17 +103,38 @@ func (s *Service) payoutStep(ctx context.Context, acc accountRow) (bool, error) 
 	if acc.Collateral+credit == 0 {
 		return s.finishClose(ctx, acc.ID)
 	}
-	return false, internal0(pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		locked, err := s.load(ctx, tx, acc.ID, true)
-		if err != nil || locked.CloseStage == nil || *locked.CloseStage != StagePayout {
+	if acc.DestLast4 == nil { // support closed without a destination: wait for one (review I6)
+		return false, nil
+	}
+	return false, internal0(s.createPayoutLocked(ctx, acc, payoutKindClose, acc.Collateral, credit))
+}
+
+// createPayoutLocked creates a payout sized from a ledger read taken before the lock, only if the
+// account is unchanged since that read (version), no payout is open and the bank can no longer
+// change any payment (return windows re-checked under the lock, review I3/M1). A stale read is
+// simply retried by the next step.
+func (s *Service) createPayoutLocked(ctx context.Context, read accountRow, kind string, collateral, credit int64) error {
+	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		locked, err := s.load(ctx, tx, read.ID, true)
+		if err != nil || locked.Version != read.Version {
 			return err
+		}
+		if kind == payoutKindClose && (locked.CloseStage == nil || *locked.CloseStage != StagePayout) {
+			return nil
 		}
 		var n int
-		if err := tx.QueryRow(ctx, `SELECT count(*) FROM payouts WHERE account_id=$1 AND status IN ('pending','settling','failed')`, acc.ID).Scan(&n); err != nil || n > 0 {
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM payouts WHERE account_id=$1 AND status IN ('pending','settling','failed')`, read.ID).Scan(&n); err != nil || n > 0 {
 			return err
 		}
-		return s.createPayout(ctx, tx, locked, payoutKindClose, locked.Collateral, credit)
-	}))
+		if open, err := s.paymentsUnsettled(ctx, tx, read.ID); err != nil || open {
+			return err
+		}
+		if err := s.createPayout(ctx, tx, locked, kind, collateral, credit); err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, `UPDATE accounts SET version=version+1 WHERE id=$1`, read.ID) // later stale readers abort
+		return err
+	})
 }
 
 func (s *Service) finishClose(ctx context.Context, accountID string) (bool, error) {
@@ -361,14 +382,16 @@ func (s *Service) GetPayoutInstruction(ctx context.Context, req *accountsv1.GetP
 	return out, nil
 }
 
-// additionalPayouts pays out credit balances that refunds created after an account closed.
+// additionalPayouts pays out credit balances that arise on closed accounts (late refunds, payments
+// of leftover debt): same return-window rule and stale-read guard as the close payout (review I2).
+// Candidates are closed accounts with money movements that can create a credit; the ledger decides.
 func (s *Service) additionalPayouts(ctx context.Context, batch int) {
-	rows, err := s.pool.Query(ctx, `SELECT DISTINCT a.id::text FROM accounts a
-		JOIN authorizations au ON au.account_id=a.id JOIN refunds r ON r.authorization_id=au.id AND r.status='posted'
+	rows, err := s.pool.Query(ctx, `SELECT a.id::text FROM accounts a
 		WHERE a.state='closed' AND a.destination_ciphertext IS NOT NULL
-		  AND r.created_at >= coalesce((SELECT max(p.created_at) FROM payouts p WHERE p.account_id=a.id), a.close_stage_at) -- the ledger check below decides
 		  AND NOT EXISTS (SELECT 1 FROM payouts p WHERE p.account_id=a.id AND p.status IN ('pending','settling','failed'))
-		LIMIT $1`, batch)
+		  AND (EXISTS (SELECT 1 FROM authorizations au JOIN refunds r ON r.authorization_id=au.id AND r.status='posted' WHERE au.account_id=a.id)
+		    OR EXISTS (SELECT 1 FROM payments m WHERE m.account_id=a.id AND m.status='settled'))
+		ORDER BY a.close_checked_at NULLS FIRST LIMIT $1`, batch)
 	if err != nil {
 		slog.ErrorContext(ctx, "additional payout scan failed", "err", err)
 		return
@@ -382,23 +405,24 @@ func (s *Service) additionalPayouts(ctx context.Context, batch int) {
 	}
 	rows.Close()
 	for _, id := range ids {
-		acc, err := s.load(ctx, s.pool, id, false)
-		if err != nil {
-			continue
-		}
-		v, err := s.available(ctx, acc)
-		if err != nil || v.Receivable >= 0 {
-			continue
-		}
-		if err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-			locked, err := s.load(ctx, tx, id, true)
-			if err != nil {
-				return err
+		func() {
+			release, ok, err := s.acquireCloseLease(ctx, id)
+			if err != nil || !ok {
+				return
 			}
-			return s.createPayout(ctx, tx, locked, payoutKindAdditional, 0, -v.Receivable)
-		}); err != nil {
-			slog.WarnContext(ctx, "additional payout failed; retried next pass", "account_id", id, "err", err)
-		}
+			defer release()
+			acc, err := s.load(ctx, s.pool, id, false)
+			if err != nil {
+				return
+			}
+			v, err := s.available(ctx, acc)
+			if err != nil || v.Receivable >= 0 {
+				return
+			}
+			if err := s.createPayoutLocked(ctx, acc, payoutKindAdditional, 0, -v.Receivable); err != nil {
+				slog.WarnContext(ctx, "additional payout failed; retried next pass", "account_id", id, "err", err)
+			}
+		}()
 	}
 }
 

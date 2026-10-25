@@ -544,7 +544,7 @@ func TestDueDateIsNotAPastDueDay(t *testing.T) {
 	f.purchase(t, acc.Id, 300000)
 	c1, c2, c3 := f.closeN(t, acc, 1), f.closeN(t, acc, 2), f.closeN(t, acc, 3)
 	f.advanceTo(t, acc.Id, c1)
-	f.pay(t, acc.Id, 3000) // statement 1 minimum paid on time (grace lost: statement 2 has interest)
+	f.pay(t, acc.Id, 3000)     // statement 1 minimum paid on time (grace lost: statement 2 has interest)
 	f.advanceTo(t, acc.Id, c3) // statement 2 minimum missed: on due date 2 interest is outstanding
 	ss := f.statements(t, acc.Id)
 	if ss[1].InterestMinor == 0 {

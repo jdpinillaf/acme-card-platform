@@ -93,11 +93,12 @@ type accountRow struct {
 	CloseStage    *string    `json:"close_stage,omitempty"`
 	CloseReqAt    *time.Time `json:"close_requested_at,omitempty"`
 	DestLast4     *string    `json:"destination_last4,omitempty"`
+	Version       int64      `json:"-"`
 	CreatedAt     time.Time  `json:"-"`
 	UpdatedAt     time.Time  `json:"-"`
 }
 
-const accountCols = `id::text, customer_id, currency, state, frozen, collateral_minor, credit_limit_minor, purchase_limit_minor, created_at, updated_at, restricted_reason, exposure_epoch, clock_offset_seconds, activated_at, delinquency, close_stage, close_requested_at, destination_last4`
+const accountCols = `id::text, customer_id, currency, state, frozen, collateral_minor, credit_limit_minor, purchase_limit_minor, created_at, updated_at, restricted_reason, exposure_epoch, clock_offset_seconds, activated_at, delinquency, close_stage, close_requested_at, destination_last4, version`
 
 func (a accountRow) restriction() string {
 	if a.Restricted == nil {
@@ -108,7 +109,7 @@ func (a accountRow) restriction() string {
 
 func scanAccount(row pgx.Row) (accountRow, error) {
 	var a accountRow
-	err := row.Scan(&a.ID, &a.CustomerID, &a.Currency, &a.State, &a.Frozen, &a.Collateral, &a.CreditLimit, &a.PurchaseLimit, &a.CreatedAt, &a.UpdatedAt, &a.Restricted, &a.Epoch, &a.ClockOffset, &a.ActivatedAt, &a.Delinquency, &a.CloseStage, &a.CloseReqAt, &a.DestLast4)
+	err := row.Scan(&a.ID, &a.CustomerID, &a.Currency, &a.State, &a.Frozen, &a.Collateral, &a.CreditLimit, &a.PurchaseLimit, &a.CreatedAt, &a.UpdatedAt, &a.Restricted, &a.Epoch, &a.ClockOffset, &a.ActivatedAt, &a.Delinquency, &a.CloseStage, &a.CloseReqAt, &a.DestLast4, &a.Version)
 	return a, err
 }
 

@@ -277,7 +277,9 @@ func (r *run) close(ctx context.Context, n int, prevClose, closeAt time.Time, fi
 		}
 		facts := r.facts
 		// A day is past due when DPD ≥ 1 at its start; the due date itself is not (spec B-6).
-		pastDue := func(d time.Time) bool { return engine.CapToOwed(engine.Delinquency(facts, r.credits, d), r.owedAt(d)).DPD >= 1 }
+		pastDue := func(d time.Time) bool {
+			return engine.CapToOwed(engine.Delinquency(facts, r.credits, d), r.owedAt(d)).DPD >= 1
+		}
 		if interest := engine.Interest(engine.Replay(es, prevClose, closeAt).Days, r.s.cfg.APRBps, grace, pastDue); interest > 0 {
 			posted, err := r.s.postCharge(ctx, acc, "interest", n, interestRef, interest, closeAt.Add(-time.Second))
 			if err != nil {
@@ -314,7 +316,7 @@ func (r *run) close(ctx context.Context, n int, prevClose, closeAt time.Time, fi
 		WaiversMinor: rr.Totals.Waivers, CollateralAppliedMinor: rr.Totals.CollateralApplied, NewBalanceMinor: rr.Closing.Total(),
 		MinimumDueMinor: minimum, PastDueMinor: pastDueAtClose, Grace: grace, APRBps: r.s.cfg.APRBps, PendingPaymentsMinor: pending,
 		BalanceOnly: balanceOnly, Final: final,
-		Buckets:     engine.DocBuckets{PrincipalMinor: rr.Closing.Principal, InterestMinor: rr.Closing.Interest, FeesMinor: rr.Closing.Fees}}
+		Buckets: engine.DocBuckets{PrincipalMinor: rr.Closing.Principal, InterestMinor: rr.Closing.Interest, FeesMinor: rr.Closing.Fees}}
 	for _, e := range r.entries {
 		if e.Delta != 0 && !e.EffectiveAt.Before(prevClose) && e.EffectiveAt.Before(closeAt) {
 			doc.Transactions = append(doc.Transactions, engine.DocLine{EffectiveAt: e.EffectiveAt, Type: e.Type, Reference: e.Reference, AmountMinor: e.Delta})
