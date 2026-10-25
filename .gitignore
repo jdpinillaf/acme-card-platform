@@ -1,0 +1,28 @@
+# build
+/bin/
+/dist/
+*.test
+*.out
+coverage.*
+
+# env
+.env
+.env.*
+!.env.example
+!.env.dev
+
+# tooling
+.superpowers/
+.idea/
+.vscode/
+.DS_Store
+
+# terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl
+crash.log
+
+# localstack
+/deploy/localstack/volume/

@@ -1,0 +1,86 @@
+name: acme-card
+
+x-service-env: &service-env
+  APP_ENV: ${APP_ENV:-dev}
+  LOG_LEVEL: ${LOG_LEVEL:-debug}
+  DATABASE_URL: postgres://acme:acme@postgres:5432/acmecard?sslmode=disable
+  AWS_REGION: us-east-1
+  AWS_ACCESS_KEY_ID: test
+  AWS_SECRET_ACCESS_KEY: test
+  AWS_ENDPOINT_URL: http://localstack:4566
+  SNS_TOPIC_ARN: arn:aws:sns:us-east-1:000000000000:acme-card-events
+  AUDIT_SQS_QUEUE_URL: http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/acme-card-audit
+  ACCOUNTS_GRPC_ADDR: accounts:9001
+  LEDGER_GRPC_ADDR: ledger:9002
+  JWT_HS256_SECRET: ${JWT_HS256_SECRET}
+  BANK_WEBHOOK_SECRET: ${BANK_WEBHOOK_SECRET}
+  IDEMPOTENCY_TTL: ${IDEMPOTENCY_TTL:-24h}
+  RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-60}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: acme
+      POSTGRES_PASSWORD: acme
+      POSTGRES_DB: acmecard
+    ports: ["5432:5432"]
+    volumes:
+      - ./postgres-init.sql:/docker-entrypoint-initdb.d/01-schemas.sql:ro
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U acme -d acmecard"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  localstack:
+    image: localstack/localstack:3.8
+    environment:
+      SERVICES: sns,sqs,s3,kms
+      AWS_DEFAULT_REGION: us-east-1
+      DEBUG: 0
+    ports: ["4566:4566"]
+    volumes:
+      - ./localstack/init-aws.sh:/etc/localstack/init/ready.d/init-aws.sh:ro
+      - ./localstack/volume:/var/lib/localstack
+    healthcheck:
+      test: ["CMD-SHELL", "awslocal sns list-topics | grep -q acme-card-events"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  ledger:
+    build: { context: .., dockerfile: deploy/Dockerfile, args: { SERVICE: ledger } }
+    environment: { <<: *service-env, GRPC_ADDR: ":9002" }
+    depends_on: { postgres: { condition: service_healthy }, localstack: { condition: service_healthy } }
+
+  accounts:
+    build: { context: .., dockerfile: deploy/Dockerfile, args: { SERVICE: accounts } }
+    environment: { <<: *service-env, GRPC_ADDR: ":9001" }
+    depends_on: { postgres: { condition: service_healthy }, localstack: { condition: service_healthy }, ledger: { condition: service_started } }
+
+  audit:
+    build: { context: .., dockerfile: deploy/Dockerfile, args: { SERVICE: audit } }
+    environment: *service-env
+    depends_on: { postgres: { condition: service_healthy }, localstack: { condition: service_healthy } }
+
+  gateway:
+    build: { context: .., dockerfile: deploy/Dockerfile, args: { SERVICE: gateway } }
+    environment: { <<: *service-env, GATEWAY_HTTP_ADDR: ":8080" }
+    ports: ["8080:8080"]
+    depends_on: { postgres: { condition: service_healthy }, accounts: { condition: service_started } }
+
+  k6:
+    image: grafana/k6:0.54.0
+    profiles: ["load"]
+    environment:
+      BASE_URL: http://gateway:8080
+      JWT_HS256_SECRET: ${JWT_HS256_SECRET}
+      BANK_WEBHOOK_SECRET: ${BANK_WEBHOOK_SECRET}
+    volumes:
+      - ../tests/load:/scripts:ro
+    depends_on: [gateway]
+
+volumes:
+  pgdata:
