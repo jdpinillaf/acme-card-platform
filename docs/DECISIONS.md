@@ -73,3 +73,12 @@ Append-only. One entry per decision. Format: context → decision → consequenc
 - Freeze/unfreeze moves from Sprint 5 into Sprint 2, because `card_frozen` is a Sprint 2 decline reason.
 - Card network simulated through HMAC-signed endpoints. Holds live 7 days. No partial approvals, incremental authorizations, partial captures, captures without an authorization, standalone refunds or currency conversion. Captures are for at most the authorized amount. Reversals are allowed within 3 days. Refunds after payment leave a credit balance. Velocity is 10 attempts per minute. The purchase limit applies per transaction. Handled declines return 201 with a reason.
 - Full design: `docs/superpowers/specs/2026-10-25-sprint2-card-transactions-design.md`.
+
+## ADR-015 — Sprint 2 implementation rulings (2026-10-25)
+- Every ledger money operation (journal, hold, capture, release, refund) first locks the account's `collateral_held` balance row as a per-account mutex. This prevents deadlocks between hold paths and journal paths.
+- Velocity runs inside the authorization transaction (`ratelimit.AllowTx`). A separate transaction needed a second pooled connection per in-flight authorization and deadlocked the pool under concurrency.
+- Authorization holds use the deterministic reference `auth:<network_ref>`; capture journals use `capture:<authorization_id>` and refunds `refund:<network_ref>`. Retries after a crash therefore re-use the same ledger records.
+- A declined hold stores nothing in the ledger; the decision lives on the authorization row.
+- The account id doubles as the card token until card numbers exist.
+- `buf lint` allows shared response envelopes (`RPC_REQUEST_RESPONSE_UNIQUE`, `RPC_RESPONSE_STANDARD_NAME`).
+- The k6 script is now `tests/load/flows.js` and covers both sprints.

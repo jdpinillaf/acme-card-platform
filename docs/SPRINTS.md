@@ -15,14 +15,14 @@ Monorepo layout, docker-compose (Postgres, LocalStack), Makefile, proto + buf, s
 - `web/` — minimal Next.js (App Router) simulator: mint dev JWT, create account, create deposit, fire signed bank webhook, inspect account, replay the same Idempotency-Key and see the replay flag. Secrets stay in server route handlers.
 - Tests: state machine, money, idempotency (50 concurrent same key → 1 effect), webhook signature, ledger balance invariant, audit append-only, k6 1000 VUs.
 
-## Sprint 2 — Authorizations, captures, reversals, refunds, declines  ← next
+## Sprint 2 — Authorizations, captures, reversals, refunds, declines  ✓ done
 - Simulated card network over HMAC: authorize (7-day hold), single capture ≤ authorized, reversal within 3 days, refunds against captured purchases (partials up to captured).
 - Decline reasons, in order: `account_closed`, `collateral_not_confirmed`, `card_frozen`, `velocity_limit_exceeded` (10/min), `purchase_limit_exceeded` (per transaction), `insufficient_credit`. Returned as 201 with `status: declined`.
 - Customer: freeze/unfreeze, purchase limit.
 - Credit balance when a refund exceeds what is owed.
 - Design: `docs/superpowers/specs/2026-10-25-sprint2-card-transactions-design.md`.
 
-## Sprint 3 — Repayments
+## Sprint 3 — Repayments  ← next
 - `POST /v1/accounts/{id}/payments` (full/partial), payment intents, failed/returned payments.
 - Ledger `receivable → credit_available`.
 - Tests: concurrent payments same key → one posting; overpayment handling.
