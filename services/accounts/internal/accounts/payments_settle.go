@@ -133,9 +133,7 @@ func (s *Service) SettlePayment(ctx context.Context, req *accountsv1.SettlePayme
 	if err != nil {
 		return nil, internal(err)
 	}
-	if err := s.applyRestriction(ctx, p.AccountID, false, req.Meta); err != nil {
-		return nil, err
-	}
+	s.liftQuietly(ctx, p.AccountID, req.Meta)
 	return s.paymentResponse(ctx, p, replayed)
 }
 

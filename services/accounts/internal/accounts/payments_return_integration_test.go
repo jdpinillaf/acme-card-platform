@@ -9,8 +9,11 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/grpc"
+
 	accountsv1 "github.com/acme/acme-card/gen/go/acme/accounts/v1"
 	commonv1 "github.com/acme/acme-card/gen/go/acme/common/v1"
+	ledgerv1 "github.com/acme/acme-card/gen/go/acme/ledger/v1"
 	"github.com/acme/acme-card/pkg/grpcx"
 )
 
@@ -102,7 +105,7 @@ func TestReturnUnderLimitDoesNotRestrict(t *testing.T) {
 	if _, err := f.svc.ReturnPayment(context.Background(), &accountsv1.ReturnPaymentRequest{PaymentId: other.Payment.Id, ReturnRef: "r-x", AmountMinor: 300}); grpcx.Reason(err) != "not_settled" {
 		t.Fatalf("returning an unsettled payment: %v", err)
 	}
-	if _, err := f.svc.ReturnPayment(context.Background(), &accountsv1.ReturnPaymentRequest{PaymentId: pay.Id, ReturnRef: "ret-ret3", AmountMinor: 299}); grpcx.Reason(err) != "network_ref_reuse" && grpcx.Reason(err) != "amount_mismatch" {
+	if _, err := f.svc.ReturnPayment(context.Background(), &accountsv1.ReturnPaymentRequest{PaymentId: pay.Id, ReturnRef: "ret-ret3", AmountMinor: 299}); grpcx.Reason(err) != "amount_mismatch" {
 		t.Fatalf("return replay with different amount: %v", err)
 	}
 }
@@ -113,7 +116,12 @@ func TestReturnAfterLiftRestrictsAgain(t *testing.T) {
 	f.spendCaptured(t, acc.Id, "ret4-a", 1000)
 	p1 := f.settledPayment(t, acc.Id, 1000, "bank-ret4-1")
 	f.spendCaptured(t, acc.Id, "ret4-b", 1000)
-	_, _ = f.returnPayment(p1, "ret-ret4-1") // debt 2000 → restricted
+	if _, err := f.returnPayment(p1, "ret-ret4-1"); err != nil { // debt 2000 → restricted
+		t.Fatal(err)
+	}
+	if f.restricted(t, acc.Id) != "payment_returned" {
+		t.Fatal("precondition: first return restricts")
+	}
 	p2 := f.settledPayment(t, acc.Id, 1000, "bank-ret4-2")
 	if f.restricted(t, acc.Id) != "" {
 		t.Fatal("lifted after paying back to the limit")
@@ -195,5 +203,50 @@ func TestReturningPaymentResumedByReconciler(t *testing.T) {
 	}
 	if n := f.count(t, f.ledger, `SELECT count(*) FROM journal_entries WHERE entry_type='payment_returned' AND account_id=$1`, acc.Id); n != 1 {
 		t.Fatalf("return journals=%d", n)
+	}
+}
+
+func (l *flakyLedger) GetBalances(ctx context.Context, r *ledgerv1.GetBalancesRequest, o ...grpc.CallOption) (*ledgerv1.GetBalancesResponse, error) {
+	if l.failBalances.CompareAndSwap(true, false) {
+		return nil, errLost
+	}
+	return l.LedgerServiceClient.GetBalances(ctx, r, o...)
+}
+
+// Review I1: the restriction must not depend on a ledger read after the return committed.
+func TestReturnRestrictsEvenIfLedgerReadFailsAfterCommit(t *testing.T) {
+	f, _, fl := flakyFixture(t)
+	acc := f.activeAccount(t, "cust-ret8", 1000)
+	f.spendCaptured(t, acc.Id, "ret8-a", 1000)
+	pay := f.settledPayment(t, acc.Id, 1000, "bank-ret8")
+	f.spendCaptured(t, acc.Id, "ret8-b", 1000)
+	fl.failBalances.Store(true) // the first ledger read after the return's finalize fails
+	_, _ = f.returnPayment(pay, "ret-ret8")
+	var reason *string
+	_ = f.pool.QueryRow(context.Background(), `SELECT restricted_reason FROM accounts WHERE id=$1`, acc.Id).Scan(&reason)
+	if reason == nil || *reason != "payment_returned" {
+		t.Fatal("over-limit return must leave the card restricted even when the post-commit ledger read fails")
+	}
+}
+
+// Review M1: a lift decided on an exposure reading taken before a later return must not apply.
+func TestStaleLiftDoesNotClearNewerRestriction(t *testing.T) {
+	f, _ := txFixture(t)
+	ctx := context.Background()
+	acc := f.activeAccount(t, "cust-ret9", 1000)
+	f.spendCaptured(t, acc.Id, "ret9-a", 1000)
+	pay := f.settledPayment(t, acc.Id, 1000, "bank-ret9")
+	f.spendCaptured(t, acc.Id, "ret9-b", 1000)
+	_, _ = f.returnPayment(pay, "ret-ret9")
+	var seen int64
+	_ = f.pool.QueryRow(ctx, `SELECT exposure_epoch FROM accounts WHERE id=$1`, acc.Id).Scan(&seen)
+	if _, err := f.pool.Exec(ctx, `UPDATE accounts SET exposure_epoch = exposure_epoch + 1 WHERE id=$1`, acc.Id); err != nil { // a newer return
+		t.Fatal(err)
+	}
+	if err := f.svc.clearRestriction(ctx, acc.Id, seen, nil); err != nil {
+		t.Fatal(err)
+	}
+	if f.restricted(t, acc.Id) != "payment_returned" {
+		t.Fatal("a lift based on a stale exposure reading must not clear the restriction")
 	}
 }

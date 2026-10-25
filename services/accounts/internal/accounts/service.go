@@ -70,11 +70,12 @@ type accountRow struct {
 	CreditLimit   int64     `json:"credit_limit_minor"`
 	PurchaseLimit int64     `json:"purchase_limit_minor"`
 	Restricted    *string   `json:"restricted_reason,omitempty"`
+	Epoch         int64     `json:"-"`
 	CreatedAt     time.Time `json:"-"`
 	UpdatedAt     time.Time `json:"-"`
 }
 
-const accountCols = `id::text, customer_id, currency, state, frozen, collateral_minor, credit_limit_minor, purchase_limit_minor, created_at, updated_at, restricted_reason`
+const accountCols = `id::text, customer_id, currency, state, frozen, collateral_minor, credit_limit_minor, purchase_limit_minor, created_at, updated_at, restricted_reason, exposure_epoch`
 
 func (a accountRow) restriction() string {
 	if a.Restricted == nil {
@@ -85,7 +86,7 @@ func (a accountRow) restriction() string {
 
 func scanAccount(row pgx.Row) (accountRow, error) {
 	var a accountRow
-	err := row.Scan(&a.ID, &a.CustomerID, &a.Currency, &a.State, &a.Frozen, &a.Collateral, &a.CreditLimit, &a.PurchaseLimit, &a.CreatedAt, &a.UpdatedAt, &a.Restricted)
+	err := row.Scan(&a.ID, &a.CustomerID, &a.Currency, &a.State, &a.Frozen, &a.Collateral, &a.CreditLimit, &a.PurchaseLimit, &a.CreatedAt, &a.UpdatedAt, &a.Restricted, &a.Epoch)
 	return a, err
 }
 

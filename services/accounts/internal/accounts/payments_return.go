@@ -13,8 +13,8 @@ import (
 
 // ReturnPayment applies a bank return of a settled payment within ReturnWindow: reserve
 // (settled → returning, claim return_ref) → ledger PostPaymentReturn ("payment_return:<id>",
-// detached) → finalize (returned). Afterwards, if exposure exceeds the limit, the card is
-// restricted with payment_returned (accepted risk, ADR-018).
+// detached) → finalize (returned, card restricted in the same transaction). Afterwards the
+// restriction is lifted at once if exposure is still within the limit (accepted risk, ADR-018).
 func (s *Service) ReturnPayment(ctx context.Context, req *accountsv1.ReturnPaymentRequest) (*accountsv1.PaymentResponse, error) {
 	if req.ReturnRef == "" {
 		return nil, grpcx.Error(codes.InvalidArgument, "invalid_return_ref", "return_ref is required")
@@ -82,13 +82,15 @@ func (s *Service) ReturnPayment(ctx context.Context, req *accountsv1.ReturnPayme
 		if err != nil {
 			return err
 		}
+		if err := s.restrictInTx(ctx, tx, p.AccountID, req.Meta); err != nil {
+			return err
+		}
 		return emitPayment(ctx, tx, "payment.returned", cur, p, req.Meta)
 	})
 	if err != nil {
 		return nil, internal(err)
 	}
-	if err := s.applyRestriction(ctx, p.AccountID, true, req.Meta); err != nil {
-		return nil, err
-	}
+	// The return restricted the card fail-safe; lift it right away if exposure is within the limit.
+	s.liftQuietly(ctx, p.AccountID, req.Meta)
 	return s.paymentResponse(ctx, p, replayed)
 }
