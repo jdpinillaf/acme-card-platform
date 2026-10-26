@@ -65,11 +65,14 @@ func (s *Service) snapshotOne(ctx context.Context, accountID string) error {
 	if err != nil {
 		return err
 	}
+	balances := map[string]int64{}
 	b, err := s.ledger.GetBalances(ctx, &ledgerv1.GetBalancesRequest{AccountId: acc.ID})
-	if err != nil {
+	switch {
+	case status.Code(err) == codes.NotFound:
+		b = &ledgerv1.GetBalancesResponse{} // ledger not opened yet (CreateAccount opens it after commit; settlement retries): no balances
+	case err != nil:
 		return err
 	}
-	balances := map[string]int64{}
 	for _, bal := range b.Balances {
 		balances[subAccountKey[bal.SubAccount]] = bal.AmountMinor
 	}

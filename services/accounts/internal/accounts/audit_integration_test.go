@@ -111,6 +111,34 @@ func TestSnapshotAccounts(t *testing.T) {
 	}
 }
 
+func TestSnapshotPendingAccountHasNoBalances(t *testing.T) {
+	f, _, _ := closeFixture(t)
+	ctx := context.Background()
+	pending, err := f.svc.CreateAccount(ctx, &accountsv1.CreateAccountRequest{CustomerId: "cust-snp", Currency: "USD"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// CreateAccount commits before opening the ledger (settlement re-opens it): simulate that
+	// opening having failed, as it did for some accounts of the dev load runs.
+	for _, q := range []string{`DELETE FROM ledger.balances WHERE account_id=$1`, `DELETE FROM ledger.ledger_accounts WHERE account_id=$1`} {
+		if _, err := f.pool.Exec(ctx, q, pending.Account.Id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	active := f.withDebt(t, "cust-sna", 1000, 100)
+	// the all-accounts run covers the account with no ledger yet and keeps going
+	r, err := f.svc.SnapshotAccounts(ctx, &accountsv1.SnapshotAccountsRequest{})
+	if err != nil || r.Count < 2 {
+		t.Fatalf("snapshot: %v %+v", err, r)
+	}
+	for _, id := range []string{pending.Account.Id, active.Id} {
+		var n int
+		if err := f.pool.QueryRow(ctx, `SELECT count(*) FROM outbox WHERE payload->>'type'='snapshot.account' AND payload->>'aggregate_id'=$1`, id).Scan(&n); err != nil || n != 1 {
+			t.Fatalf("snapshot of %s: %d %v", id, n, err)
+		}
+	}
+}
+
 func TestSnapshotAccountsBackground(t *testing.T) {
 	f, _, _ := closeFixture(t)
 	ctx := context.Background()
