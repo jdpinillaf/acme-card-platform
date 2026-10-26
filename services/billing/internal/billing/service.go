@@ -23,6 +23,7 @@ import (
 	ledgerv1 "github.com/acme/acme-card/gen/go/acme/ledger/v1"
 	"github.com/acme/acme-card/pkg/events"
 	"github.com/acme/acme-card/pkg/grpcx"
+	"github.com/acme/acme-card/pkg/outbox"
 	"github.com/acme/acme-card/services/billing/internal/engine"
 )
 
@@ -170,6 +171,14 @@ func (s *Service) GetStatement(ctx context.Context, req *billingv1.GetStatementR
 	}
 	body, err := s.store.Get(ctx, st.S3Key)
 	if err != nil {
+		return nil, internal(err)
+	}
+	// A statement download is a sensitive read: audited explicitly (ADR-021).
+	read := event("statement.read", "statement", st.ID, map[string]any{"account_id": st.AccountID, "cycle": st.Cycle})
+	if actor := req.GetMeta().GetActor(); actor != "" {
+		read.Actor = actor // who downloaded it; "billing" only for internal reads
+	}
+	if err := outbox.Enqueue(ctx, s.pool, read); err != nil {
 		return nil, internal(err)
 	}
 	return &billingv1.GetStatementResponse{Statement: st.proto(), BodyJson: body}, nil

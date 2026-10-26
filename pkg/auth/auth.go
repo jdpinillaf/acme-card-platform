@@ -25,6 +25,9 @@ type Claims struct {
 // RoleSupport is the support-agent role (charge waivers).
 const RoleSupport = "support"
 
+// RoleAuditor is the read-only auditor role (audit API, Sprint 6).
+const RoleAuditor = "auditor"
+
 // Authorized reports whether the token may act on accountID.
 func (c *Claims) Authorized(accountID string) bool {
 	for _, a := range c.AuthorizedAccounts {

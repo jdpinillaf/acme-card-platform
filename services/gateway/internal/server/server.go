@@ -21,6 +21,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	accountsv1 "github.com/acme/acme-card/gen/go/acme/accounts/v1"
+	auditv1 "github.com/acme/acme-card/gen/go/acme/audit/v1"
 	billingv1 "github.com/acme/acme-card/gen/go/acme/billing/v1"
 	commonv1 "github.com/acme/acme-card/gen/go/acme/common/v1"
 	"github.com/acme/acme-card/pkg/auth"
@@ -43,6 +44,7 @@ type Limiter interface {
 type Deps struct {
 	Accounts accountsv1.AccountsServiceClient
 	Billing  billingv1.BillingServiceClient
+	Audit    auditv1.AuditServiceClient
 	// DevClock registers the simulated-clock route (DEV_CLOCK_ENABLED; dev only, ADR-019).
 	DevClock         bool
 	JWTSecret        []byte
@@ -63,6 +65,9 @@ type Deps struct {
 
 	// DisableStateful skips idempotency, rate limit and audit (unit tests only).
 	DisableStateful bool
+
+	// auditEmit overrides where audit-API meta events go (tests); default: the gateway outbox.
+	auditEmit func(context.Context, events.Event) error
 }
 
 type server struct{ Deps }
@@ -106,6 +111,29 @@ func New(d Deps) http.Handler {
 			r.With(auth.RequireAccount(func(r *http.Request) string { return chi.URLParam(r, "accountID") })).
 				Post("/v1/dev/accounts/{accountID}/clock/advance", s.advanceClock)
 		}
+	})
+
+	// Auditors (role claim): read-only audit API; every call, and every refused call, is audited
+	// explicitly (GETs are not covered by the HTTP audit middleware).
+	r.Route("/v1/audit", func(r chi.Router) {
+		// rate limit first: refused calls are audited, so they must not be free to repeat
+		r.Use(auth.Middleware(d.JWTSecret))
+		if !d.DisableStateful {
+			r.Use(s.rateLimit)
+		}
+		r.Use(s.requireAuditor)
+		if !d.DisableStateful {
+			r.Use(s.audit)
+		}
+		r.Get("/events", s.auditEvents)
+		r.Get("/verify", s.auditVerify)
+		r.Post("/checkpoints", s.auditCheckpoint)
+		r.Get("/reconciliation", s.auditGetReconciliation)
+		r.Post("/reconciliation", s.auditRunReconciliation)
+		r.Get("/replay/{accountID}", s.auditReplay)
+		r.Post("/exports", s.auditCreateExport)
+		r.Get("/exports/{exportID}", s.auditGetExport)
+		r.Post("/snapshots", s.auditSnapshots)
 	})
 
 	// Support agents (role claim) act on any account; same rate limit, audit and idempotency.

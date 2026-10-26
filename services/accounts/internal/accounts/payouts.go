@@ -374,7 +374,8 @@ func (s *Service) GetPayoutInstruction(ctx context.Context, req *accountsv1.GetP
 		}
 		out = &accountsv1.PayoutInstruction{AttemptId: req.AttemptId, AmountMinor: p.Collateral + p.Credit, Currency: p.Currency,
 			BankCode: d.BankCode, AccountNumber: d.AccountNumber, HolderName: d.HolderName}
-		return nil
+		// A sensitive read: audited explicitly, with ids only (ADR-021).
+		return outbox.Enqueue(ctx, tx, payoutEvent("payout.instruction_read", p, &commonv1.RequestMeta{Actor: "bank"}))
 	})
 	if err != nil {
 		return nil, internal(err)

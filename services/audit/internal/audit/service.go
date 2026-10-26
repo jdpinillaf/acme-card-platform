@@ -1,0 +1,87 @@
+// Package audit is the audit service's read and integrity side (Sprint 6, ADR-021): query,
+// hash-chain verification, gap and outbox-lag detection, signed checkpoints, replay,
+// reconciliation, exports and retention.
+package audit
+
+import (
+	"context"
+	"crypto/ed25519"
+	"fmt"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	auditv1 "github.com/acme/acme-card/gen/go/acme/audit/v1"
+	"github.com/acme/acme-card/services/audit/internal/store"
+)
+
+// Config tunes the integrity jobs.
+type Config struct {
+	ProducerSchemas []string      // schemas whose outbox is checked for stuck rows (= source names)
+	GapGrace        time.Duration // a gap is reported once the event after it is this old
+	StuckAfter      time.Duration // an unpublished outbox row older than this is stuck
+	Retention       time.Duration // hot retention before archiving; 0 = 13 calendar months
+	ArchiveChunk    int64         // most rows per archive (bounds memory); 0 = 100,000
+	ArchiveLock     time.Duration // object-lock retention of checkpoints and archives (7 years)
+}
+
+// cutoff is the recorded_at before which rows are archived: 13 calendar months, never earlier.
+func (c Config) cutoff(now time.Time) time.Time {
+	if c.Retention > 0 {
+		return now.Add(-c.Retention)
+	}
+	return now.AddDate(0, -13, 0)
+}
+
+func (c Config) withDefaults() Config {
+	if c.GapGrace == 0 {
+		c.GapGrace = 2 * time.Minute
+	}
+	if c.StuckAfter == 0 {
+		c.StuckAfter = 5 * time.Minute
+	}
+	if c.ArchiveChunk == 0 {
+		c.ArchiveChunk = 100_000
+	}
+	if c.ArchiveLock == 0 {
+		c.ArchiveLock = 7 * 365 * 24 * time.Hour
+	}
+	return c
+}
+
+// Service implements auditv1.AuditServiceServer.
+type Service struct {
+	auditv1.UnimplementedAuditServiceServer
+	pool    *pgxpool.Pool
+	store   *store.Store
+	objects ObjectStore
+	key     ed25519.PrivateKey
+	cfg     Config
+	now     func() time.Time
+	// dailyJobs run after the daily checkpoint (reconciliation, retention).
+	dailyJobs []func(context.Context) error
+}
+
+// NewService builds the service; key signs checkpoints and archive manifests.
+func NewService(pool *pgxpool.Pool, objects ObjectStore, key ed25519.PrivateKey, cfg Config) *Service {
+	s := &Service{pool: pool, store: store.New(pool), objects: objects, key: key, cfg: cfg.withDefaults(), now: func() time.Time { return time.Now().UTC() }}
+	s.dailyJobs = append(s.dailyJobs, func(ctx context.Context) error {
+		r, err := s.Verify(ctx, &auditv1.VerifyRequest{Full: true})
+		if err == nil && !r.ChainValid {
+			err = fmt.Errorf("audit chain broken at chain_seq %d", r.FirstBadChainSeq)
+		}
+		return err
+	}, func(ctx context.Context) error {
+		_, err := s.RunReconciliation(ctx, &auditv1.RunReconciliationRequest{})
+		return err
+	})
+	// retention is monthly: on the 1st (UTC); a missed month is caught up by the next run
+	s.dailyJobs = append(s.dailyJobs, func(ctx context.Context) error {
+		if s.now().Day() != 1 {
+			return nil
+		}
+		_, err := s.RunRetention(ctx, &auditv1.RunRetentionRequest{})
+		return err
+	})
+	return s
+}

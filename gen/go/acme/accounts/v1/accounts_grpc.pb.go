@@ -46,6 +46,7 @@ const (
 	AccountsService_RetryPayout_FullMethodName          = "/acme.accounts.v1.AccountsService/RetryPayout"
 	AccountsService_SettlePayout_FullMethodName         = "/acme.accounts.v1.AccountsService/SettlePayout"
 	AccountsService_GetPayoutInstruction_FullMethodName = "/acme.accounts.v1.AccountsService/GetPayoutInstruction"
+	AccountsService_SnapshotAccounts_FullMethodName     = "/acme.accounts.v1.AccountsService/SnapshotAccounts"
 )
 
 // AccountsServiceClient is the client API for AccountsService service.
@@ -98,6 +99,8 @@ type AccountsServiceClient interface {
 	SettlePayout(ctx context.Context, in *SettlePayoutRequest, opts ...grpc.CallOption) (*PayoutResponse, error)
 	// GetPayoutInstruction returns the decrypted destination to the bank only.
 	GetPayoutInstruction(ctx context.Context, in *GetPayoutInstructionRequest, opts ...grpc.CallOption) (*PayoutInstruction, error)
+	// Audit (Sprint 6): emit snapshot.account events now (all non-cancelled accounts when ids is empty).
+	SnapshotAccounts(ctx context.Context, in *SnapshotAccountsRequest, opts ...grpc.CallOption) (*SnapshotAccountsResponse, error)
 }
 
 type accountsServiceClient struct {
@@ -378,6 +381,16 @@ func (c *accountsServiceClient) GetPayoutInstruction(ctx context.Context, in *Ge
 	return out, nil
 }
 
+func (c *accountsServiceClient) SnapshotAccounts(ctx context.Context, in *SnapshotAccountsRequest, opts ...grpc.CallOption) (*SnapshotAccountsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SnapshotAccountsResponse)
+	err := c.cc.Invoke(ctx, AccountsService_SnapshotAccounts_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AccountsServiceServer is the server API for AccountsService service.
 // All implementations must embed UnimplementedAccountsServiceServer
 // for forward compatibility.
@@ -428,6 +441,8 @@ type AccountsServiceServer interface {
 	SettlePayout(context.Context, *SettlePayoutRequest) (*PayoutResponse, error)
 	// GetPayoutInstruction returns the decrypted destination to the bank only.
 	GetPayoutInstruction(context.Context, *GetPayoutInstructionRequest) (*PayoutInstruction, error)
+	// Audit (Sprint 6): emit snapshot.account events now (all non-cancelled accounts when ids is empty).
+	SnapshotAccounts(context.Context, *SnapshotAccountsRequest) (*SnapshotAccountsResponse, error)
 	mustEmbedUnimplementedAccountsServiceServer()
 }
 
@@ -518,6 +533,9 @@ func (UnimplementedAccountsServiceServer) SettlePayout(context.Context, *SettleP
 }
 func (UnimplementedAccountsServiceServer) GetPayoutInstruction(context.Context, *GetPayoutInstructionRequest) (*PayoutInstruction, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetPayoutInstruction not implemented")
+}
+func (UnimplementedAccountsServiceServer) SnapshotAccounts(context.Context, *SnapshotAccountsRequest) (*SnapshotAccountsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SnapshotAccounts not implemented")
 }
 func (UnimplementedAccountsServiceServer) mustEmbedUnimplementedAccountsServiceServer() {}
 func (UnimplementedAccountsServiceServer) testEmbeddedByValue()                         {}
@@ -1026,6 +1044,24 @@ func _AccountsService_GetPayoutInstruction_Handler(srv interface{}, ctx context.
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AccountsService_SnapshotAccounts_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SnapshotAccountsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AccountsServiceServer).SnapshotAccounts(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AccountsService_SnapshotAccounts_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AccountsServiceServer).SnapshotAccounts(ctx, req.(*SnapshotAccountsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AccountsService_ServiceDesc is the grpc.ServiceDesc for AccountsService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1140,6 +1176,10 @@ var AccountsService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetPayoutInstruction",
 			Handler:    _AccountsService_GetPayoutInstruction_Handler,
+		},
+		{
+			MethodName: "SnapshotAccounts",
+			Handler:    _AccountsService_SnapshotAccounts_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

@@ -47,7 +47,7 @@ func main() {
 		log.Error("aws", "err", err)
 		os.Exit(1)
 	}
-	go outbox.NewRelay(pool, events.NewSNSPublisher(clients.SNS, cfg.SNSTopicARN), 100).Run(ctx, 250*time.Millisecond, log)
+	go outbox.NewRelay(pool, events.NewSNSPublisher(clients.SNS, cfg.SNSTopicARN), 100, "ledger").Run(ctx, 250*time.Millisecond, log)
 
 	svc := ledger.NewService(pool)
 	// Safety net: accounts expires holds at 7 days; anything still active at 8 days is an orphan.

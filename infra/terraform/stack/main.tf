@@ -73,7 +73,7 @@ module "audit_archive_bucket" {
   source      = "../modules/s3"
   bucket_name = "${local.name}-audit-archive"
   kms_key_arn = module.kms.data_key_arn
-  object_lock = true # WORM: archived audit exports cannot be altered
+  object_lock = true # WORM: audit checkpoints, reconciliation reports and archives cannot be altered (ADR-021)
 }
 
 module "ecs" {

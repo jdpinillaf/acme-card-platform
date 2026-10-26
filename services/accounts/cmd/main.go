@@ -51,7 +51,7 @@ func main() {
 		log.Error("aws", "err", err)
 		os.Exit(1)
 	}
-	go outbox.NewRelay(pool, events.NewSNSPublisher(clients.SNS, cfg.SNSTopicARN), 100).Run(ctx, 250*time.Millisecond, log)
+	go outbox.NewRelay(pool, events.NewSNSPublisher(clients.SNS, cfg.SNSTopicARN), 100, "accounts").Run(ctx, 250*time.Millisecond, log)
 
 	conn, err := grpcx.Dial(cfg.LedgerGRPCAddr)
 	if err != nil {
@@ -92,6 +92,7 @@ func main() {
 	}
 	svc := accounts.NewService(pool, ledgerv1.NewLedgerServiceClient(conn), opts...)
 	go svc.RunExpiry(ctx, time.Minute, log)
+	go svc.RunSnapshots(ctx, time.Hour, log)
 	log.Info("accounts listening", "addr", cfg.GRPCAddr)
 	if err := grpcx.Serve(ctx, cfg.GRPCAddr, func(s *grpc.Server) { accountsv1.RegisterAccountsServiceServer(s, svc) }); err != nil {
 		log.Error("serve", "err", err)

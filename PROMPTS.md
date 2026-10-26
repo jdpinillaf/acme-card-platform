@@ -237,3 +237,21 @@ Sprint 4 implemented on branch `sprint-4` from `docs/superpowers/plans/2026-10-2
 ## Sprint 5 delivery notes (2026-10-25)
 
 Sprint 5 implemented on branch `sprint-5` from `docs/superpowers/plans/2026-10-25-sprint5-close.md`. Results in `docs/testing/sprint5.md`, decisions in ADR-020. The audit session works in a separate worktree (branch `journey-e2e`).
+
+## 2026-10-25 — Sprint 6 discovery
+
+### Prompt 25 (user)
+
+> Perfecto, ahora vamos a planear lo último, que sería auditoría de la app directamente ya. Y ya lo último creo que serían las notificaciones. Entonces vamos con la auditoría. Yo creo que igual ya ha sido bastante abordado a lo largo de los sprints, pero ahora vamos a reforzarlo.
+
+### Prompt 26 (user)
+
+> Si cintinua con lo sugerido
+
+### Prompt 27 (user)
+
+> Si, ejecutalo
+
+## Sprint 6 delivery notes (2026-10-25)
+
+Sprint 6 implemented on branch `sprint-6` from `docs/superpowers/plans/2026-10-25-sprint6-audit.md` (inline execution). Results in `docs/testing/sprint6.md`, decisions in ADR-021.

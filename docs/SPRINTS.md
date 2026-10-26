@@ -40,8 +40,12 @@ Monorepo layout, docker-compose (Postgres, LocalStack), Makefile, proto + buf, s
 - Cancel of an unactivated account voids its pending deposits. A new account is allowed after a close with no debt.
 - Design: `docs/superpowers/specs/2026-10-25-sprint5-close-design.md`. Results: `docs/testing/sprint5.md`.
 
-## Sprint 6 — Audit hardening  ← next
-- Snapshots per aggregate, replay tooling from audit log, retention policy, reconciliation job (ledger vs snapshots).
+## Sprint 6 — Audit hardening  ✓ done
+- Tamper-evident hash chain, gap-free per-source numbering, signed checkpoints in an Object-Lock bucket, redaction of personal data and secrets (ADR-021).
+- Account snapshots and `account.changed`, replay against live state, daily reconciliation of the 36 invariants.
+- Retention: 13 months hot, archive → verify → purge, 7 years archived. Auditor role with an audited read-only API, exports, simulator panel 9.
+- Design: `docs/superpowers/specs/2026-10-25-sprint6-audit-design.md`. Results: `docs/testing/sprint6.md`.
 
-## Sprint 7 — Notifications
+## Sprint 7 — Notifications  ← next
+
 - `notifications` service: outbound webhooks with HMAC, retries with backoff, rejection dedupe. Moved out of Sprint 2.

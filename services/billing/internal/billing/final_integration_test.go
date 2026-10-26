@@ -9,6 +9,7 @@ import (
 
 	accountsv1 "github.com/acme/acme-card/gen/go/acme/accounts/v1"
 	billingv1 "github.com/acme/acme-card/gen/go/acme/billing/v1"
+	commonv1 "github.com/acme/acme-card/gen/go/acme/common/v1"
 	ledgerv1 "github.com/acme/acme-card/gen/go/acme/ledger/v1"
 	"github.com/acme/acme-card/services/billing/internal/engine"
 )
@@ -100,5 +101,19 @@ func TestSummaryPastDueCappedAtOutstanding(t *testing.T) {
 	s, err := f.svc.GetSummary(ctx, &billingv1.GetSummaryRequest{AccountId: acc.Id})
 	if err != nil || s.PastDueMinor != 0 || s.Dpd != 0 {
 		t.Fatalf("summary after the debt was cleared: %v %+v", err, s)
+	}
+}
+
+func TestStatementReadAudited(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	acc := f.activeAccount(t, 1000)
+	f.advanceTo(t, acc.Id, f.closeN(t, acc, 1))
+	st := f.statements(t, acc.Id)[0]
+	if _, err := f.svc.GetStatement(ctx, &billingv1.GetStatementRequest{AccountId: acc.Id, StatementId: st.Id, Meta: &commonv1.RequestMeta{Actor: "cust-reader"}}); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.count(t, f.pool, `SELECT count(*) FROM outbox WHERE payload->>'type'='statement.read' AND payload->>'aggregate_id'=$1 AND payload->>'actor'='cust-reader'`, st.Id); n != 1 {
+		t.Fatalf("statement.read events=%d", n)
 	}
 }

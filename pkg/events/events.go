@@ -25,6 +25,10 @@ type Event struct {
 	Before             json.RawMessage `json:"before,omitempty"`
 	After              json.RawMessage `json:"after,omitempty"`
 	OccurredAt         time.Time       `json:"occurred_at"`
+	// Source and SourceSeq are set by the outbox relay at publish time: a contiguous number per
+	// producing service, so audit can prove nothing was lost (ADR-021).
+	Source    string `json:"source,omitempty"`
+	SourceSeq int64  `json:"source_seq,omitempty"`
 }
 
 // New builds an event with a fresh UUIDv7 and the current UTC time.

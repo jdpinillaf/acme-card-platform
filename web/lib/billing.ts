@@ -27,8 +27,3 @@ export function formatMinor(minor: number, currency: string): string {
   const abs = Math.abs(minor);
   return `${sign}${Math.floor(abs / 100)}.${String(abs % 100).padStart(2, "0")} ${currency}`;
 }
-
-/** The token route only mints the support role; anything else is a plain customer token. */
-export function supportRole(role: unknown): "support" | undefined {
-  return role === "support" ? "support" : undefined;
-}

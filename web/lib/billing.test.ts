@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { daysToNextClose, daysToDuePlus, formatMinor, supportRole } from "./billing.ts";
+import { daysToNextClose, daysToDuePlus, formatMinor } from "./billing.ts";
 
 const summary = { account_time: "2027-02-05T10:00:00Z", cycle_end: "2027-02-10T00:00:00Z", due_date: "2027-03-03T00:00:00Z" };
 
@@ -27,8 +27,3 @@ test("formatMinor prints exact minor units", () => {
   assert.equal(formatMinor(10000000, "COP"), "100000.00 COP");
 });
 
-test("supportRole only accepts the support role", () => {
-  assert.equal(supportRole("support"), "support");
-  assert.equal(supportRole("admin"), undefined);
-  assert.equal(supportRole(undefined), undefined);
-});

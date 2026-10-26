@@ -99,7 +99,8 @@ func (s *server) listStatements(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) getStatement(w http.ResponseWriter, r *http.Request) {
-	res, err := s.Billing.GetStatement(r.Context(), &billingv1.GetStatementRequest{AccountId: chi.URLParam(r, "accountID"), StatementId: chi.URLParam(r, "statementID")})
+	res, err := s.Billing.GetStatement(r.Context(), &billingv1.GetStatementRequest{AccountId: chi.URLParam(r, "accountID"), StatementId: chi.URLParam(r, "statementID"),
+		Meta: meta(r, auth.Subject(r))})
 	if err != nil {
 		writeGRPCError(w, r, err)
 		return

@@ -26,6 +26,7 @@ type fakeBilling struct {
 	billingv1.BillingServiceClient
 	catchUps   int
 	lastWaiver *billingv1.WaiveChargeRequest
+	readActor  string
 }
 
 func (f *fakeBilling) CatchUp(context.Context, *billingv1.CatchUpRequest, ...grpc.CallOption) (*billingv1.CatchUpResponse, error) {
@@ -40,6 +41,7 @@ func (f *fakeBilling) ListStatements(context.Context, *billingv1.ListStatementsR
 }
 
 func (f *fakeBilling) GetStatement(_ context.Context, r *billingv1.GetStatementRequest, _ ...grpc.CallOption) (*billingv1.GetStatementResponse, error) {
+	f.readActor = r.GetMeta().GetActor()
 	l, _ := f.ListStatements(context.Background(), nil)
 	return &billingv1.GetStatementResponse{Statement: l.Statements[0], BodyJson: []byte(`{"cycle":1,"new_balance_minor":100000}`)}, nil
 }
@@ -141,7 +143,8 @@ func TestSupportWaiverRequiresRole(t *testing.T) {
 }
 
 func TestStatementRoutes(t *testing.T) {
-	h := billingServer(&fakeClockAccounts{}, &fakeBilling{}, false)
+	b := &fakeBilling{}
+	h := billingServer(&fakeClockAccounts{}, b, false)
 	hdr := map[string]string{"Authorization": token(t, accID)}
 	w := do(h, "GET", "/v1/accounts/"+accID+"/statements", "", hdr)
 	if w.Code != 200 || !strings.Contains(w.Body.String(), `"minimum_due_minor":2500`) || !strings.Contains(w.Body.String(), `"due_date":"2027-03-03T00:00:00Z"`) {
@@ -155,6 +158,9 @@ func TestStatementRoutes(t *testing.T) {
 	_ = json.Unmarshal(w.Body.Bytes(), &detail)
 	if w.Code != 200 || detail.Document["new_balance_minor"] != float64(100000) || detail.Statement["id"] != stmtID {
 		t.Fatalf("detail: %d %s", w.Code, w.Body.String())
+	}
+	if b.readActor != "cust-1" { // statement.read records who downloaded it
+		t.Fatalf("statement read actor %q", b.readActor)
 	}
 	if w := do(h, "GET", "/v1/accounts/"+accID+"/billing", "", hdr); w.Code != 200 || !strings.Contains(w.Body.String(), `"past_due_minor":2500`) {
 		t.Fatalf("billing: %d %s", w.Code, w.Body.String())
