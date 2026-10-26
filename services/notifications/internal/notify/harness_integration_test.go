@@ -85,6 +85,7 @@ func setup(t *testing.T) *fixture {
 	}
 	f := &fixture{pool: pool, accounts: &fakeAccounts{}, providers: &recordingProviders{fail: map[string]int{}}, now: time.Now().UTC()}
 	f.svc = NewService(pool, f.accounts, f.providers, box, Config{AllowedHTTPHosts: []string{"127.0.0.1"}})
+	f.svc.lookup = fakeLookup(nil) // partner.example resolves to a public address
 	return f
 }
 

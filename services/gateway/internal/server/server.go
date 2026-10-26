@@ -24,6 +24,7 @@ import (
 	auditv1 "github.com/acme/acme-card/gen/go/acme/audit/v1"
 	billingv1 "github.com/acme/acme-card/gen/go/acme/billing/v1"
 	commonv1 "github.com/acme/acme-card/gen/go/acme/common/v1"
+	notificationsv1 "github.com/acme/acme-card/gen/go/acme/notifications/v1"
 	"github.com/acme/acme-card/pkg/auth"
 	"github.com/acme/acme-card/pkg/events"
 	"github.com/acme/acme-card/pkg/grpcx"
@@ -45,6 +46,8 @@ type Deps struct {
 	Accounts accountsv1.AccountsServiceClient
 	Billing  billingv1.BillingServiceClient
 	Audit    auditv1.AuditServiceClient
+	// Notifications serves preferences, inbox and partner subscriptions (Sprint 7).
+	Notifications notificationsv1.NotificationsServiceClient
 	// DevClock registers the simulated-clock route (DEV_CLOCK_ENABLED; dev only, ADR-019).
 	DevClock         bool
 	JWTSecret        []byte
@@ -106,6 +109,9 @@ func New(d Deps) http.Handler {
 			r.Post("/close", s.closeAccount(false))
 			r.Post("/cancel", s.cancelAccount)
 			r.Get("/payouts", s.listPayouts)
+			r.Get("/notification-preferences", s.getNotificationPreferences)
+			r.Put("/notification-preferences", s.setNotificationPreference)
+			r.Get("/notifications", s.listNotifications)
 		})
 		if d.DevClock {
 			r.With(auth.RequireAccount(func(r *http.Request) string { return chi.URLParam(r, "accountID") })).
@@ -145,6 +151,10 @@ func New(d Deps) http.Handler {
 		r.Post("/v1/support/accounts/{accountID}/charges/{chargeID}/waivers", s.waiveCharge)
 		r.Post("/v1/support/accounts/{accountID}/close", s.closeAccount(true))
 		r.Post("/v1/support/accounts/{accountID}/payouts/{payoutID}/retry", s.retryPayout)
+		r.Post("/v1/support/webhook-subscriptions", s.createWebhookSubscription)
+		r.Get("/v1/support/webhook-subscriptions", s.listWebhookSubscriptions)
+		r.Delete("/v1/support/webhook-subscriptions/{subscriptionID}", s.disableWebhookSubscription)
+		r.Get("/v1/support/webhook-subscriptions/{subscriptionID}/deliveries", s.listWebhookDeliveries)
 	})
 
 	r.Group(func(r chi.Router) {
@@ -487,7 +497,7 @@ func (s *server) audit(next http.Handler) http.Handler {
 // ADR-004) or the payout they settle (ADR-020).
 var semantic422 = map[string]bool{
 	"network_ref_reuse": true, "external_ref_reused": true, "return_ref_reused": true, "idempotency_key_reuse": true,
-	"destination_mismatch": true, "payout_amount_mismatch": true,
+	"destination_mismatch": true, "payout_amount_mismatch": true, "mandatory_notification": true,
 }
 
 func writeGRPCError(w http.ResponseWriter, r *http.Request, err error) {

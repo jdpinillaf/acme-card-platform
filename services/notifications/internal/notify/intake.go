@@ -42,6 +42,7 @@ type Service struct {
 	box       *secretbox.Box
 	cfg       Config
 	client    *http.Client
+	lookup    lookupFunc // partner host resolution (registration check)
 	now       func() time.Time
 }
 
@@ -51,7 +52,7 @@ func NewService(pool *pgxpool.Pool, accounts accountsv1.AccountsServiceClient, p
 		cfg.WebhookTimeout = 5 * time.Second
 	}
 	return &Service{pool: pool, accounts: accounts, providers: providers, box: box, cfg: cfg,
-		client: NewWebhookClient(cfg.AllowedHTTPHosts, cfg.WebhookTimeout), now: func() time.Time { return time.Now().UTC() }}
+		client: NewWebhookClient(cfg.AllowedHTTPHosts, cfg.WebhookTimeout), lookup: defaultLookup, now: func() time.Time { return time.Now().UTC() }}
 }
 
 // recipient is the simulated address of a customer on a channel.

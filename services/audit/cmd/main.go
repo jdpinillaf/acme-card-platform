@@ -66,7 +66,7 @@ func main() {
 		os.Exit(1)
 	}
 	svc := audit.NewService(pool, audit.NewS3Store(clients.S3, cfg.AuditBucket), ed25519.PrivateKey(rawKey),
-		audit.Config{ProducerSchemas: []string{"accounts", "ledger", "billing", "gateway", "audit"}})
+		audit.Config{ProducerSchemas: []string{"accounts", "ledger", "billing", "gateway", "audit", "notifications"}})
 	go svc.RunDaily(ctx, time.Hour, log)
 	go outbox.NewRelay(pool, events.NewSNSPublisher(clients.SNS, cfg.SNSTopicARN), 100, "audit").Run(ctx, 250*time.Millisecond, log)
 	go store.NewConsumer(clients.SQS, cfg.AuditSQSQueueURL, st, log).Run(ctx)

@@ -26,5 +26,5 @@ func NewConsumer(client *sqs.Client, queueURL string, pool *pgxpool.Pool) Consum
 
 // NewService builds the audit gRPC service over pool with an in-memory object store (no S3).
 func NewService(pool *pgxpool.Pool, key ed25519.PrivateKey) auditv1.AuditServiceServer {
-	return audit.NewService(pool, audit.NewMemStore(), key, audit.Config{ProducerSchemas: []string{"accounts", "ledger", "billing", "gateway", "audit"}})
+	return audit.NewService(pool, audit.NewMemStore(), key, audit.Config{ProducerSchemas: []string{"accounts", "ledger", "billing", "gateway", "audit", "notifications"}})
 }
