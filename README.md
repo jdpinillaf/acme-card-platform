@@ -24,7 +24,7 @@ bank ── HMAC webhook ──────────────────�
 | accounts | Account/card lifecycle, collateral deposits, bank settlement | 9001 gRPC |
 | ledger | Double-entry append-only journal, balances | 9002 gRPC |
 | audit | SQS consumer → hash-chained `audit.audit_events` (append-only), verify, checkpoints, replay, reconciliation, retention | 9005 gRPC |
-| web | Flow simulator; signs JWT/HMAC server-side | 3010 |
+| web | Flow simulator (`/`) and cardholder portal (`/portal`); signs JWT/HMAC server-side | 3010 |
 | billing | Statements (S3), interest, late fees, delinquency, charge-off, support waivers | 9004 gRPC |
 | notifications | Placeholder (Sprint 7) | — |
 
@@ -35,6 +35,7 @@ Requirements: Docker, Go ≥ 1.26 (or `GOTOOLCHAIN=auto`), Node 24 for `web/` de
 ```bash
 make up                  # postgres, localstack, ledger, accounts, audit, gateway ×2, lb, web
 open http://localhost:3010   # flow simulator
+open http://localhost:3010/portal   # cardholder portal (Spanish): buy, refunds, freeze, pay, statements, close
 make test                # unit tests
 make test-integration    # integration + end-to-end (needs Docker)
 make web-test            # simulator tests + typecheck
@@ -128,3 +129,9 @@ Every call is itself audited (`audit.queried` / `audit.exported`). `AUDIT_SIGNIN
 - `docs/SPRINTS.md` — sprint plan
 - `docs/TESTING.md` — test gates (Sprint 3–6 results in `docs/testing/sprint3.md` … `sprint6.md`; customer journey in `docs/testing/journey.md`) and latest results
 - `PROMPTS.md` — verbatim prompt log
+
+### Cardholder portal (`/portal`)
+
+Customer-side test environment in Spanish: open an account and deposit collateral, buy from demo merchants (declines explained), freeze/unfreeze, per-purchase limit, pay (minimum/total/other), statements and charges, close with payout. A simulation rail plays the bank (confirm/reject deposits and payments, return a payment, settle/fail the payout), the merchants (capture, reverse, partial refunds; auto-capture on by default), support (waive charges, retry payouts) and the account clock. The session lives in `localStorage`, so a reload keeps the customer.
+
+Gotchas: the gateway rate limit (`RATE_LIMIT_PER_MINUTE`, 60 in dev) is per customer, and each portal action costs about 5 requests. The payment return window (5 days) runs on wall-clock time, not the account clock, so a customer who made payments stays in the `awaiting_returns` close stage for 5 real days. To test the full close, use a customer without payments.

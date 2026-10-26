@@ -429,7 +429,7 @@ export default function Simulator() {
   return (
     <main>
       <header>
-        <h1>acme-card · flow simulator</h1>
+        <h1>acme-card · flow simulator <a href="/portal" style={{ fontSize: 14, fontWeight: 400 }}>cardholder portal →</a></h1>
         <span className="muted">open account → collateral → card active → authorize · capture · reverse · refund → pay · settle · fail · return → advance clock · statements · waive → close · payout</span>
       </header>
 
