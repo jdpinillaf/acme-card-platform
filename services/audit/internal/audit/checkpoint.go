@@ -23,6 +23,9 @@ func (s *Service) CreateCheckpoint(ctx context.Context, _ *auditv1.CreateCheckpo
 	if err != nil {
 		return nil, internal(err)
 	}
+	if seq == 0 {
+		return nil, status.Error(codes.FailedPrecondition, "the audit chain is empty: nothing to anchor")
+	}
 	keys, err := s.listCheckpoints(ctx)
 	if err != nil {
 		return nil, internal(err)

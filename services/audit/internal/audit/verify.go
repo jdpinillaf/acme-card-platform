@@ -16,6 +16,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	auditv1 "github.com/acme/acme-card/gen/go/acme/audit/v1"
+	"github.com/acme/acme-card/services/audit/internal/store"
 )
 
 // Verify recomputes the chain, checks every signed checkpoint, lists per-source gaps and stuck
@@ -239,6 +240,9 @@ func (s *Service) verifyCheckpoints(ctx context.Context) (int, bool, string, err
 		}
 		sum := sha256.Sum256(body)
 		prevSum = hex.EncodeToString(sum[:])
+		if doc.ChainSeq == 0 && doc.Hash == store.GenesisHash {
+			continue // an anchor of the empty chain (written before empty chains were refused)
+		}
 		var stored string
 		err = s.pool.QueryRow(ctx, `SELECT hash FROM audit_events WHERE chain_seq=$1`, doc.ChainSeq).Scan(&stored)
 		if err == pgx.ErrNoRows {

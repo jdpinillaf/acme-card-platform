@@ -4,9 +4,17 @@ package audit
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
+	"encoding/json"
 	"testing"
+	"time"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	auditv1 "github.com/acme/acme-card/gen/go/acme/audit/v1"
+	"github.com/acme/acme-card/services/audit/internal/store"
 )
 
 func (f *fixture) verify(t *testing.T) *auditv1.VerifyReport {
@@ -188,5 +196,28 @@ func TestVerifyIncrementalAfterFullRun(t *testing.T) {
 	// a full run always walks everything (and is the only kind that records)
 	if r, _ = f.svc.Verify(ctx, &auditv1.VerifyRequest{Full: true}); r.Incremental || r.Checked != 15 {
 		t.Fatalf("second full: %+v", r)
+	}
+}
+
+func TestCheckpointOnEmptyChain(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	if _, err := f.svc.CreateCheckpoint(ctx, &auditv1.CreateCheckpointRequest{}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("checkpoint of an empty chain: %v", err)
+	}
+	if keys, _ := f.objects.List(ctx, "checkpoints/"); len(keys) != 0 {
+		t.Fatalf("empty chain anchored: %v", keys)
+	}
+	// a genesis anchor written by an earlier version still verifies
+	body, _ := json.Marshal(checkpointDoc{ChainSeq: 0, Hash: store.GenesisHash, CreatedAt: time.Now().UTC()})
+	key := checkpointKey(time.Now().UTC(), 0)
+	_ = f.objects.PutLocked(ctx, key, body, time.Now().Add(time.Hour))
+	_ = f.objects.PutLocked(ctx, key+".sig", []byte(base64.StdEncoding.EncodeToString(ed25519.Sign(testKey(), body))), time.Now().Add(time.Hour))
+	f.record(t, "accounts", 1)
+	if _, err := f.svc.CreateCheckpoint(ctx, &auditv1.CreateCheckpointRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	if v, err := f.svc.Verify(ctx, &auditv1.VerifyRequest{}); err != nil || !v.ChainValid || !v.CheckpointsValid || v.Checkpoints != 2 {
+		t.Fatalf("verify with a genesis anchor: %+v %v", v, err)
 	}
 }
