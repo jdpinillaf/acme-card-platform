@@ -378,10 +378,12 @@ func TestSprint1EndToEnd(t *testing.T) {
 		}
 		deadline := time.Now().Add(30 * time.Second)
 		for {
-			pending := count(t, s.accounts, `SELECT count(*) FROM outbox WHERE published_at IS NULL`) +
-				count(t, s.ledger, `SELECT count(*) FROM outbox WHERE published_at IS NULL`) +
-				count(t, s.gateway, `SELECT count(*) FROM outbox WHERE published_at IS NULL`)
-			total := count(t, s.accounts, `SELECT count(*) FROM outbox`) + count(t, s.ledger, `SELECT count(*) FROM outbox`) + count(t, s.gateway, `SELECT count(*) FROM outbox`)
+			// every producer's outbox, including notifications (its delivery results are audited too)
+			pending, total := 0, 0
+			for _, p := range []*pgxpool.Pool{s.accounts, s.ledger, s.gateway, s.billing, s.notifications, s.audit} {
+				pending += count(t, p, `SELECT count(*) FROM outbox WHERE published_at IS NULL`)
+				total += count(t, p, `SELECT count(*) FROM outbox`)
+			}
 			audited := count(t, s.audit, `SELECT count(*) FROM audit_events`)
 			if pending == 0 && audited == total {
 				break
