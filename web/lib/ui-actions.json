@@ -36,5 +36,12 @@
   {"method": "GET", "route": "/v1/audit/replay/{accountID}", "action": "audit-replay"},
   {"method": "POST", "route": "/v1/audit/exports", "action": "audit-export"},
   {"method": "GET", "route": "/v1/audit/exports/{exportID}", "action": "audit-download-export"},
-  {"method": "POST", "route": "/v1/audit/snapshots", "action": "audit-snapshot"}
+  {"method": "POST", "route": "/v1/audit/snapshots", "action": "audit-snapshot"},
+  {"method": "GET", "route": "/v1/accounts/{accountID}/notification-preferences", "action": "refresh-notification-preferences"},
+  {"method": "PUT", "route": "/v1/accounts/{accountID}/notification-preferences", "action": "set-notification-preference"},
+  {"method": "GET", "route": "/v1/accounts/{accountID}/notifications", "action": "refresh-notifications"},
+  {"method": "POST", "route": "/v1/support/webhook-subscriptions", "action": "register-demo-partner"},
+  {"method": "GET", "route": "/v1/support/webhook-subscriptions", "action": "list-partners"},
+  {"method": "DELETE", "route": "/v1/support/webhook-subscriptions/{subscriptionID}", "action": "disable-partner"},
+  {"method": "GET", "route": "/v1/support/webhook-subscriptions/{subscriptionID}/deliveries", "action": "partner-deliveries"}
 ]
