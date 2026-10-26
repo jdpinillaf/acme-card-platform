@@ -46,6 +46,8 @@ Monorepo layout, docker-compose (Postgres, LocalStack), Makefile, proto + buf, s
 - Retention: 13 months hot, archive → verify → purge, 7 years archived. Auditor role with an audited read-only API, exports, simulator panel 9.
 - Design: `docs/superpowers/specs/2026-10-25-sprint6-audit-design.md`. Results: `docs/testing/sprint6.md`.
 
-## Sprint 7 — Notifications  ← next
+## Sprint 7 — Notifications  ✓ done
+- Customer notifications by push, SMS and email (simulated), nine types, preferences per customer with three mandatory types; suspected-fraud detection (ADR-022).
+- Partner webhooks registered by support, HMAC-signed, secret shown once; retries with backoff then `failed`; SSRF-safe delivery.
+- Simulator: popup at the bottom right and panel 10. Design: `docs/superpowers/specs/2026-10-25-sprint7-notifications-design.md`. Results: `docs/testing/sprint7.md`.
 
-- `notifications` service: outbound webhooks with HMAC, retries with backoff, rejection dedupe. Moved out of Sprint 2.
