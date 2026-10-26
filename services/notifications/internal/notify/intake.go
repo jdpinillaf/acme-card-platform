@@ -81,23 +81,25 @@ type delivery struct {
 // same transaction, so an SQS redelivery (or a concurrent copy) creates nothing. An error leaves
 // the message on the queue for a retry.
 func (s *Service) Process(ctx context.Context, ev events.Event) error {
+	notice, isNotice := rules.Classify(ev)
+	fraud := rules.CountsTowardFraud(ev)
+	if !isNotice && !fraud && !rules.PartnerEventAllowed(ev.Type) {
+		return nil // nothing can come of it (http.request, ledger.*, audit.*, notification.*…): no work at all
+	}
 	var seen bool
 	if err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM processed_events WHERE event_id=$1)`, ev.ID).Scan(&seen); err != nil || seen {
 		return err
 	}
-	notice, isNotice := rules.Classify(ev)
-	fraud := rules.CountsTowardFraud(ev)
 	account := notice.AccountID
 	if fraud {
 		account = mustAccount(ev)
 	}
-	customer, cur := notice.CustomerID, ""
-	if (isNotice || fraud) && account != "" && (customer == "" || ev.Type == "fee.charged") {
-		acc, err := s.accounts.GetAccount(ctx, &accountsv1.GetAccountRequest{AccountId: account})
-		if err != nil {
-			return fmt.Errorf("notifications: account lookup: %w", err)
+	customer, cur := notice.CustomerID, notice.Currency
+	if (isNotice || fraud) && account != "" {
+		var err error
+		if customer, cur, err = s.accountOwner(ctx, account, customer, cur); err != nil {
+			return err
 		}
-		customer, cur = acc.Account.GetCustomerId(), acc.Account.GetCurrency()
 	}
 	body, err := json.Marshal(ev)
 	if err != nil {
@@ -165,6 +167,34 @@ func (s *Service) Process(ctx context.Context, ev events.Event) error {
 func mustJSON(v any) []byte {
 	b, _ := json.Marshal(v)
 	return b
+}
+
+// accountOwner returns the account's customer and currency: from the event when it is an account
+// snapshot (and then remembered), else from the directory, else one accounts lookup (remembered).
+func (s *Service) accountOwner(ctx context.Context, account, customer, cur string) (string, string, error) {
+	if customer != "" && cur != "" {
+		_, err := s.pool.Exec(ctx, `INSERT INTO account_directory (account_id, customer_id, currency) VALUES ($1,$2,$3)
+			ON CONFLICT (account_id) DO NOTHING`, account, customer, cur)
+		return customer, cur, err
+	}
+	err := s.pool.QueryRow(ctx, `SELECT customer_id, currency FROM account_directory WHERE account_id=$1`, account).Scan(&customer, &cur)
+	if err == nil {
+		return customer, cur, nil
+	}
+	if err != pgx.ErrNoRows {
+		return "", "", err
+	}
+	acc, err := s.accounts.GetAccount(ctx, &accountsv1.GetAccountRequest{AccountId: account})
+	if err != nil {
+		return "", "", fmt.Errorf("notifications: account lookup: %w", err)
+	}
+	customer, cur = acc.Account.GetCustomerId(), acc.Account.GetCurrency()
+	if customer == "" {
+		return "", "", nil
+	}
+	_, err = s.pool.Exec(ctx, `INSERT INTO account_directory (account_id, customer_id, currency) VALUES ($1,$2,$3) ON CONFLICT (account_id) DO NOTHING`,
+		account, customer, cur)
+	return customer, cur, err
 }
 
 // mustAccount is the account an authorization event belongs to.

@@ -180,3 +180,46 @@ func TestAccountLookupFailureLeavesMessage(t *testing.T) {
 		t.Fatalf("redelivery: %v", err)
 	}
 }
+
+// Load fix: events that cannot notify anyone (http.request, ledger.*, audit.*, its own
+// notification.* results…) cost no database work and no account lookup.
+func TestIrrelevantEventsTouchNothing(t *testing.T) {
+	f := setup(t)
+	for _, e := range []events.Event{
+		event("http.request", "http", "/v1/x", map[string]any{"path": "/v1/x"}),
+		event("ledger.journal_posted", "journal_entry", "j-1", map[string]any{"account_id": "acc-1"}),
+		event("notification.delivered", "notification", "d-1", map[string]any{"event_id": "e"}),
+	} {
+		if err := f.svc.Process(context.Background(), e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if f.count(t, `SELECT count(*) FROM processed_events`) != 0 || f.accounts.calls != 0 {
+		t.Fatalf("irrelevant events did work: processed=%d lookups=%d", f.count(t, `SELECT count(*) FROM processed_events`), f.accounts.calls)
+	}
+}
+
+// Load fix: an account's customer and currency are looked up once, then kept; account snapshots
+// (card.*, account.*) seed them without any lookup.
+func TestAccountLookupCached(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	for i := 0; i < 3; i++ {
+		if err := f.svc.Process(ctx, approved("acc-1")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if f.accounts.calls != 1 {
+		t.Fatalf("lookups=%d, want 1", f.accounts.calls)
+	}
+	activated := event("card.activated", "account", "acc-9", map[string]any{"id": "acc-9", "customer_id": "cust-9", "currency": "EUR", "credit_limit_minor": 100})
+	if err := f.svc.Process(ctx, activated); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.svc.Process(ctx, approved("acc-9")); err != nil {
+		t.Fatal(err)
+	}
+	if f.accounts.calls != 1 || f.count(t, `SELECT count(*) FROM deliveries WHERE account_id='acc-9' AND customer_id='cust-9' AND notification_type='purchase_approved'`) != 3 {
+		t.Fatalf("snapshot did not seed the directory: lookups=%d", f.accounts.calls)
+	}
+}

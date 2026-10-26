@@ -31,6 +31,7 @@ var (
 // used when the payload carries none. CustomerID is empty when the payload does not name it.
 type Notice struct {
 	Type, AccountID, CustomerID string
+	Currency                    string // set when the payload is an account snapshot
 	Mandatory                   bool
 	Text                        func(cur string) string
 }
@@ -99,6 +100,13 @@ func notice(typ, account, customer string, text func(string) string) Notice {
 	return Notice{Type: typ, AccountID: account, CustomerID: customer, Mandatory: MandatoryTypes[typ], Text: text}
 }
 
+func (n Notice) with(cur string) Notice {
+	if n.CustomerID != "" {
+		n.Currency = cur
+	}
+	return n
+}
+
 // Classify maps an event to its customer notification. Suspected fraud is not decided here: it
 // needs the decline history (see CountsTowardFraud and FraudNotice).
 func Classify(ev events.Event) (Notice, bool) {
@@ -107,7 +115,7 @@ func Classify(ev events.Event) (Notice, bool) {
 	case "card.activated":
 		return notice("card_activated", ev.AggregateID, after.str("customer_id"), func(cur string) string {
 			return fmt.Sprintf("Your card is active. Credit limit: %s.", FormatMinor(after.num("credit_limit_minor"), currency(after, cur)))
-		}), true
+		}).with(after.str("currency")), true
 	case "authorization.approved":
 		return notice("purchase_approved", after.str("account_id"), "", func(cur string) string {
 			return fmt.Sprintf("Purchase approved: %s at %s.", FormatMinor(after.num("amount_minor"), currency(after, cur)), after.str("merchant_name"))
@@ -122,7 +130,7 @@ func Classify(ev events.Event) (Notice, bool) {
 		if ev.Type == "card.unfrozen" {
 			state = "unfrozen"
 		}
-		return notice("card_freeze", ev.AggregateID, after.str("customer_id"), func(string) string { return "Your card is " + state + "." }), true
+		return notice("card_freeze", ev.AggregateID, after.str("customer_id"), func(string) string { return "Your card is " + state + "." }).with(after.str("currency")), true
 	case "payment.settled":
 		return notice("payment_received", after.str("account_id"), "", func(cur string) string {
 			return fmt.Sprintf("Payment received: %s. Your available credit is restored.", FormatMinor(after.num("amount_minor"), currency(after, cur)))
@@ -140,17 +148,17 @@ func Classify(ev events.Event) (Notice, bool) {
 		}
 		return notice("card_blocked", ev.AggregateID, after.str("customer_id"), func(string) string {
 			return "Your card is blocked: your payment is 15 days past due. Pay the minimum to unblock it."
-		}), true
+		}).with(after.str("currency")), true
 	case "account.charged_off":
 		acc := after.obj("account")
 		return notice("card_blocked", ev.AggregateID, acc.str("customer_id"), func(cur string) string {
 			return fmt.Sprintf("Your card is permanently blocked: 60 days past due. %s of collateral was applied to the debt.",
 				FormatMinor(after.num("collateral_applied_minor"), currency(acc, cur)))
-		}), true
+		}).with(acc.str("currency")), true
 	case "card.restricted":
 		return notice("card_blocked", ev.AggregateID, after.str("customer_id"), func(string) string {
 			return "Your card is blocked: " + human(after.str("restricted_reason")) + "."
-		}), true
+		}).with(after.str("currency")), true
 	case "payout.requested", "payout.settled", "payout.failed":
 		verb := map[string]string{"payout.requested": "is on its way", "payout.settled": "was completed", "payout.failed": "failed; support will retry it"}[ev.Type]
 		return notice("payout_update", after.str("account_id"), "", func(cur string) string {
