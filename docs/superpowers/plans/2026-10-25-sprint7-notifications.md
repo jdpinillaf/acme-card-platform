@@ -15,7 +15,7 @@
 
 **Tech Stack:** Go 1.26, gRPC/buf, pgx v5, aws-sdk-go-v2 SQS, `pkg/secretbox`, `pkg/webhook`, testcontainers (Postgres + LocalStack), k6, Next.js.
 
-**Spec:** `docs/superpowers/specs/2026-10-25-sprint7-notifications-design.md` (§3 decisions, §4 N-1…N-8).
+**Spec:** `docs/superpowers/specs/2026-10-25-sprint7-notifications-design.md` (§3 decisions, §4 N-1…N-8, §4b builder-check rulings override §4).
 
 ## Global Constraints
 
@@ -29,9 +29,9 @@
 | `card_freeze` | `card.frozen` and `card.unfrozen` | aggregate_id | no |
 | `payment_received` | `payment.settled` | `after.account_id` | no |
 | `late_fee` | `fee.charged` | `after.AccountID` (charge payload keys are Go field names: `AccountID`, `Amount`, `Reference`) | **yes** |
-| `card_blocked` | `account.delinquency_changed` whose `after.delinquency` is `past_due` and `before.delinquency` is not | aggregate_id | **yes** |
-| `payout_update` | `payout.requested`, `payout.settled` and `payout.failed` | `after.account_id` | no |
-| `suspected_fraud` | 3rd `authorization.declined` of an account within 10 min; then at most 1 per account per hour | `after.account_id` | **yes** |
+| `card_blocked` | `account.delinquency_changed` whose `after.delinquency` is `past_due` and `before.delinquency` is not; `account.charged_off`; `card.restricted` (text names `after.restricted_reason`) | aggregate_id | **yes** |
+| `payout_update` | `payout.requested`, `payout.settled` and `payout.failed`, every payout kind and attempt | `after.account_id` | no |
+| `suspected_fraud` | 3rd `authorization.declined` with `decline_reason` in {`insufficient_credit`, `over_limit`, `purchase_limit_exceeded`, `velocity_limit_exceeded`} of an account within 10 min of real time (`occurred_at`); then at most 1 per account per hour | `after.account_id` | **yes** |
 
 **Texts**
 - English, one line each.
@@ -61,7 +61,7 @@
 - Headers:
   - `X-Acme-Event-Id`;
   - `X-Acme-Delivery-Id`;
-  - `X-Acme-Timestamp` and `X-Acme-Signature: v1=<hex>`, where the hex is `webhook.Sign(secret, body, now)` (HMAC over `ts + "." + body`).
+  - `X-Acme-Timestamp` and `X-Acme-Signature: v1=<hex>`, where the hex is `webhook.Sign(secret, body, now)` (HMAC over `ts + "." + body`). Notifications adds the `v1=` prefix; `pkg/webhook` and the inbound webhooks stay unchanged.
 - Secret: 32 random bytes, hex encoded. It is returned once and stored with `secretbox` under `NOTIFY_SECRET_KEY` (base64, 32 bytes; dev key in `.env.dev`).
 - URLs must be `https`. `http` is allowed only for hosts in `NOTIFY_ALLOWED_HTTP_HOSTS`, which is dev only. Hosts that resolve to loopback, private, link-local or metadata addresses are refused unless they are in that list; the check runs at dial time.
 
@@ -76,6 +76,12 @@
 **Audit events**
 - `notification.delivered` and `notification.failed`, aggregate `notification`, sent through the notifications outbox. The relay source is `"notifications"`, added to the audit `ProducerSchemas` and the e2e relay map.
 - `after` = `{event_id, type, target, attempts, recipient_masked, last_error}`. `recipient_masked` keeps the last 4 characters.
+
+**Secret never replayed or stored in clear**
+- `pkg/idempotency` gains a per-route response redactor. The subscription-create route stores its 201 body with `secret` replaced by `"[shown once]"`.
+
+**Lookups**
+- `card.*` and `account.*` payloads carry `customer_id`. `GetAccount` is called only for authorization, payment, payout and charge events, and for currency on `fee.charged`.
 
 **Config**
 - `NOTIFICATIONS_SQS_QUEUE_URL`, `NOTIFICATIONS_GRPC_ADDR` (default `localhost:9006`), `NOTIFY_SECRET_KEY`.
@@ -130,7 +136,7 @@
   - `preferences(customer_id, type, push, sms, email, updated_at; pk customer_id+type)`;
   - `subscriptions(id, name, url, event_types text[], secret_sealed, active, created_at, disabled_at)`;
   - `deliveries(id, event_id, event_type, notification_type, account_id, customer_id, target, recipient, payload jsonb, text, status, attempts, next_attempt_at, last_error, created_at, updated_at; unique(event_id,target); index (status,next_attempt_at) WHERE status='pending')`;
-  - `inbox(id bigserial, customer_id, channel, type, text, delivery_id, created_at)`;
+  - `inbox(id bigserial, account_id, customer_id, channel, type, text, delivery_id, created_at)`, read per account;
   - `declines(account_id, at)`;
   - `fraud_alerts(account_id, at)`;
   - `outbox` and `outbox_sequence` (`outbox.SequenceMigration`).
@@ -144,7 +150,7 @@
   - proto plus `buf generate`, migrations, config fields;
   - `main.go`: migrate, connect, gRPC server with an Unimplemented embed, outbox relay source `notifications`;
   - compose service `notifications` (`GRPC_ADDR: ":9006"`), `NOTIFICATIONS_GRPC_ADDR` and queue URL in `service-env`;
-  - localstack queue `acme-card-notifications` + DLQ + subscription;
+  - localstack queue `acme-card-notifications` + DLQ with a redrive policy (maxReceiveCount 5) + subscription; give `acme-card-audit` the same redrive policy;
   - `notifications` schema in `postgres-init.sql`.
 - [ ] **Step 4: verify.** `go build ./... && go test ./pkg/config/ && go test -tags=integration ./services/notifications/...` → PASS. `make up` → the notifications container is up.
 - [ ] **Step 5: commit.** `feat(notifications): contracts, schema and service skeleton`.
@@ -193,7 +199,8 @@
   - `TestRedeliveredEventCreatesNothing`: `Process` twice, plus 10 concurrent calls → 3 rows.
   - `TestPreferencesFilterChannels`.
   - `TestMandatoryIgnoresAllOffRow`: a row written directly by SQL → still at least push.
-  - `TestFraudAfterThreeDeclinesOncePerHour`.
+  - `TestFraudAfterThreeDeclinesOncePerHour` (counting reasons only; three `card_frozen` declines raise nothing).
+  - `TestCardBlockedOnPastDueChargeOffAndRestriction`.
   - `TestPartnerDeliveriesOnlyForSubscribedActiveAllowedTypes`.
   - `TestAccountLookupFailureLeavesMessage`: the error is returned and nothing is stored.
 - [ ] **Step 2: run.** Expected: FAIL.
@@ -262,6 +269,7 @@
   - gRPC integration:
     - `TestSetPreferenceMandatory422`: maps to `FailedPrecondition` + reason `mandatory_notification`;
     - `TestCreateSubscriptionSecretOnceAndSealed`: the DB holds no plain secret; List never returns it;
+    - gateway `TestSubscriptionSecretNotReplayed`: the same Idempotency-Key replays the 201 without the secret, and `gateway.idempotency_keys` holds no secret;
     - `TestSubscriptionValidation`: bad URL or event type → `InvalidArgument`.
   - Gateway unit:
     - route matrix (customer on someone else's account → 403; customer on a support route → 403);
@@ -272,7 +280,7 @@
 - [ ] **Step 3: implement and wire the mains.**
   - Gateway dials `NOTIFICATIONS_GRPC_ADDR`.
   - Notifications runs the consumer, both delivery loops and gRPC.
-  - Audit `ProducerSchemas` gains `notifications`.
+  - Audit `ProducerSchemas` gains `notifications` in all three lists (audit main, auditctl, audittest).
 - [ ] **Step 4: run.** `go test ./services/gateway/... -skip TestEveryRouteHasASimulatorAction && go test -tags=integration ./services/notifications/...` → PASS.
 - [ ] **Step 5: commit.** `feat: notification preferences, inbox and partner subscriptions API`.
 
@@ -335,9 +343,9 @@
     - pending rows older than 10 min after the drain;
     - inbox rows without a delivered delivery.
   - The audit gate stays green.
-  - p95 ≤ 1.5 s, or recorded with the reason.
+  - p95 ≤ 1.5 s, or recorded with the reason; every delivery delivered or failed within 10 minutes after the load.
 - [ ] **Step 6: docs.**
 - [ ] **Step 7: commit.** `test: Sprint 7 e2e and load gate; docs (ADR-022)`.
 
 ## Unresolved questions
-- None blocking. The builder-check answers are folded into the spec once received.
+- None. The builder check is folded in (spec §4b; the user decided fraud reasons and card-blocked sources).
