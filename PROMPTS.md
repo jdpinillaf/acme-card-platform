@@ -267,3 +267,23 @@ Sprint 6 implemented on branch `sprint-6` from `docs/superpowers/plans/2026-10-2
 Sprint 6 merged to main (`17e2f74`).
 
 ## 2026-10-25 — Sprint 7 discovery
+
+### Prompt 30 (user)
+
+> Si, ejecutalo
+
+### Prompt 31 (user)
+
+> Bueno vamos a subir esto a github con los dockerfiles y el .md de decisions y hagamos el repo publico
+
+### Prompt 32 (user)
+
+> Al terminar haz merge a main y push, ya terminamos
+
+### Prompt 33 (user)
+
+> Haz el merge a main
+
+## Sprint 7 delivery notes (2026-10-25)
+
+Sprint 7 implemented on branch `sprint-7` from `docs/superpowers/plans/2026-10-25-sprint7-notifications.md`. Results in `docs/testing/sprint7.md` (load p95 above the gate, recorded), decisions in ADR-022. Repo published at github.com/jdpinillaf/acme-card-platform.
