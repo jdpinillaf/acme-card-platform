@@ -24,9 +24,9 @@ bank ── HMAC webhook ──────────────────�
 | accounts | Account/card lifecycle, collateral deposits, bank settlement | 9001 gRPC |
 | ledger | Double-entry append-only journal, balances | 9002 gRPC |
 | audit | SQS consumer → hash-chained `audit.audit_events` (append-only), verify, checkpoints, replay, reconciliation, retention | 9005 gRPC |
-| web | Flow simulator; signs JWT/HMAC server-side | 3010 |
+| web | Flow simulator (`/`) and cardholder portal (`/portal`); signs JWT/HMAC server-side | 3010 |
 | billing | Statements (S3), interest, late fees, delinquency, charge-off, support waivers | 9004 gRPC |
-| notifications | Placeholder (Sprint 7) | — |
+| notifications | Customer notifications (push/SMS/email, simulated) and HMAC-signed partner webhooks, with retries | 9006 gRPC |
 
 ## Quick start
 
@@ -35,6 +35,7 @@ Requirements: Docker, Go ≥ 1.26 (or `GOTOOLCHAIN=auto`), Node 24 for `web/` de
 ```bash
 make up                  # postgres, localstack, ledger, accounts, audit, gateway ×2, lb, web
 open http://localhost:3010   # flow simulator
+open http://localhost:3010/portal   # cardholder portal (Spanish): buy, refunds, freeze, pay, statements, close
 make test                # unit tests
 make test-integration    # integration + end-to-end (needs Docker)
 make web-test            # simulator tests + typecheck
@@ -123,8 +124,26 @@ An auditor token: `JWT_HS256_SECRET=... go run ./cmd/devtoken --sub auditor-1 --
 
 Every call is itself audited (`audit.queried` / `audit.exported`). `AUDIT_SIGNING_KEY` (base64 Ed25519 private key, 64 bytes; the one in `.env.dev` is dev only) signs checkpoints and archive manifests; `AUDIT_BUCKET` is created with Object Lock. Operators: `make auditctl ARGS="verify-chain|checkpoint|archive|verify|purge"`.
 
+### Notifications (Sprint 7)
+
+| Route | Who | Result |
+|---|---|---|
+| `GET /v1/accounts/{id}/notification-preferences` | customer | the 9 types with `push`, `sms`, `email`, `mandatory` (all on by default) |
+| `PUT /v1/accounts/{id}/notification-preferences` `{type, push, sms, email}` | customer | 200; all off on `late_fee`, `card_blocked` or `suspected_fraud` → `422 mandatory_notification` |
+| `GET /v1/accounts/{id}/notifications?after=<id>` | customer | the account's latest delivered notifications (the simulator's popups) |
+| `POST /v1/support/webhook-subscriptions` `{name, url, event_types}` | support | 201 with the partner `secret`, shown once |
+| `GET /v1/support/webhook-subscriptions` · `DELETE …/{id}` · `GET …/{id}/deliveries` | support | list, disable, delivery status and attempts |
+
+**Partners** receive `POST <url>` with the event JSON and the headers `X-Acme-Event-Id`, `X-Acme-Delivery-Id`, `X-Acme-Timestamp` and `X-Acme-Signature: v1=<hex HMAC-SHA256(secret, timestamp + "." + body)>`. They should reject a timestamp older than 5 minutes and dedupe on the event id; any non-2xx answer is retried after 1 min, 5 min, 30 min, 2 h and 6 h, then marked `failed`. URLs must be https (private and metadata addresses are refused). `NOTIFY_SECRET_KEY` (base64, 32 bytes; the one in `.env.dev` is dev only) seals partner secrets. Dev only: `NOTIFY_FAIL_CHANNELS=sms` makes a simulated provider fail.
+
 ## Docs
 - `docs/DECISIONS.md` — architecture decisions (ADRs)
 - `docs/SPRINTS.md` — sprint plan
-- `docs/TESTING.md` — test gates (Sprint 3–6 results in `docs/testing/sprint3.md` … `sprint6.md`; customer journey in `docs/testing/journey.md`) and latest results
+- `docs/TESTING.md` — test gates (Sprint 3–7 results in `docs/testing/sprint3.md` … `sprint7.md`; customer journey in `docs/testing/journey.md`) and latest results
 - `PROMPTS.md` — verbatim prompt log
+
+### Cardholder portal (`/portal`)
+
+Customer-side test environment in Spanish: open an account and deposit collateral, buy from demo merchants (declines explained), freeze/unfreeze, per-purchase limit, pay (minimum/total/other), statements and charges, close with payout. A simulation rail plays the bank (confirm/reject deposits and payments, return a payment, settle/fail the payout), the merchants (capture, reverse, partial refunds; auto-capture on by default), support (waive charges, retry payouts) and the account clock. The session lives in `localStorage`, so a reload keeps the customer.
+
+Gotchas: the gateway rate limit (`RATE_LIMIT_PER_MINUTE`, 60 in dev) is per customer, and each portal action costs about 5 requests. The payment return window (5 days) runs on wall-clock time, not the account clock, so a customer who made payments stays in the `awaiting_returns` close stage for 5 real days. To test the full close, use a customer without payments.

@@ -111,7 +111,7 @@ func build(ctx context.Context) (*audit.Service, func(), error) {
 		return nil, nil, err
 	}
 	svc := audit.NewService(pool, audit.NewS3Store(clients.S3, cfg.AuditBucket), ed25519.PrivateKey(rawKey),
-		audit.Config{ProducerSchemas: []string{"accounts", "ledger", "billing", "gateway", "audit"}})
+		audit.Config{ProducerSchemas: []string{"accounts", "ledger", "billing", "gateway", "audit", "notifications"}})
 	return svc, pool.Close, nil
 }
 

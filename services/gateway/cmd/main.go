@@ -15,6 +15,7 @@ import (
 	accountsv1 "github.com/acme/acme-card/gen/go/acme/accounts/v1"
 	auditv1 "github.com/acme/acme-card/gen/go/acme/audit/v1"
 	billingv1 "github.com/acme/acme-card/gen/go/acme/billing/v1"
+	notificationsv1 "github.com/acme/acme-card/gen/go/acme/notifications/v1"
 	"github.com/acme/acme-card/pkg/awsx"
 	"github.com/acme/acme-card/pkg/config"
 	"github.com/acme/acme-card/pkg/db"
@@ -85,6 +86,12 @@ func main() {
 		os.Exit(1)
 	}
 	defer auditConn.Close()
+	notificationsConn, err := grpcx.Dial(cfg.NotificationsGRPCAddr)
+	if err != nil {
+		log.Error("dial notifications", "err", err)
+		os.Exit(1)
+	}
+	defer notificationsConn.Close()
 	if cfg.DevClockEnabled {
 		if cfg.AppEnv != "dev" { // allow-list: only the local dev environment
 			log.Error("DEV_CLOCK_ENABLED is only allowed with APP_ENV=dev", "app_env", cfg.AppEnv)
@@ -101,6 +108,7 @@ func main() {
 		Accounts:         accountsv1.NewAccountsServiceClient(conn),
 		Billing:          billingv1.NewBillingServiceClient(billingConn),
 		Audit:            auditv1.NewAuditServiceClient(auditConn),
+		Notifications:    notificationsv1.NewNotificationsServiceClient(notificationsConn),
 		DevClock:         cfg.DevClockEnabled,
 		JWTSecret:        []byte(cfg.JWTHS256Secret),
 		BankSecret:       []byte(cfg.BankWebhookSecret),

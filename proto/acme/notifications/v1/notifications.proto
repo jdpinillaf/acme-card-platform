@@ -1,0 +1,111 @@
+syntax = "proto3";
+
+package acme.notifications.v1;
+
+import "acme/common/v1/common.proto";
+import "google/protobuf/timestamp.proto";
+
+// NotificationsService owns customer notification preferences and inbox, and partner webhook
+// subscriptions (Sprint 7, ADR-022).
+service NotificationsService {
+  rpc GetPreferences(GetPreferencesRequest) returns (GetPreferencesResponse);
+  // SetPreference refuses all channels off on a mandatory type (FailedPrecondition, mandatory_notification).
+  rpc SetPreference(SetPreferenceRequest) returns (Preference);
+  rpc ListInbox(ListInboxRequest) returns (ListInboxResponse);
+  // CreateSubscription returns the partner secret; it is never returned again.
+  rpc CreateSubscription(CreateSubscriptionRequest) returns (CreateSubscriptionResponse);
+  rpc ListSubscriptions(ListSubscriptionsRequest) returns (ListSubscriptionsResponse);
+  rpc DisableSubscription(DisableSubscriptionRequest) returns (Subscription);
+  rpc ListDeliveries(ListDeliveriesRequest) returns (ListDeliveriesResponse);
+}
+
+message Preference {
+  string type = 1;
+  bool push = 2;
+  bool sms = 3;
+  bool email = 4;
+  bool mandatory = 5;
+}
+
+message GetPreferencesRequest {
+  string customer_id = 1;
+}
+message GetPreferencesResponse {
+  repeated Preference preferences = 1;
+}
+
+message SetPreferenceRequest {
+  string customer_id = 1;
+  string type = 2;
+  bool push = 3;
+  bool sms = 4;
+  bool email = 5;
+  acme.common.v1.RequestMeta meta = 6;
+}
+
+message InboxItem {
+  int64 id = 1;
+  string channel = 2;
+  string type = 3;
+  string text = 4;
+  google.protobuf.Timestamp created_at = 5;
+}
+
+message ListInboxRequest {
+  string account_id = 1;
+  int64 after_id = 2;
+  int32 limit = 3;
+}
+message ListInboxResponse {
+  repeated InboxItem items = 1;
+}
+
+message Subscription {
+  string id = 1;
+  string name = 2;
+  string url = 3;
+  repeated string event_types = 4;
+  bool active = 5;
+  google.protobuf.Timestamp created_at = 6;
+  google.protobuf.Timestamp disabled_at = 7;
+}
+
+message CreateSubscriptionRequest {
+  string name = 1;
+  string url = 2;
+  repeated string event_types = 3;
+  acme.common.v1.RequestMeta meta = 4;
+}
+message CreateSubscriptionResponse {
+  Subscription subscription = 1;
+  string secret = 2;
+}
+
+message ListSubscriptionsRequest {}
+message ListSubscriptionsResponse {
+  repeated Subscription subscriptions = 1;
+}
+
+message DisableSubscriptionRequest {
+  string id = 1;
+  acme.common.v1.RequestMeta meta = 2;
+}
+
+message Delivery {
+  string id = 1;
+  string event_id = 2;
+  string event_type = 3;
+  string status = 4;
+  int32 attempts = 5;
+  string last_error = 6;
+  google.protobuf.Timestamp next_attempt_at = 7;
+  google.protobuf.Timestamp updated_at = 8;
+}
+
+message ListDeliveriesRequest {
+  string subscription_id = 1;
+  int32 limit = 2;
+}
+message ListDeliveriesResponse {
+  repeated Delivery deliveries = 1;
+}

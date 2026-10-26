@@ -27,6 +27,7 @@ import (
 	auditv1 "github.com/acme/acme-card/gen/go/acme/audit/v1"
 	billingv1 "github.com/acme/acme-card/gen/go/acme/billing/v1"
 	ledgerv1 "github.com/acme/acme-card/gen/go/acme/ledger/v1"
+	notificationsv1 "github.com/acme/acme-card/gen/go/acme/notifications/v1"
 	"github.com/acme/acme-card/pkg/auth"
 	"github.com/acme/acme-card/pkg/db"
 	"github.com/acme/acme-card/pkg/events"
@@ -45,6 +46,8 @@ import (
 	gatewaymig "github.com/acme/acme-card/services/gateway/migrations"
 	"github.com/acme/acme-card/services/ledger/ledgertest"
 	ledgermig "github.com/acme/acme-card/services/ledger/migrations"
+	notifymig "github.com/acme/acme-card/services/notifications/migrations"
+	"github.com/acme/acme-card/services/notifications/notifytest"
 )
 
 var (
@@ -56,11 +59,15 @@ var (
 type stack struct {
 	url                                       string
 	accounts, ledger, gateway, audit, billing *pgxpool.Pool
+	notifications                             *pgxpool.Pool
 	statements                                billingtest.Store
 }
 
 // auditKey signs the integration stack's audit checkpoints and archive manifests (dev only).
 var auditKey = ed25519.NewKeyFromSeed(bytes.Repeat([]byte{7}, ed25519.SeedSize))
+
+// notifyKey seals the integration stack's partner webhook secrets (dev only).
+var notifyKey = bytes.Repeat([]byte{9}, 32)
 
 // destinationKey is the integration stack's payout-destination key (dev only).
 var destinationKey = bytes.Repeat([]byte{42}, 32)
@@ -104,11 +111,13 @@ func startStackWith(t *testing.T, cfg stackConfig) *stack {
 		gateway:  connect("gateway", gatewaymig.FS),
 		audit:    connect("audit", auditmig.FS),
 		billing:  connect("billing", billingmig.FS),
+
+		notifications: connect("notifications", notifymig.FS),
 	}
 
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
 	pub := events.NewSNSPublisher(aws.SNS, aws.TopicARN)
-	for source, p := range map[string]*pgxpool.Pool{"accounts": s.accounts, "ledger": s.ledger, "gateway": s.gateway, "billing": s.billing, "audit": s.audit} {
+	for source, p := range map[string]*pgxpool.Pool{"accounts": s.accounts, "ledger": s.ledger, "gateway": s.gateway, "billing": s.billing, "audit": s.audit, "notifications": s.notifications} {
 		go outbox.NewRelay(p, pub, 100, source).Run(ctx, 100*time.Millisecond, quiet)
 	}
 	go audittest.NewConsumer(aws.SQS, aws.QueueURL, s.audit).Run(ctx)
@@ -145,6 +154,13 @@ func startStackWith(t *testing.T, cfg stackConfig) *stack {
 
 	auditConn := serve(func(g *grpc.Server) { auditv1.RegisterAuditServiceServer(g, audittest.NewService(s.audit, auditKey)) })
 
+	notifySrv, err := notifytest.Start(ctx, s.notifications, aws.SQS, aws.AddQueue(t, "acme-card-notifications"), accountsv1.NewAccountsServiceClient(accountsConn),
+		notifyKey, []string{"127.0.0.1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	notifyConn := serve(func(g *grpc.Server) { notificationsv1.RegisterNotificationsServiceServer(g, notifySrv) })
+
 	billingSrv, store := billingtest.NewServer(s.billing, ledgerv1.NewLedgerServiceClient(ledgerConn), accountsv1.NewAccountsServiceClient(accountsConn))
 	s.statements = store
 	go func() {
@@ -155,6 +171,7 @@ func startStackWith(t *testing.T, cfg stackConfig) *stack {
 		Accounts:         accountsv1.NewAccountsServiceClient(accountsConn),
 		Billing:          billingv1.NewBillingServiceClient(billingConn),
 		Audit:            auditv1.NewAuditServiceClient(auditConn),
+		Notifications:    notificationsv1.NewNotificationsServiceClient(notifyConn),
 		DevClock:         true,
 		JWTSecret:        jwtSecret,
 		BankSecret:       bankSecret,
@@ -361,10 +378,12 @@ func TestSprint1EndToEnd(t *testing.T) {
 		}
 		deadline := time.Now().Add(30 * time.Second)
 		for {
-			pending := count(t, s.accounts, `SELECT count(*) FROM outbox WHERE published_at IS NULL`) +
-				count(t, s.ledger, `SELECT count(*) FROM outbox WHERE published_at IS NULL`) +
-				count(t, s.gateway, `SELECT count(*) FROM outbox WHERE published_at IS NULL`)
-			total := count(t, s.accounts, `SELECT count(*) FROM outbox`) + count(t, s.ledger, `SELECT count(*) FROM outbox`) + count(t, s.gateway, `SELECT count(*) FROM outbox`)
+			// every producer's outbox, including notifications (its delivery results are audited too)
+			pending, total := 0, 0
+			for _, p := range []*pgxpool.Pool{s.accounts, s.ledger, s.gateway, s.billing, s.notifications, s.audit} {
+				pending += count(t, p, `SELECT count(*) FROM outbox WHERE published_at IS NULL`)
+				total += count(t, p, `SELECT count(*) FROM outbox`)
+			}
 			audited := count(t, s.audit, `SELECT count(*) FROM audit_events`)
 			if pending == 0 && audited == total {
 				break

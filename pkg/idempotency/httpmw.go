@@ -29,12 +29,21 @@ type ctxKey int
 const (
 	outcomeCtxKey ctxKey = iota
 	keyHashCtxKey
+	redactCtxKey
 )
 
 // SetOutcome lets a handler override the stored outcome (e.g. OutcomeRolledBack).
 func SetOutcome(ctx context.Context, o Outcome) {
 	if p, ok := ctx.Value(outcomeCtxKey).(*Outcome); ok {
 		*p = o
+	}
+}
+
+// RedactStored lets a handler change what is stored for replay (e.g. drop a secret that may be
+// shown once): the live response is unchanged, a replay serves the redacted body.
+func RedactStored(ctx context.Context, redact func([]byte) []byte) {
+	if p, ok := ctx.Value(redactCtxKey).(*func([]byte) []byte); ok {
+		*p = redact
 	}
 }
 
@@ -95,6 +104,8 @@ func Middleware(store *Store, subject SubjectFunc) func(http.Handler) http.Handl
 			outcome := Outcome("")
 			ctx := context.WithValue(r.Context(), outcomeCtxKey, &outcome)
 			ctx = context.WithValue(ctx, keyHashCtxKey, keyHash)
+			var redact func([]byte) []byte
+			ctx = context.WithValue(ctx, redactCtxKey, &redact)
 			rec := &recorder{ResponseWriter: w, status: http.StatusOK}
 
 			defer func() {
@@ -120,7 +131,11 @@ func Middleware(store *Store, subject SubjectFunc) func(http.Handler) http.Handl
 				}
 				return
 			}
-			res := Result{Status: rec.status, Body: rec.buf.Bytes(), Outcome: outcome}
+			stored := rec.buf.Bytes()
+			if redact != nil {
+				stored = redact(stored)
+			}
+			res := Result{Status: rec.status, Body: stored, Outcome: outcome}
 			if err := claim.Complete(ctx, res); err != nil {
 				slog.ErrorContext(ctx, "idempotency complete failed", "err", err)
 			}

@@ -125,3 +125,26 @@ func TestLoadBillingDefaultsAndDevClock(t *testing.T) {
 		t.Fatalf("overrides: %+v", c)
 	}
 }
+
+func TestLoadNotificationsDefaults(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://x")
+	t.Setenv("APP_ENV", "dev")
+	t.Setenv("NOTIFY_ALLOWED_HTTP_HOSTS", "web, 127.0.0.1")
+	t.Setenv("NOTIFY_FAIL_CHANNELS", "sms")
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.NotificationsGRPCAddr != "localhost:9006" || len(c.NotifyAllowedHTTPHosts) != 2 || c.NotifyAllowedHTTPHosts[1] != "127.0.0.1" || !c.NotifyFailChannels["sms"] {
+		t.Fatalf("notifications config: %+v", c)
+	}
+	// the dev-only knobs are refused anywhere else
+	t.Setenv("APP_ENV", "prod")
+	if _, err := Load(); err == nil {
+		t.Fatal("NOTIFY_ALLOWED_HTTP_HOSTS accepted outside dev")
+	}
+	t.Setenv("NOTIFY_ALLOWED_HTTP_HOSTS", "")
+	if _, err := Load(); err == nil {
+		t.Fatal("NOTIFY_FAIL_CHANNELS accepted outside dev")
+	}
+}

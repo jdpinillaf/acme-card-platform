@@ -1,9 +1,10 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { daysToDuePlus, daysToNextClose, formatMinor } from "@/lib/billing.ts";
 import { maskAccount } from "@/lib/payouts.ts";
 import { auditEventsQuery, type AuditFilter } from "@/lib/audit.ts";
+import { channelIcon, newItems } from "@/lib/notifications.ts";
 
 type CallResult = { status: number; replayed: boolean; ms: number; body: any };
 type LogEntry = { id: number; at: string; label: string; method: string; path: string; key?: string; results: CallResult[] };
@@ -30,6 +31,11 @@ type AuditEvent = {
   id: string; event_type: string; aggregate_type: string; aggregate_id: string; actor?: string; occurred_at: string;
   source?: string; source_seq?: number; chain_seq: number; hash: string; redacted: boolean; after?: unknown;
 };
+type InboxItem = { id: number; channel: string; type: string; text: string; created_at: string };
+type NotifPref = { type: string; push: boolean; sms: boolean; email: boolean; mandatory: boolean };
+type Partner = { id: string; name: string; url: string; event_types: string[]; active: boolean; key?: string };
+type PartnerDelivery = { id: string; event_type: string; status: string; attempts: number; last_error: string };
+type PartnerEvent = { event_id: string; event_type: string; delivery_id: string; verified: boolean; received_at: string };
 type Deposit = { id: string; amount_minor: number; currency: string; status: string; external_ref?: string };
 type Payment = { id: string; amount_minor: number; currency: string; status: string; external_ref?: string; return_ref?: string };
 type Tx = {
@@ -78,6 +84,15 @@ export default function Simulator() {
   const [auditNext, setAuditNext] = useState("");
   const [auditStatus, setAuditStatus] = useState<{ label: string; ok: boolean; detail: string } | null>(null);
   const [auditExport, setAuditExport] = useState<{ id: string; count: number; sha256: string } | null>(null);
+  const [inbox, setInbox] = useState<InboxItem[]>([]);
+  const [toasts, setToasts] = useState<InboxItem[]>([]);
+  const [prefs, setPrefs] = useState<NotifPref[]>([]);
+  const [partners, setPartners] = useState<Partner[]>([]);
+  const [partnerKeys, setPartnerKeys] = useState<Record<string, string>>({});
+  const [partnerDeliveries, setPartnerDeliveries] = useState<Record<string, PartnerDelivery[]>>({});
+  const [partnerEvents, setPartnerEvents] = useState<PartnerEvent[]>([]);
+  const [partnerTypes, setPartnerTypes] = useState("authorization.approved,authorization.declined,payment.settled,card.frozen");
+  const inboxRef = useRef<InboxItem[]>([]);
 
   const push = (e: Omit<LogEntry, "id" | "at">) =>
     setLog((l) => [{ ...e, id: ++seq, at: new Date().toLocaleTimeString() }, ...l].slice(0, 200));
@@ -362,6 +377,83 @@ export default function Simulator() {
     URL.revokeObjectURL(url);
   }
 
+  // Popups: poll the account's inbox quietly (not logged) and show each new item for 6 seconds.
+  useEffect(() => {
+    if (!account || !token) return;
+    inboxRef.current = [];
+    setInbox([]);
+    let first = true;
+    const poll = async () => {
+      try {
+        const res = await fetch(`/api/gateway/v1/accounts/${account.id}/notifications`, { headers: { authorization: `Bearer ${token}` } });
+        const [r] = (await res.json()) as CallResult[];
+        if (r?.status !== 200) return;
+        const fresh = newItems(inboxRef.current, r.body.items as InboxItem[]);
+        if (fresh.length === 0) return;
+        inboxRef.current = [...inboxRef.current, ...fresh];
+        setInbox([...inboxRef.current].reverse());
+        if (first) return; // what was already there on load is history, not news
+        setToasts((t) => [...t, ...fresh]);
+        for (const it of fresh) setTimeout(() => setToasts((t) => t.filter((x) => x.id !== it.id)), 6000);
+      } catch {} finally {
+        first = false;
+      }
+    };
+    poll();
+    const id = setInterval(poll, 3000);
+    return () => clearInterval(id);
+  }, [account?.id, token]);
+
+  async function refreshInbox() {
+    if (!account) return;
+    const [r] = await gateway("list notifications", "GET", `/v1/accounts/${account.id}/notifications`);
+    if (r.status === 200) setInbox(r.body.items);
+  }
+
+  async function refreshPrefs() {
+    if (!account) return;
+    const [r] = await gateway("notification preferences", "GET", `/v1/accounts/${account.id}/notification-preferences`);
+    if (r.status === 200) setPrefs(r.body.preferences);
+  }
+
+  async function setPref(p: NotifPref, channel: "push" | "sms" | "email", on: boolean) {
+    if (!account) return;
+    const [r] = await gateway(`set ${p.type} ${channel}=${on}`, "PUT", `/v1/accounts/${account.id}/notification-preferences`,
+      { type: p.type, push: p.push, sms: p.sms, email: p.email, [channel]: on });
+    if (r.status === 200) setPrefs((all) => all.map((x) => (x.type === p.type ? { ...x, ...r.body } : x)));
+  }
+
+  async function registerPartner() {
+    const tok = await ensureSupportToken();
+    const key = crypto.randomUUID();
+    const [r] = await gateway("register demo partner (support)", "POST", "/v1/support/webhook-subscriptions",
+      { name: `demo-${key.slice(0, 8)}`, url: `http://web:3000/api/partner/webhook/${key}`, event_types: partnerTypes.split(",").map((t) => t.trim()).filter(Boolean) }, { tok });
+    if (r.status !== 201) return;
+    await fetch("/api/partner/secret", { method: "POST", body: JSON.stringify({ key, secret: r.body.secret }) });
+    setPartnerKeys((k) => ({ ...k, [r.body.id]: key }));
+    await listPartners(tok);
+  }
+
+  async function listPartners(tok?: string) {
+    const [r] = await gateway("list partners (support)", "GET", "/v1/support/webhook-subscriptions", undefined, { tok: tok ?? (await ensureSupportToken()) });
+    if (r.status === 200) setPartners(r.body.subscriptions);
+  }
+
+  async function disablePartner(p: Partner) {
+    await gateway(`disable partner ${p.name} (support)`, "DELETE", `/v1/support/webhook-subscriptions/${p.id}`, undefined, { tok: await ensureSupportToken() });
+    await listPartners();
+  }
+
+  async function partnerDeliveriesFor(p: Partner) {
+    const [r] = await gateway(`deliveries of ${p.name} (support)`, "GET", `/v1/support/webhook-subscriptions/${p.id}/deliveries`, undefined, { tok: await ensureSupportToken() });
+    if (r.status === 200) setPartnerDeliveries((d) => ({ ...d, [p.id]: r.body.deliveries }));
+    const key = partnerKeys[p.id];
+    if (key) {
+      const res = await fetch(`/api/partner/webhook/${key}`);
+      setPartnerEvents(((await res.json()) as { events: PartnerEvent[] }).events);
+    }
+  }
+
   async function refreshPayouts(acc = account) {
     if (!acc) return;
     const [r] = await gateway("list payouts", "GET", `/v1/accounts/${acc.id}/payouts`);
@@ -429,7 +521,7 @@ export default function Simulator() {
   return (
     <main>
       <header>
-        <h1>acme-card · flow simulator</h1>
+        <h1>acme-card · flow simulator <a href="/portal" style={{ fontSize: 14, fontWeight: 400 }}>cardholder portal →</a></h1>
         <span className="muted">open account → collateral → card active → authorize · capture · reverse · refund → pay · settle · fail · return → advance clock · statements · waive → close · payout</span>
       </header>
 
@@ -784,6 +876,77 @@ export default function Simulator() {
             )}
             {auditNext && <div className="row"><button disabled={busy} onClick={() => auditSearch(auditNext)}>Load more</button></div>}
           </section>
+          <section className="panel">
+            <h2>10 · Notifications</h2>
+            <div className="muted" style={{ marginBottom: 8 }}>
+              Push, SMS and email are simulated: what they &quot;send&quot; shows up as a popup at the bottom right. Every channel is on by default; past due, card blocked and suspected fraud keep at least one channel. Partners (support) get signed webhooks of the events they subscribe to.
+            </div>
+            <div className="row">
+              <button data-action="refresh-notification-preferences" disabled={!account || busy} onClick={refreshPrefs}>Preferences</button>
+              <button data-action="refresh-notifications" disabled={!account || busy} onClick={refreshInbox}>Inbox ({inbox.length})</button>
+            </div>
+            {prefs.length > 0 && (
+              <table>
+                <thead><tr><th>Notification</th><th>Push</th><th>SMS</th><th>Email</th></tr></thead>
+                <tbody>
+                  {prefs.map((p) => (
+                    <tr key={p.type}>
+                      <td>{p.type}{p.mandatory && <span className="badge s-pending" style={{ marginLeft: 6 }} title="mandatory: at least one channel stays on">🔒 mandatory</span>}</td>
+                      {(["push", "sms", "email"] as const).map((ch) => (
+                        <td key={ch}><input type="checkbox" data-action="set-notification-preference" checked={p[ch]} disabled={busy}
+                          onChange={(e) => setPref(p, ch, e.target.checked)} /></td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            {inbox.length > 0 && (
+              <table>
+                <thead><tr><th></th><th>When</th><th>Type</th><th>Text</th></tr></thead>
+                <tbody>
+                  {inbox.slice(0, 15).map((it) => (
+                    <tr key={it.id}><td>{channelIcon(it.channel)}</td><td className="mono">{new Date(it.created_at).toLocaleTimeString()}</td><td>{it.type}</td><td>{it.text}</td></tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            <div className="row" style={{ marginTop: 8 }}>
+              <label className="inline">Partner events <input value={partnerTypes} onChange={(e) => setPartnerTypes(e.target.value)} style={{ width: 360 }} /></label>
+              <button data-action="register-demo-partner" disabled={busy} onClick={registerPartner}>Register demo partner</button>
+              <button data-action="list-partners" disabled={busy} onClick={() => listPartners()}>Partners</button>
+            </div>
+            {partners.length > 0 && (
+              <table>
+                <thead><tr><th>Partner</th><th>Events</th><th>Status</th><th></th></tr></thead>
+                <tbody>
+                  {partners.map((p) => (
+                    <tr key={p.id}>
+                      <td className="mono">{p.name}</td>
+                      <td className="mono">{p.event_types.join(", ")}</td>
+                      <td><span className={`badge s-${p.active ? "settled" : "failed"}`}>{p.active ? "active" : "disabled"}</span></td>
+                      <td className="row">
+                        <button data-action="partner-deliveries" disabled={busy} onClick={() => partnerDeliveriesFor(p)}>Deliveries</button>
+                        <button data-action="disable-partner" disabled={busy || !p.active} onClick={() => disablePartner(p)}>Disable</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            {Object.entries(partnerDeliveries).map(([id, ds]) => (
+              <div key={id} className="mono muted" style={{ marginTop: 6 }}>
+                {ds.length === 0 ? "no deliveries yet" : ds.slice(0, 10).map((d) => `${d.event_type} · ${d.status} · ${d.attempts} attempt(s)${d.last_error ? ` · ${d.last_error}` : ""}`).join("\n")}
+              </div>
+            ))}
+            {partnerEvents.length > 0 && (
+              <div className="mono" style={{ marginTop: 6 }}>
+                {partnerEvents.slice(0, 10).map((e) => (
+                  <div key={e.delivery_id}>{e.verified ? "✅ signature ok" : "❌ bad signature"} · {e.event_type} · {new Date(e.received_at).toLocaleTimeString()}</div>
+                ))}
+              </div>
+            )}
+          </section>
         </div>
 
         <section className="panel log">
@@ -791,6 +954,14 @@ export default function Simulator() {
           {log.length === 0 && <div className="muted">Calls appear here with status, replay flag and latency.</div>}
           {log.map((e) => <LogRow key={e.id} e={e} />)}
         </section>
+      </div>
+      <div style={{ position: "fixed", right: 16, bottom: 16, display: "flex", flexDirection: "column", gap: 8, zIndex: 50, maxWidth: 360 }} aria-live="polite">
+        {toasts.map((t) => (
+          <div key={t.id} className="panel" data-testid="notification-popup" style={{ padding: "10px 12px", boxShadow: "0 4px 16px rgba(0,0,0,.18)" }}>
+            <b>{channelIcon(t.channel)} {t.channel}</b> <span className="muted">{t.type}</span>
+            <div>{t.text}</div>
+          </div>
+        ))}
       </div>
     </main>
   );

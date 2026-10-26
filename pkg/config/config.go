@@ -56,6 +56,14 @@ type Config struct {
 	AuditBucket     string
 	AuditGRPCAddr   string
 
+	// Notifications (Sprint 7): gRPC address, SQS queue, partner-secret key (base64, 32 bytes) and
+	// the dev-only knobs: hosts allowed over plain http (simulator partner) and failing channels.
+	NotificationsGRPCAddr    string
+	NotificationsSQSQueueURL string
+	NotifySecretKey          string
+	NotifyAllowedHTTPHosts   []string
+	NotifyFailChannels       map[string]bool
+
 	AWSRegion        string
 	AWSEndpointURL   string
 	SNSTopicARN      string
@@ -67,28 +75,33 @@ type Config struct {
 // Load reads and validates configuration from the environment.
 func Load() (Config, error) {
 	c := Config{
-		AppEnv:               getenv("APP_ENV", "dev"),
-		LogLevel:             getenv("LOG_LEVEL", "info"),
-		DatabaseURL:          os.Getenv("DATABASE_URL"),
-		GatewayHTTPAddr:      getenv("GATEWAY_HTTP_ADDR", ":8080"),
-		GRPCAddr:             getenv("GRPC_ADDR", ":9000"),
-		JWTHS256Secret:       os.Getenv("JWT_HS256_SECRET"),
-		BankWebhookSecret:    os.Getenv("BANK_WEBHOOK_SECRET"),
-		NetworkWebhookSecret: os.Getenv("NETWORK_WEBHOOK_SECRET"),
-		AccountsGRPCAddr:     getenv("ACCOUNTS_GRPC_ADDR", "localhost:9001"),
-		LedgerGRPCAddr:       getenv("LEDGER_GRPC_ADDR", "localhost:9002"),
-		BillingGRPCAddr:      getenv("BILLING_GRPC_ADDR", "localhost:9004"),
-		StatementsBucket:     getenv("STATEMENTS_BUCKET", "acme-card-statements-dev"),
-		BillingFixedAmounts:  getenv("BILLING_FIXED_AMOUNTS", "USD:2500,EUR:2500,MXN:45000,COP:10000000"),
-		DevClockEnabled:      os.Getenv("DEV_CLOCK_ENABLED") == "1",
-		DestinationKey:       os.Getenv("DESTINATION_KEY"),
-		AuditSigningKey:      os.Getenv("AUDIT_SIGNING_KEY"),
-		AuditBucket:          getenv("AUDIT_BUCKET", "acme-card-audit-dev"),
-		AuditGRPCAddr:        getenv("AUDIT_GRPC_ADDR", "localhost:9005"),
-		AWSRegion:            getenv("AWS_REGION", "us-east-1"),
-		AWSEndpointURL:       os.Getenv("AWS_ENDPOINT_URL"),
-		SNSTopicARN:          os.Getenv("SNS_TOPIC_ARN"),
-		AuditSQSQueueURL:     os.Getenv("AUDIT_SQS_QUEUE_URL"),
+		AppEnv:                   getenv("APP_ENV", "dev"),
+		LogLevel:                 getenv("LOG_LEVEL", "info"),
+		DatabaseURL:              os.Getenv("DATABASE_URL"),
+		GatewayHTTPAddr:          getenv("GATEWAY_HTTP_ADDR", ":8080"),
+		GRPCAddr:                 getenv("GRPC_ADDR", ":9000"),
+		JWTHS256Secret:           os.Getenv("JWT_HS256_SECRET"),
+		BankWebhookSecret:        os.Getenv("BANK_WEBHOOK_SECRET"),
+		NetworkWebhookSecret:     os.Getenv("NETWORK_WEBHOOK_SECRET"),
+		AccountsGRPCAddr:         getenv("ACCOUNTS_GRPC_ADDR", "localhost:9001"),
+		LedgerGRPCAddr:           getenv("LEDGER_GRPC_ADDR", "localhost:9002"),
+		BillingGRPCAddr:          getenv("BILLING_GRPC_ADDR", "localhost:9004"),
+		StatementsBucket:         getenv("STATEMENTS_BUCKET", "acme-card-statements-dev"),
+		BillingFixedAmounts:      getenv("BILLING_FIXED_AMOUNTS", "USD:2500,EUR:2500,MXN:45000,COP:10000000"),
+		DevClockEnabled:          os.Getenv("DEV_CLOCK_ENABLED") == "1",
+		DestinationKey:           os.Getenv("DESTINATION_KEY"),
+		AuditSigningKey:          os.Getenv("AUDIT_SIGNING_KEY"),
+		AuditBucket:              getenv("AUDIT_BUCKET", "acme-card-audit-dev"),
+		AuditGRPCAddr:            getenv("AUDIT_GRPC_ADDR", "localhost:9005"),
+		NotificationsGRPCAddr:    getenv("NOTIFICATIONS_GRPC_ADDR", "localhost:9006"),
+		NotificationsSQSQueueURL: os.Getenv("NOTIFICATIONS_SQS_QUEUE_URL"),
+		NotifySecretKey:          os.Getenv("NOTIFY_SECRET_KEY"),
+		NotifyAllowedHTTPHosts:   splitList(os.Getenv("NOTIFY_ALLOWED_HTTP_HOSTS")),
+		NotifyFailChannels:       map[string]bool{},
+		AWSRegion:                getenv("AWS_REGION", "us-east-1"),
+		AWSEndpointURL:           os.Getenv("AWS_ENDPOINT_URL"),
+		SNSTopicARN:              os.Getenv("SNS_TOPIC_ARN"),
+		AuditSQSQueueURL:         os.Getenv("AUDIT_SQS_QUEUE_URL"),
 	}
 	if c.DatabaseURL == "" && os.Getenv("DB_HOST") != "" {
 		dsn, err := dsnFromRDSSecret(os.Getenv("DB_HOST"), os.Getenv("DB_CREDENTIALS"))
@@ -119,6 +132,12 @@ func Load() (Config, error) {
 	if c.ReturnWindow, err = getDuration("RETURN_WINDOW", 120*time.Hour); err != nil {
 		return Config{}, err
 	}
+	for _, ch := range splitList(os.Getenv("NOTIFY_FAIL_CHANNELS")) {
+		c.NotifyFailChannels[ch] = true
+	}
+	if c.AppEnv != "dev" && (len(c.NotifyAllowedHTTPHosts) > 0 || len(c.NotifyFailChannels) > 0) {
+		return Config{}, errors.New("config: NOTIFY_ALLOWED_HTTP_HOSTS and NOTIFY_FAIL_CHANNELS are only allowed with APP_ENV=dev")
+	}
 	for _, raw := range strings.Split(os.Getenv("TRUSTED_PROXY_CIDRS"), ",") {
 		if raw = strings.TrimSpace(raw); raw == "" {
 			continue
@@ -143,6 +162,17 @@ func dsnFromRDSSecret(host, secretJSON string) (string, error) {
 	}
 	u := url.URL{Scheme: "postgres", User: url.UserPassword(cred.Username, cred.Password), Host: host, Path: "/acmecard", RawQuery: url.Values{"sslmode": {"verify-full"}, "sslrootcert": {rdsCABundle}}.Encode()}
 	return u.String(), nil
+}
+
+// splitList parses a comma-separated list, trimming blanks.
+func splitList(v string) []string {
+	var out []string
+	for _, s := range strings.Split(v, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func getenv(key, def string) string {

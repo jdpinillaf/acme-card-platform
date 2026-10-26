@@ -20,6 +20,9 @@ x-service-env: &service-env
   AUDIT_SIGNING_KEY: ${AUDIT_SIGNING_KEY}
   AUDIT_BUCKET: acme-card-audit-dev
   AUDIT_GRPC_ADDR: audit:9005
+  NOTIFICATIONS_GRPC_ADDR: notifications:9006
+  NOTIFICATIONS_SQS_QUEUE_URL: http://localstack:4566/000000000000/acme-card-notifications
+  NOTIFY_SECRET_KEY: ${NOTIFY_SECRET_KEY}
   JWT_HS256_SECRET: ${JWT_HS256_SECRET}
   BANK_WEBHOOK_SECRET: ${BANK_WEBHOOK_SECRET}
   NETWORK_WEBHOOK_SECRET: ${NETWORK_WEBHOOK_SECRET}
@@ -80,6 +83,12 @@ services:
     build: { context: .., dockerfile: deploy/Dockerfile, args: { SERVICE: audit } }
     environment: { <<: *service-env, GRPC_ADDR: ":9005" }
     depends_on: { postgres: { condition: service_healthy }, localstack: { condition: service_healthy } }
+
+  notifications:
+    build: { context: .., dockerfile: deploy/Dockerfile, args: { SERVICE: notifications } }
+    # NOTIFY_ALLOWED_HTTP_HOSTS lets the simulator's demo partner (web) receive webhooks over http (dev only).
+    environment: { <<: *service-env, GRPC_ADDR: ":9006", NOTIFY_ALLOWED_HTTP_HOSTS: "web", NOTIFY_FAIL_CHANNELS: "${NOTIFY_FAIL_CHANNELS:-}" }
+    depends_on: { postgres: { condition: service_healthy }, localstack: { condition: service_healthy }, accounts: { condition: service_started } }
 
   gateway:
     build: { context: .., dockerfile: deploy/Dockerfile, args: { SERVICE: gateway } }

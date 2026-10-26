@@ -189,3 +189,36 @@ func TestMiddlewareStoresResultWhenClientDisconnects(t *testing.T) {
 		t.Fatalf("retry must replay stored 201, got %d replayed=%q", resp.StatusCode, resp.Header.Get(HeaderReplayed))
 	}
 }
+
+// A handler can keep a secret out of the stored replay (shown once, never at rest in clear).
+func TestRedactStoredBody(t *testing.T) {
+	s := newStore(t)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		RedactStored(r.Context(), func(b []byte) []byte { return []byte(strings.ReplaceAll(string(b), "TOPSECRET", "[shown once]")) })
+		w.WriteHeader(201)
+		_, _ = w.Write([]byte(`{"secret":"TOPSECRET"}`))
+	})
+	srv := httptest.NewServer(Middleware(s, func(*http.Request) string { return "sub" })(handler))
+	defer srv.Close()
+	call := func() (string, bool) {
+		req, _ := http.NewRequest("POST", srv.URL+"/v1/x", strings.NewReader(`{}`))
+		req.Header.Set(HeaderKey, "k1")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return string(b), resp.Header.Get(HeaderReplayed) == "true"
+	}
+	if first, replayed := call(); replayed || !strings.Contains(first, "TOPSECRET") {
+		t.Fatalf("first response: %s", first)
+	}
+	if again, replayed := call(); !replayed || strings.Contains(again, "TOPSECRET") || !strings.Contains(again, "[shown once]") {
+		t.Fatalf("replay: %s %v", again, replayed)
+	}
+	var stored string
+	if err := s.pool.QueryRow(t.Context(), `SELECT convert_from(response_body, 'UTF8') FROM idempotency_keys`).Scan(&stored); err != nil || strings.Contains(stored, "TOPSECRET") {
+		t.Fatalf("stored body: %s %v", stored, err)
+	}
+}
