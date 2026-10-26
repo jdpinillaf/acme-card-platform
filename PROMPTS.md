@@ -255,3 +255,15 @@ Sprint 5 implemented on branch `sprint-5` from `docs/superpowers/plans/2026-10-2
 ## Sprint 6 delivery notes (2026-10-25)
 
 Sprint 6 implemented on branch `sprint-6` from `docs/superpowers/plans/2026-10-25-sprint6-audit.md` (inline execution). Results in `docs/testing/sprint6.md`, decisions in ADR-021.
+
+### Prompt 28 (user)
+
+> Ok en que pso estamos que falta?
+
+### Prompt 29 (user)
+
+> Si haz el merge a main y empezamos con sprint 7 de notificaicones
+
+Sprint 6 merged to main (`17e2f74`).
+
+## 2026-10-25 — Sprint 7 discovery
