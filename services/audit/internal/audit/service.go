@@ -20,8 +20,17 @@ type Config struct {
 	ProducerSchemas []string      // schemas whose outbox is checked for stuck rows (= source names)
 	GapGrace        time.Duration // a gap is reported once the event after it is this old
 	StuckAfter      time.Duration // an unpublished outbox row older than this is stuck
-	Retention       time.Duration // hot retention before archiving (13 months)
+	Retention       time.Duration // hot retention before archiving; 0 = 13 calendar months
+	ArchiveChunk    int64         // most rows per archive (bounds memory); 0 = 100,000
 	ArchiveLock     time.Duration // object-lock retention of checkpoints and archives (7 years)
+}
+
+// cutoff is the recorded_at before which rows are archived: 13 calendar months, never earlier.
+func (c Config) cutoff(now time.Time) time.Time {
+	if c.Retention > 0 {
+		return now.Add(-c.Retention)
+	}
+	return now.AddDate(0, -13, 0)
 }
 
 func (c Config) withDefaults() Config {
@@ -31,8 +40,8 @@ func (c Config) withDefaults() Config {
 	if c.StuckAfter == 0 {
 		c.StuckAfter = 5 * time.Minute
 	}
-	if c.Retention == 0 {
-		c.Retention = 13 * 30 * 24 * time.Hour
+	if c.ArchiveChunk == 0 {
+		c.ArchiveChunk = 100_000
 	}
 	if c.ArchiveLock == 0 {
 		c.ArchiveLock = 7 * 365 * 24 * time.Hour

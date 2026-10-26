@@ -136,3 +136,25 @@ func TestAuditAPIRoutesAndMetaAudit(t *testing.T) {
 		t.Fatalf("queried=%d exported=%d snapped=%v", queried, exported, acc.snapped)
 	}
 }
+
+type denyAll struct{}
+
+func (denyAll) Allow(context.Context, string, time.Time) (bool, time.Duration, error) {
+	return false, time.Second, nil
+}
+
+// A rate-limited caller cannot flood the trail with audit.access_denied events.
+func TestAuditDenialsAreRateLimited(t *testing.T) {
+	var emitted []events.Event
+	h := New(Deps{Accounts: &fakeAccounts{}, Audit: &fakeAudit{}, JWTSecret: jwtSecret, Rejections: &nopRejections{}, Limiter: denyAll{}, AuditSink: &countingSink{},
+		auditEmit: func(_ context.Context, ev events.Event) error { emitted = append(emitted, ev); return nil }})
+	hdr := map[string]string{"Authorization": token(t, "acc-1")}
+	for i := 0; i < 5; i++ {
+		if w := do(h, "GET", "/v1/audit/verify", "", hdr); w.Code != 429 {
+			t.Fatalf("limited denial: %d", w.Code)
+		}
+	}
+	if len(emitted) != 0 {
+		t.Fatalf("rate-limited requests emitted %d access_denied events", len(emitted))
+	}
+}

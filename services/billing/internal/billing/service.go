@@ -174,7 +174,11 @@ func (s *Service) GetStatement(ctx context.Context, req *billingv1.GetStatementR
 		return nil, internal(err)
 	}
 	// A statement download is a sensitive read: audited explicitly (ADR-021).
-	if err := outbox.Enqueue(ctx, s.pool, event("statement.read", "statement", st.ID, map[string]any{"account_id": st.AccountID, "cycle": st.Cycle})); err != nil {
+	read := event("statement.read", "statement", st.ID, map[string]any{"account_id": st.AccountID, "cycle": st.Cycle})
+	if actor := req.GetMeta().GetActor(); actor != "" {
+		read.Actor = actor // who downloaded it; "billing" only for internal reads
+	}
+	if err := outbox.Enqueue(ctx, s.pool, read); err != nil {
 		return nil, internal(err)
 	}
 	return &billingv1.GetStatementResponse{Statement: st.proto(), BodyJson: body}, nil

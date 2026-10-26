@@ -54,11 +54,10 @@ func (s *Service) Replay(ctx context.Context, req *auditv1.ReplayRequest) (*audi
 	}
 	report := &auditv1.ReplayReport{AccountId: req.AccountId}
 	var evID, evType string
-	var chainSeq int64
 	var after []byte
-	err := s.pool.QueryRow(ctx, `SELECT id::text, event_type, chain_seq, after::text FROM audit_events
-		WHERE aggregate_id=$1 AND event_type IN ('account.changed','snapshot.account') ORDER BY chain_seq DESC LIMIT 1`, req.AccountId).
-		Scan(&evID, &evType, &chainSeq, &after)
+	err := s.pool.QueryRow(ctx, `SELECT id::text, event_type, after::text FROM audit_events
+		WHERE aggregate_id=$1 AND event_type IN ('account.changed','snapshot.account') ORDER BY coalesce(source_seq, 0) DESC, chain_seq DESC LIMIT 1`, req.AccountId).
+		Scan(&evID, &evType, &after)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, status.Error(codes.NotFound, "no account state in the audit trail")
 	}
@@ -72,36 +71,28 @@ func (s *Service) Replay(ctx context.Context, req *auditv1.ReplayRequest) (*audi
 	}
 	account := doc
 	balances := map[string]string{}
-	since := int64(0)
 	if evType == "snapshot.account" {
 		account, _ = doc["account"].(map[string]any)
-		if b, ok := doc["balances"].(map[string]any); ok {
-			for k, v := range b {
-				balances[k] = valueString(v)
-			}
-		}
-		since = chainSeq
-	} else {
-		// The latest snapshot (if any) is the ledger base; journal events after it override.
-		var snap []byte
-		var snapSeq int64
-		err := s.pool.QueryRow(ctx, `SELECT chain_seq, after::text FROM audit_events WHERE aggregate_id=$1 AND event_type='snapshot.account'
-			ORDER BY chain_seq DESC LIMIT 1`, req.AccountId).Scan(&snapSeq, &snap)
-		if err == nil {
-			if d, err := decodeObject(snap); err == nil {
-				if b, ok := d["balances"].(map[string]any); ok {
-					for k, v := range b {
-						balances[k] = valueString(v)
-					}
+	}
+	// Balances: the latest snapshot is the base for sub-accounts no journal touched; every
+	// journal carries the exact post-state of the sub-accounts it touched, so journals replayed
+	// in ledger order (source_seq, not arrival order) override it.
+	var snap []byte
+	err = s.pool.QueryRow(ctx, `SELECT after::text FROM audit_events WHERE aggregate_id=$1 AND event_type='snapshot.account'
+		ORDER BY coalesce(source_seq, 0) DESC, chain_seq DESC LIMIT 1`, req.AccountId).Scan(&snap)
+	if err == nil {
+		if d, err := decodeObject(snap); err == nil {
+			if b, ok := d["balances"].(map[string]any); ok {
+				for k, v := range b {
+					balances[k] = valueString(v)
 				}
 			}
-			since = snapSeq
-		} else if !errors.Is(err, pgx.ErrNoRows) {
-			return nil, internal(err)
 		}
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, internal(err)
 	}
 	rows, err := s.pool.Query(ctx, `SELECT after::text FROM audit_events WHERE event_type='ledger.journal_posted' AND after->>'account_id'=$1
-		AND chain_seq > $2 ORDER BY chain_seq`, req.AccountId, since)
+		ORDER BY coalesce(source_seq, 0), chain_seq`, req.AccountId)
 	if err != nil {
 		return nil, internal(err)
 	}

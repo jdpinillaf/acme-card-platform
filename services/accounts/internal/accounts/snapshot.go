@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -59,34 +60,37 @@ var subAccountKey = map[ledgerv1.SubAccount]string{
 }
 
 // snapshotOne emits snapshot.account: the account row (masked, as in every event) plus its ledger
-// balances, with their hash.
+// balances, with their hash. The row is locked from the read to the enqueue, so a concurrent
+// change publishes its account.changed after this snapshot, never before a stale one.
 func (s *Service) snapshotOne(ctx context.Context, accountID string) error {
-	acc, err := s.load(ctx, s.pool, accountID, false)
-	if err != nil {
-		return err
-	}
-	balances := map[string]int64{}
-	b, err := s.ledger.GetBalances(ctx, &ledgerv1.GetBalancesRequest{AccountId: acc.ID})
-	switch {
-	case status.Code(err) == codes.NotFound:
-		b = &ledgerv1.GetBalancesResponse{} // ledger not opened yet (CreateAccount opens it after commit; settlement retries): no balances
-	case err != nil:
-		return err
-	}
-	for _, bal := range b.Balances {
-		balances[subAccountKey[bal.SubAccount]] = bal.AmountMinor
-	}
-	accJSON, err := json.Marshal(acc)
-	if err != nil {
-		return err
-	}
-	hash, err := SnapshotHash(accJSON, balances)
-	if err != nil {
-		return err
-	}
-	ev := event("snapshot.account", "account", acc.ID, &commonv1.RequestMeta{Actor: "accounts.snapshot"})
-	ev.After = snapshot(map[string]any{"account": json.RawMessage(accJSON), "balances": balances, "snapshot_hash": hash})
-	return outbox.Enqueue(ctx, s.pool, ev)
+	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		acc, err := s.load(ctx, tx, accountID, true)
+		if err != nil {
+			return err
+		}
+		balances := map[string]int64{}
+		b, err := s.ledger.GetBalances(ctx, &ledgerv1.GetBalancesRequest{AccountId: acc.ID})
+		switch {
+		case status.Code(err) == codes.NotFound:
+			b = &ledgerv1.GetBalancesResponse{} // ledger not opened yet (CreateAccount opens it after commit; settlement retries): no balances
+		case err != nil:
+			return err
+		}
+		for _, bal := range b.Balances {
+			balances[subAccountKey[bal.SubAccount]] = bal.AmountMinor
+		}
+		accJSON, err := json.Marshal(acc)
+		if err != nil {
+			return err
+		}
+		hash, err := SnapshotHash(accJSON, balances)
+		if err != nil {
+			return err
+		}
+		ev := event("snapshot.account", "account", acc.ID, &commonv1.RequestMeta{Actor: "accounts.snapshot"})
+		ev.After = snapshot(map[string]any{"account": json.RawMessage(accJSON), "balances": balances, "snapshot_hash": hash})
+		return outbox.Enqueue(ctx, tx, ev)
+	})
 }
 
 // SnapshotAccounts emits snapshot.account now for the given accounts, or every non-cancelled
@@ -129,12 +133,13 @@ func (s *Service) snapshotIDs(ctx context.Context) ([]string, error) {
 	return pgx.CollectRows(rows, pgx.RowTo[string])
 }
 
-// snapshotAll snapshots ids with a few workers; the first error stops the run.
+// snapshotAll snapshots ids with a few workers. A failing account does not stop the run: the
+// others are still snapshotted and the failures are reported together.
 func (s *Service) snapshotAll(ctx context.Context, ids []string) error {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
 	work := make(chan string)
-	errs := make(chan error, 1)
+	var mu sync.Mutex
+	var failed int
+	var firstErr error
 	var wg sync.WaitGroup
 	for w := 0; w < 8; w++ {
 		wg.Add(1)
@@ -142,31 +147,30 @@ func (s *Service) snapshotAll(ctx context.Context, ids []string) error {
 			defer wg.Done()
 			for id := range work {
 				if err := s.snapshotOne(ctx, id); err != nil {
-					select {
-					case errs <- err:
-					default:
+					mu.Lock()
+					if failed++; firstErr == nil {
+						firstErr = fmt.Errorf("account %s: %w", id, err)
 					}
-					cancel()
+					mu.Unlock()
 				}
 			}
 		}()
 	}
-feed:
 	for _, id := range ids {
-		select {
-		case work <- id:
-		case <-ctx.Done():
-			break feed
+		if ctx.Err() != nil {
+			break
 		}
+		work <- id
 	}
 	close(work)
 	wg.Wait()
-	select {
-	case err := <-errs:
+	if err := ctx.Err(); err != nil {
 		return err
-	default:
-		return nil
 	}
+	if failed > 0 {
+		return status.Errorf(codes.Unavailable, "%d of %d account snapshots failed (first: %v)", failed, len(ids), firstErr)
+	}
+	return nil
 }
 
 // SnapshotDaily snapshots every account once per UTC day (the first caller of the day wins).

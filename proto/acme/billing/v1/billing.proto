@@ -74,6 +74,8 @@ message ListStatementsResponse {
 message GetStatementRequest {
   string account_id = 1;
   string statement_id = 2;
+  // meta.actor is who downloads the statement (recorded in statement.read).
+  acme.common.v1.RequestMeta meta = 3;
 }
 message GetStatementResponse {
   Statement statement = 1;

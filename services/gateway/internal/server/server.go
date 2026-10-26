@@ -116,9 +116,14 @@ func New(d Deps) http.Handler {
 	// Auditors (role claim): read-only audit API; every call, and every refused call, is audited
 	// explicitly (GETs are not covered by the HTTP audit middleware).
 	r.Route("/v1/audit", func(r chi.Router) {
-		r.Use(auth.Middleware(d.JWTSecret), s.requireAuditor)
+		// rate limit first: refused calls are audited, so they must not be free to repeat
+		r.Use(auth.Middleware(d.JWTSecret))
 		if !d.DisableStateful {
-			r.Use(s.rateLimit, s.audit)
+			r.Use(s.rateLimit)
+		}
+		r.Use(s.requireAuditor)
+		if !d.DisableStateful {
+			r.Use(s.audit)
 		}
 		r.Get("/events", s.auditEvents)
 		r.Get("/verify", s.auditVerify)

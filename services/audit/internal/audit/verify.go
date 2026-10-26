@@ -20,18 +20,23 @@ import (
 )
 
 // Verify recomputes the chain, checks every signed checkpoint, lists per-source gaps and stuck
-// producer outboxes. A full run walks the whole chain and is recorded; otherwise the walk starts
-// after the last recorded full run, whose anchor hash must still be in place (a re-hash of
-// anything before it changes that hash).
+// producer outboxes. A full run walks the whole chain and, when chain and checkpoints are valid,
+// records a signed anchor; otherwise the walk starts after the last signed anchor, once its hash
+// is still in place and no row before it is missing (else it falls back to a full walk, which
+// names the first bad chain_seq).
 func (s *Service) Verify(ctx context.Context, req *auditv1.VerifyRequest) (*auditv1.VerifyReport, error) {
 	r := &auditv1.VerifyReport{}
-	from, prev, err := s.chainStart(ctx)
-	if err != nil {
+	start, startPrev, err := s.chainStart(ctx)
+	var bad, checked int64
+	switch {
+	case errors.Is(err, errArchiveInvalid):
+		bad, r.Detail = start, err.Error() // the purged range cannot be linked to: the chain is not verifiable
+	case err != nil:
 		return nil, internal(err)
 	}
-	var bad, checked int64
-	if !req.GetFull() {
-		if bad, from, prev, err = s.resumeFromFullRun(ctx, r, from, prev); err != nil {
+	from, prev, anchorBad := start, startPrev, int64(0)
+	if bad == 0 && !req.GetFull() {
+		if from, prev, anchorBad, err = s.resumeFromFullRun(ctx, r, start, startPrev); err != nil {
 			return nil, internal(err)
 		}
 	}
@@ -40,13 +45,11 @@ func (s *Service) Verify(ctx context.Context, req *auditv1.VerifyRequest) (*audi
 		if err != nil && bad == 0 {
 			return nil, internal(err)
 		}
-	}
-	r.FirstBadChainSeq, r.Checked, r.ChainValid = bad, checked, bad == 0
-	if req.GetFull() && r.ChainValid {
-		if err := s.recordFullRun(ctx, from, checked, prev); err != nil {
-			return nil, internal(err)
+		if bad == 0 && anchorBad != 0 { // everything re-hashed consistently: only the anchor knows
+			bad = anchorBad
 		}
 	}
+	r.FirstBadChainSeq, r.Checked, r.ChainValid = bad, checked, bad == 0
 	if r.Gaps, err = s.gaps(ctx); err != nil {
 		return nil, internal(err)
 	}
@@ -57,41 +60,71 @@ func (s *Service) Verify(ctx context.Context, req *auditv1.VerifyRequest) (*audi
 	if err != nil {
 		return nil, internal(err)
 	}
-	r.Checkpoints, r.CheckpointsValid, r.Detail = int32(n), okCP, detail
+	r.Checkpoints, r.CheckpointsValid = int32(n), okCP
+	if detail != "" {
+		r.Detail = detail
+	}
+	if req.GetFull() && r.ChainValid && r.CheckpointsValid {
+		if err := s.recordFullRun(ctx, from, checked, prev); err != nil {
+			return nil, internal(err)
+		}
+	}
 	return r, nil
 }
 
-// resumeFromFullRun moves the start of an incremental walk to just after the last recorded full
-// run. It returns a non-zero bad chain_seq when that run's anchor row changed or disappeared.
-func (s *Service) resumeFromFullRun(ctx context.Context, r *auditv1.VerifyReport, from int64, prev string) (int64, int64, string, error) {
+func anchorMessage(through int64, hash string, ranAt time.Time) []byte {
+	return []byte(fmt.Sprintf("audit-verification|%d|%s|%s", through, hash, ranAt.UTC().Format(time.RFC3339Nano)))
+}
+
+// resumeFromFullRun moves the start of an incremental walk to just after the latest signed full-run
+// anchor. When the anchor row changed or a row before it is missing, it returns a full-walk start
+// and anchorBad (reported if the full walk itself finds nothing, i.e. after a complete re-hash).
+func (s *Service) resumeFromFullRun(ctx context.Context, r *auditv1.VerifyReport, start int64, startPrev string) (from int64, prev string, anchorBad int64, err error) {
+	rows, err := s.pool.Query(ctx, `SELECT through_chain_seq, through_hash, ran_at, signature FROM audit_verifications
+		ORDER BY through_chain_seq DESC, ran_at DESC LIMIT 20`)
+	if err != nil {
+		return 0, "", 0, err
+	}
+	pub := s.key.Public().(ed25519.PublicKey)
 	var through int64
 	var hash string
 	var ranAt time.Time
-	err := s.pool.QueryRow(ctx, `SELECT through_chain_seq, through_hash, ran_at FROM audit_verifications
-		ORDER BY through_chain_seq DESC, ran_at DESC LIMIT 1`).Scan(&through, &hash, &ranAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, from, prev, nil // never fully verified: walk everything
+	found := false
+	for rows.Next() {
+		var sig string
+		if err := rows.Scan(&through, &hash, &ranAt, &sig); err != nil {
+			rows.Close()
+			return 0, "", 0, err
+		}
+		raw, _ := base64.StdEncoding.DecodeString(sig)
+		if ed25519.Verify(pub, anchorMessage(through, hash, ranAt), raw) {
+			found = true
+			break
+		}
 	}
-	if err != nil {
-		return 0, 0, "", err
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, "", 0, err
+	}
+	if !found || through < start { // never (validly) fully verified, or the anchor was purged
+		return start, startPrev, 0, nil
 	}
 	r.Incremental, r.FullThroughChainSeq, r.FullVerifiedAt = true, through, timestamppb.New(ranAt)
-	if through < from { // the anchor was purged with an archived range
-		return 0, from, prev, nil
-	}
 	var stored string
-	err = s.pool.QueryRow(ctx, `SELECT hash FROM audit_events WHERE chain_seq=$1`, through).Scan(&stored)
-	if errors.Is(err, pgx.ErrNoRows) || (err == nil && stored != hash) {
-		r.Detail = fmt.Sprintf("chain at %d differs from the last full verification", through)
-		return through, 0, "", nil
+	var present int64
+	if err := s.pool.QueryRow(ctx, `SELECT coalesce((SELECT hash FROM audit_events WHERE chain_seq=$2), ''),
+		(SELECT count(*) FROM audit_events WHERE chain_seq BETWEEN $1 AND $2)`, start, through).Scan(&stored, &present); err != nil {
+		return 0, "", 0, err
 	}
-	if err != nil {
-		return 0, 0, "", err
+	if stored != hash || present != through-start+1 {
+		r.Incremental = false
+		r.Detail = fmt.Sprintf("chain up to %d differs from the last full verification", through)
+		return start, startPrev, through, nil
 	}
-	return 0, through + 1, hash, nil
+	return through + 1, hash, 0, nil
 }
 
-// recordFullRun stores the anchor of a valid full walk.
+// recordFullRun stores the signed anchor of a valid full walk.
 func (s *Service) recordFullRun(ctx context.Context, from, checked int64, prev string) error {
 	through, hash := from-1, prev
 	if checked > 0 {
@@ -103,39 +136,57 @@ func (s *Service) recordFullRun(ctx context.Context, from, checked int64, prev s
 	if through < 1 {
 		return nil
 	}
-	_, err := s.pool.Exec(ctx, `INSERT INTO audit_verifications (through_chain_seq, through_hash, checked) VALUES ($1, $2, $3)`, through, hash, checked)
+	ranAt := s.now().UTC().Truncate(time.Microsecond)
+	sig := base64.StdEncoding.EncodeToString(ed25519.Sign(s.key, anchorMessage(through, hash, ranAt)))
+	_, err := s.pool.Exec(ctx, `INSERT INTO audit_verifications (through_chain_seq, through_hash, checked, ran_at, signature) VALUES ($1, $2, $3, $4, $5)`,
+		through, hash, checked, ranAt, sig)
 	return err
 }
 
-// chainStart is where verification begins: chain_seq 1, or right after the last purged range
-// (its archive manifest carries the hash to link to).
+// chainStart is where verification begins: chain_seq 1, or right after the last purged range. The
+// hash to link to comes from that range's signed manifest, not from the database row.
 func (s *Service) chainStart(ctx context.Context) (int64, string, error) {
 	var through int64
-	var last string
-	err := s.pool.QueryRow(ctx, `SELECT coalesce(max(last_chain_seq), 0), coalesce((SELECT last_hash FROM audit_archives WHERE purged_at IS NOT NULL ORDER BY last_chain_seq DESC LIMIT 1), '')
-		FROM audit_archives WHERE purged_at IS NOT NULL`).Scan(&through, &last)
+	var manifest string
+	err := s.pool.QueryRow(ctx, `SELECT last_chain_seq, manifest_key FROM audit_archives WHERE purged_at IS NOT NULL
+		ORDER BY last_chain_seq DESC LIMIT 1`).Scan(&through, &manifest)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 1, "", nil
+	}
 	if err != nil {
 		if strings.Contains(err.Error(), "audit_archives") { // before the retention migration
 			return 1, "", nil
 		}
 		return 0, "", err
 	}
-	if through == 0 {
-		return 1, "", nil
+	m, err := s.loadManifest(ctx, manifest)
+	if err != nil {
+		return through + 1, "", err
 	}
-	return through + 1, last, nil
+	if m.LastChainSeq != through {
+		return through + 1, "", fmt.Errorf("%w: purged range %d disagrees with manifest %s", errArchiveInvalid, through, manifest)
+	}
+	return through + 1, m.LastHash, nil
 }
 
 // gaps lists missing source_seq ranges per source. A missing range is only reported once the
 // event after it is older than GapGrace (SQS may deliver out of order).
 func (s *Service) gaps(ctx context.Context) ([]*auditv1.Gap, error) {
+	// purged ranges are not gaps: per source, numbering resumes after the archived floor
+	floors := "{}"
+	if err := s.pool.QueryRow(ctx, `SELECT coalesce(jsonb_object_agg(k, v), '{}')::text FROM (
+			SELECT key AS k, max(value::bigint) AS v FROM audit_archives, jsonb_each_text(source_floors)
+			WHERE purged_at IS NOT NULL GROUP BY key) f`).Scan(&floors); err != nil && !strings.Contains(err.Error(), "audit_archives") {
+		return nil, err
+	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT source, coalesce(prev, 0) + 1, source_seq - 1 FROM (
+		SELECT source, coalesce(prev, ($2::jsonb->>source)::bigint, 0) + 1, source_seq - 1 FROM (
 			SELECT source, source_seq, recorded_at, lag(source_seq) OVER (PARTITION BY source ORDER BY source_seq) AS prev
 			FROM (SELECT DISTINCT ON (source, source_seq) source, source_seq, recorded_at FROM audit_events WHERE source IS NOT NULL
+			      AND source_seq > coalesce(($2::jsonb->>source)::bigint, 0)
 			      ORDER BY source, source_seq, recorded_at) d) x
-		WHERE source_seq > coalesce(prev, 0) + 1 AND recorded_at < $1
-		ORDER BY source, source_seq`, s.now().Add(-s.cfg.GapGrace))
+		WHERE source_seq > coalesce(prev, ($2::jsonb->>source)::bigint, 0) + 1 AND recorded_at < $1
+		ORDER BY source, source_seq`, s.now().Add(-s.cfg.GapGrace), floors)
 	if err != nil {
 		return nil, err
 	}
@@ -218,6 +269,7 @@ func (s *Service) verifyCheckpoints(ctx context.Context) (int, bool, string, err
 	}
 	pub := s.key.Public().(ed25519.PublicKey)
 	prevSum := ""
+	cache := map[string]archiveHashes{} // each archive is read once per verification
 	for _, k := range keys {
 		body, err := s.objects.Get(ctx, k)
 		if err != nil {
@@ -246,7 +298,7 @@ func (s *Service) verifyCheckpoints(ctx context.Context) (int, bool, string, err
 		var stored string
 		err = s.pool.QueryRow(ctx, `SELECT hash FROM audit_events WHERE chain_seq=$1`, doc.ChainSeq).Scan(&stored)
 		if err == pgx.ErrNoRows {
-			if ok, err := s.archivedHash(ctx, doc.ChainSeq, doc.Hash); err != nil || !ok {
+			if ok, err := s.archivedHashFromManifest(ctx, doc.ChainSeq, doc.Hash, cache); err != nil || !ok {
 				return len(keys), false, fmt.Sprintf("anchored chain_seq %d not found", doc.ChainSeq), err
 			}
 			continue
@@ -259,9 +311,4 @@ func (s *Service) verifyCheckpoints(ctx context.Context) (int, bool, string, err
 		}
 	}
 	return len(keys), true, "", nil
-}
-
-// archivedHash checks a purged anchor against its archive manifest.
-func (s *Service) archivedHash(ctx context.Context, seq int64, hash string) (bool, error) {
-	return s.archivedHashFromManifest(ctx, seq, hash)
 }

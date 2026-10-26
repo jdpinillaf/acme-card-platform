@@ -10,10 +10,12 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
 	accountsv1 "github.com/acme/acme-card/gen/go/acme/accounts/v1"
+	ledgerv1 "github.com/acme/acme-card/gen/go/acme/ledger/v1"
 )
 
 func (f *fixture) changedEvents(t *testing.T, acc string) []map[string]any {
@@ -136,6 +138,37 @@ func TestSnapshotPendingAccountHasNoBalances(t *testing.T) {
 		if err := f.pool.QueryRow(ctx, `SELECT count(*) FROM outbox WHERE payload->>'type'='snapshot.account' AND payload->>'aggregate_id'=$1`, id).Scan(&n); err != nil || n != 1 {
 			t.Fatalf("snapshot of %s: %d %v", id, n, err)
 		}
+	}
+}
+
+// snapFlakyLedger fails GetBalances for one account.
+type snapFlakyLedger struct {
+	ledgerv1.LedgerServiceClient
+	fail string
+}
+
+func (l snapFlakyLedger) GetBalances(ctx context.Context, r *ledgerv1.GetBalancesRequest, o ...grpc.CallOption) (*ledgerv1.GetBalancesResponse, error) {
+	if r.AccountId == l.fail {
+		return nil, status.Error(codes.Unavailable, "ledger hiccup")
+	}
+	return l.LedgerServiceClient.GetBalances(ctx, r, o...)
+}
+
+func TestSnapshotRunSurvivesOneFailure(t *testing.T) {
+	f, _, _ := closeFixture(t)
+	ctx := context.Background()
+	var ids []string
+	for i := 0; i < 3; i++ {
+		ids = append(ids, f.withDebt(t, fmt.Sprintf("cust-fl%d", i), 1000, 100).Id)
+	}
+	f.svc.ledger = snapFlakyLedger{f.svc.ledger, ids[0]}
+	if _, err := f.svc.SnapshotAccounts(ctx, &accountsv1.SnapshotAccountsRequest{AccountIds: ids}); err == nil {
+		t.Fatal("a failed account must be reported")
+	}
+	var n int
+	if err := f.pool.QueryRow(ctx, `SELECT count(DISTINCT payload->>'aggregate_id') FROM outbox WHERE payload->>'type'='snapshot.account'
+		AND payload->>'aggregate_id' = ANY($1)`, ids[1:]).Scan(&n); err != nil || n != 2 {
+		t.Fatalf("other accounts snapshotted: %d %v", n, err)
 	}
 }
 

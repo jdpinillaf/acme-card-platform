@@ -230,4 +230,5 @@ Append-only. One entry per decision. Format: context → decision → consequenc
 - `account.changed` comes from a plpgsql trigger (writes to `TG_TABLE_SCHEMA.outbox`), so no code path can forget it.
 - Exports are capped at 100,000 events (409 beyond; narrow the filter).
 - `auditctl` lives in `services/audit/cmd/auditctl` (Go internal-package rule).
-- Migrations: accounts `000017`–`000019`, ledger/billing `000005`, gateway `000004`, audit `000002`–`000005`.
+- Final review fixes: checkpoints and retention steps are serialized by advisory locks; `audit_archives` / `audit_verifications` are append-only and full-walk anchors are signed; verify and purge trust signed manifests, not database rows; gap detection resumes after purged ranges; incremental verify falls back to a full walk when a row before its anchor is missing; archives are chunked (100,000 rows); retention cutoff is 13 calendar months; refused auditor calls are rate-limited first; replay orders by `source_seq`; `statement.read` names the reader; one failing account no longer stops a snapshot run.
+- Migrations: accounts `000017`–`000019`, ledger/billing `000005`, gateway `000004`, audit `000002`–`000006`.

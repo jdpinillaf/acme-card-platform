@@ -18,7 +18,21 @@ import (
 
 // CreateCheckpoint anchors the current chain head outside the database: a signed JSON document,
 // linked to the previous checkpoint, written once to the Object-Lock bucket (spec I-3).
-func (s *Service) CreateCheckpoint(ctx context.Context, _ *auditv1.CreateCheckpointRequest) (*auditv1.Checkpoint, error) {
+//
+// Checkpoints are serialized (advisory lock): two writers would otherwise both link to the same
+// previous checkpoint and fork a chain that Object Lock keeps broken for years.
+func (s *Service) CreateCheckpoint(ctx context.Context, req *auditv1.CreateCheckpointRequest) (cp *auditv1.Checkpoint, err error) {
+	lockErr := s.withLock(ctx, "audit.checkpoint", func() error {
+		cp, err = s.createCheckpointLocked(ctx)
+		return nil
+	})
+	if lockErr != nil {
+		return nil, internal(lockErr)
+	}
+	return cp, err
+}
+
+func (s *Service) createCheckpointLocked(ctx context.Context) (*auditv1.Checkpoint, error) {
 	seq, hash, err := s.store.Head(ctx)
 	if err != nil {
 		return nil, internal(err)
