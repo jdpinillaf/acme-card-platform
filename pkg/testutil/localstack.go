@@ -71,3 +71,26 @@ func StartLocalStack(t testing.TB) *AWSFixture {
 	}
 	return &AWSFixture{Endpoint: endpoint, TopicARN: *topic.TopicArn, QueueURL: *q.QueueUrl, SNS: clients.SNS, SQS: clients.SQS}
 }
+
+// AddQueue creates another queue subscribed to the fixture's topic with raw delivery (one queue
+// per consumer, as in deploy/localstack/init-aws.sh) and returns its URL.
+func (f *AWSFixture) AddQueue(t testing.TB, name string) string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	q, err := f.SQS.CreateQueue(ctx, &sqs.CreateQueueInput{QueueName: aws.String(name)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attrs, err := f.SQS.GetQueueAttributes(ctx, &sqs.GetQueueAttributesInput{QueueUrl: q.QueueUrl, AttributeNames: []sqstypes.QueueAttributeName{sqstypes.QueueAttributeNameQueueArn}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.SNS.Subscribe(ctx, &sns.SubscribeInput{
+		TopicArn: aws.String(f.TopicARN), Protocol: aws.String("sqs"), Endpoint: aws.String(attrs.Attributes["QueueArn"]),
+		Attributes: map[string]string{"RawMessageDelivery": "true"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return *q.QueueUrl
+}
