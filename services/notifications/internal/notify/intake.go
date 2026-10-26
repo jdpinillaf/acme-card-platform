@@ -161,6 +161,11 @@ func (s *Service) Process(ctx context.Context, ev events.Event) error {
 	})
 }
 
+func mustJSON(v any) []byte {
+	b, _ := json.Marshal(v)
+	return b
+}
+
 // mustAccount is the account an authorization event belongs to.
 func mustAccount(ev events.Event) string {
 	var p struct {
