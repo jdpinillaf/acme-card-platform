@@ -7,6 +7,7 @@ package integration
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"io"
 	"io/fs"
@@ -23,6 +24,7 @@ import (
 	"google.golang.org/grpc"
 
 	accountsv1 "github.com/acme/acme-card/gen/go/acme/accounts/v1"
+	auditv1 "github.com/acme/acme-card/gen/go/acme/audit/v1"
 	billingv1 "github.com/acme/acme-card/gen/go/acme/billing/v1"
 	ledgerv1 "github.com/acme/acme-card/gen/go/acme/ledger/v1"
 	"github.com/acme/acme-card/pkg/auth"
@@ -56,6 +58,9 @@ type stack struct {
 	accounts, ledger, gateway, audit, billing *pgxpool.Pool
 	statements                                billingtest.Store
 }
+
+// auditKey signs the integration stack's audit checkpoints and archive manifests (dev only).
+var auditKey = ed25519.NewKeyFromSeed(bytes.Repeat([]byte{7}, ed25519.SeedSize))
 
 // destinationKey is the integration stack's payout-destination key (dev only).
 var destinationKey = bytes.Repeat([]byte{42}, 32)
@@ -103,7 +108,7 @@ func startStackWith(t *testing.T, cfg stackConfig) *stack {
 
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
 	pub := events.NewSNSPublisher(aws.SNS, aws.TopicARN)
-	for source, p := range map[string]*pgxpool.Pool{"accounts": s.accounts, "ledger": s.ledger, "gateway": s.gateway, "billing": s.billing} {
+	for source, p := range map[string]*pgxpool.Pool{"accounts": s.accounts, "ledger": s.ledger, "gateway": s.gateway, "billing": s.billing, "audit": s.audit} {
 		go outbox.NewRelay(p, pub, 100, source).Run(ctx, 100*time.Millisecond, quiet)
 	}
 	go audittest.NewConsumer(aws.SQS, aws.QueueURL, s.audit).Run(ctx)
@@ -138,6 +143,8 @@ func startStackWith(t *testing.T, cfg stackConfig) *stack {
 		accountsv1.RegisterAccountsServiceServer(g, accountstest.NewServer(s.accounts, ledgerv1.NewLedgerServiceClient(ledgerConn), accOpts...))
 	})
 
+	auditConn := serve(func(g *grpc.Server) { auditv1.RegisterAuditServiceServer(g, audittest.NewService(s.audit, auditKey)) })
+
 	billingSrv, store := billingtest.NewServer(s.billing, ledgerv1.NewLedgerServiceClient(ledgerConn), accountsv1.NewAccountsServiceClient(accountsConn))
 	s.statements = store
 	go func() {
@@ -147,6 +154,7 @@ func startStackWith(t *testing.T, cfg stackConfig) *stack {
 	srv := httptest.NewServer(gatewaytest.NewHandler(gatewaytest.Deps{
 		Accounts:         accountsv1.NewAccountsServiceClient(accountsConn),
 		Billing:          billingv1.NewBillingServiceClient(billingConn),
+		Audit:            auditv1.NewAuditServiceClient(auditConn),
 		DevClock:         true,
 		JWTSecret:        jwtSecret,
 		BankSecret:       bankSecret,

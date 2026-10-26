@@ -247,3 +247,11 @@ Sprint 5 implemented on branch `sprint-5` from `docs/superpowers/plans/2026-10-2
 ### Prompt 26 (user)
 
 > Si cintinua con lo sugerido
+
+### Prompt 27 (user)
+
+> Si, ejecutalo
+
+## Sprint 6 delivery notes (2026-10-25)
+
+Sprint 6 implemented on branch `sprint-6` from `docs/superpowers/plans/2026-10-25-sprint6-audit.md` (inline execution). Results in `docs/testing/sprint6.md`, decisions in ADR-021.

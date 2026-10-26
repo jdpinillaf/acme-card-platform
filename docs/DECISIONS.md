@@ -211,3 +211,23 @@ Append-only. One entry per decision. Format: context → decision → consequenc
 - The final statement is cut once in-flight work has resolved (captures of earlier approvals land on it), not at the request.
 - `RETURN_WINDOW` is configurable for the dev load test only; accounts refuses another value unless `APP_ENV=dev`.
 - Migrations: accounts `000015`, billing `000004`.
+
+## ADR-021 — Audit hardening: chain, numbering, checkpoints, replay, reconciliation, retention, auditor (2026-10-25)
+**Context.** Sprint 6 makes the trail verifiable, complete, reconcilable and usable by an auditor. Decisions: `docs/superpowers/specs/2026-10-25-sprint6-audit-design.md`.
+
+**Decision.**
+- **Gap-free numbering.** Each producer's relay stamps `source` + contiguous `source_seq` from `outbox_sequence` inside its publish transaction. Verify reports a missing range per source once the event after it is older than 2 minutes (SQS may reorder).
+- **Hash chain.** `hash = sha256(prev_hash ‖ "\n" ‖ canonical)`; canonical = the redacted event as normalized JSON (sorted keys, exact numbers, `occurred_at` truncated to µs). Genesis = 64 zeros. Inserts lock `chain_head`, so `chain_seq` is contiguous; redeliveries (same id) add nothing. Rows written before Sprint 6 are chained once at startup (the trigger allows only that update).
+- **Redaction** before hashing, case-insensitive at any depth: `account_number`, `holder_name`, `destination_ciphertext`, `token`, `access_token`, `secret`, `password` → `"[redacted]"`. Exports re-redact and mask JWT-like strings (pre-Sprint-6 rows were never redacted and stay immutable).
+- **Checkpoints.** Daily (and on demand) the head is signed with Ed25519 (`AUDIT_SIGNING_KEY`), linked to the previous checkpoint's sha256, and written to an S3 Object Lock COMPLIANCE bucket (7 years). A full re-hash of the database is caught at the next checkpoint.
+- **Verification.** The daily job and `auditctl verify-chain` walk the whole chain and record it (`audit_verifications`). The API verifies from the last recorded walk after re-checking its anchor hash: fast at any size; tampering before the anchor that does not re-hash is caught by the next full walk.
+- **Snapshots and replay.** `account.changed` is emitted by a trigger on every account change; `snapshot.account` (account + ledger balances + hash) daily and on demand (in the background, 8 workers, one run at a time). Replay compares the latest trail state of an account with live state read through the reporting role.
+- **Reconciliation.** The 36 invariants of `tests/load/verify.sql` (embedded copy kept identical by a test) run daily and on demand; the report goes to the locked bucket and `audit_reconciliations`; `reconciliation.completed` / `reconciliation.violation` events go through the audit service's own outbox.
+- **Retention.** Monthly (the 1st, UTC): the chain prefix recorded more than 13 months ago is archived as NDJSON + signed manifest to the locked bucket, read back and re-hashed (`verified_at`), then purged only through `audit_purge_archived(through)`. The trigger lets a DELETE through only with `audit.purge` set *and* a verified archive covering the row. The chain verifies across a purge from the manifest's last hash. `auditctl archive|verify|purge` for operators.
+- **Auditor.** JWT `role: auditor`, read-only `/v1/audit/*`: search (account, type, actor, dates; paged by `chain_seq`), verify, checkpoint, reconciliation, replay, export (+ download), snapshot. Every call emits `audit.queried` (download included) or `audit.exported`; a refused call emits `audit.access_denied`. Auditors never purge.
+
+**Implementation rulings.**
+- `account.changed` comes from a plpgsql trigger (writes to `TG_TABLE_SCHEMA.outbox`), so no code path can forget it.
+- Exports are capped at 100,000 events (409 beyond; narrow the filter).
+- `auditctl` lives in `services/audit/cmd/auditctl` (Go internal-package rule).
+- Migrations: accounts `000017`–`000019`, ledger/billing `000005`, gateway `000004`, audit `000002`–`000005`.

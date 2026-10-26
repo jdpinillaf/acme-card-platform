@@ -23,7 +23,7 @@ bank ── HMAC webhook ──────────────────�
 | gateway | REST, JWT HS256 + `authorized_accounts`, rate limit, idempotency, audit, HMAC webhook | 8080 (behind lb) |
 | accounts | Account/card lifecycle, collateral deposits, bank settlement | 9001 gRPC |
 | ledger | Double-entry append-only journal, balances | 9002 gRPC |
-| audit | SQS consumer → `audit.audit_events` (UPDATE/DELETE/TRUNCATE blocked) | — |
+| audit | SQS consumer → hash-chained `audit.audit_events` (append-only), verify, checkpoints, replay, reconciliation, retention | 9005 gRPC |
 | web | Flow simulator; signs JWT/HMAC server-side | 3010 |
 | billing | Statements (S3), interest, late fees, delinquency, charge-off, support waivers | 9004 gRPC |
 | notifications | Placeholder (Sprint 7) | — |
@@ -107,8 +107,24 @@ Support token: `JWT_HS256_SECRET=... go run ./cmd/devtoken --sub agent-1 --role 
 
 The close completes after in-flight work, the final statement's due date (debt is taken from the collateral) and the 5-day payment return window. `DESTINATION_KEY` (base64, 32 bytes) encrypts destinations; `RETURN_WINDOW` may only be shortened with `APP_ENV=dev`.
 
+### Audit (Sprint 6)
+
+An auditor token: `JWT_HS256_SECRET=... go run ./cmd/devtoken --sub auditor-1 --role auditor`. Customer and support tokens get 403 (audited as `audit.access_denied`).
+
+| Route | Result |
+|---|---|
+| `GET /v1/audit/events?account_id=&event_type=&actor=&from=&to=&page_size=&page_token=` | chained events (`chain_seq`, `hash`), redacted; dates RFC 3339 |
+| `GET /v1/audit/verify` | chain (from the last full walk), checkpoints, per-source gaps, stuck outboxes |
+| `POST /v1/audit/checkpoints` | 201, signed head written to the Object-Lock bucket |
+| `POST` / `GET /v1/audit/reconciliation` | run / last run of the 36 invariants |
+| `GET /v1/audit/replay/{accountId}` | `differences: []` when the trail matches live state |
+| `POST /v1/audit/exports` `{filter}` → `GET /v1/audit/exports/{id}` | NDJSON + sha256 (≤ 100,000 events) |
+| `POST /v1/audit/snapshots` | 202, every account snapshotted in the background |
+
+Every call is itself audited (`audit.queried` / `audit.exported`). `AUDIT_SIGNING_KEY` (base64 Ed25519 private key, 64 bytes; the one in `.env.dev` is dev only) signs checkpoints and archive manifests; `AUDIT_BUCKET` is created with Object Lock. Operators: `make auditctl ARGS="verify-chain|checkpoint|archive|verify|purge"`.
+
 ## Docs
 - `docs/DECISIONS.md` — architecture decisions (ADRs)
 - `docs/SPRINTS.md` — sprint plan
-- `docs/TESTING.md` — test gates (Sprint 3–5 results in `docs/testing/sprint3.md`, `sprint4.md`, `sprint5.md`; customer journey in `docs/testing/journey.md`) and latest results
+- `docs/TESTING.md` — test gates (Sprint 3–6 results in `docs/testing/sprint3.md` … `sprint6.md`; customer journey in `docs/testing/journey.md`) and latest results
 - `PROMPTS.md` — verbatim prompt log
